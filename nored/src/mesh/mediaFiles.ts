@@ -7,11 +7,13 @@ import * as Crypto from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat, type ImageRef } from 'expo-image-manipulator';
 
+import { MEDIA_CHUNK_BYTES } from './mediaTransfer';
+
 export const MAX_IMAGE_BYTES = 120 * 1024;
 export const MAX_IMAGE_SIDE = 720;
 export const MAX_VOICE_SECONDS = 60;
 /** isPacket() rejects manifests past 512 chunks, and the chunker cuts at MEDIA_CHUNK_BYTES. */
-export const MAX_MEDIA_BYTES = 512 * 2048;
+export const MAX_MEDIA_BYTES = 512 * MEDIA_CHUNK_BYTES;
 
 export type PreparedMedia = {
   uri: string;

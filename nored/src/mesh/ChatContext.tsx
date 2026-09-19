@@ -335,7 +335,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           ? onlySequences.map((sequence) => allChunks[sequence]).filter(Boolean)
           : allChunks;
         const threadId = mediaThreadId(manifest, peerId);
-        if (!onlySequences) await sendPacket(peerId, manifest);
+        if (!onlySequences) {
+          setState((current) =>
+            patchMessage(current, threadId, manifest.id, { transferProgress: 0, transferError: undefined }),
+          );
+          await sendPacket(peerId, manifest);
+        }
         for (let index = 0; index < chunks.length; index += 1) {
           if (epoch !== meshRouter.epoch) throw new Error('Transfer cancelled.');
           await sendPacket(peerId, chunks[index]);

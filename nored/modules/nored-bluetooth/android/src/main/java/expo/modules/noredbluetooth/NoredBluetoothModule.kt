@@ -92,7 +92,7 @@ private data class SendJob(
 private data class FrameAssembler(
   val total: Int,
   val parts: MutableMap<Int, ByteArray>,
-  val startedAt: Long,
+  var startedAt: Long,
 )
 
 class NoredBluetoothModule : Module() {
@@ -1334,15 +1334,32 @@ class NoredBluetoothModule : Module() {
     val total = data[2].toInt() and 0xFF
     if (total <= 0 || seq >= total) return
     val part = data.copyOfRange(3, data.size)
+    val now = System.currentTimeMillis()
     var assembler = assemblers[peerId]
-    if (assembler == null || assembler.total != total) {
-      assembler = FrameAssembler(total, mutableMapOf(), System.currentTimeMillis())
+    if (assembler != null && assembler.total != total) {
+      if (seq == 0 && total == 1) {
+        val packet = try {
+          String(part, StandardCharsets.UTF_8)
+        } catch (_: Exception) {
+          return
+        }
+        mainHandler.post {
+          sendEvent("onPacketReceived", mapOf("peerId" to peerId, "packet" to packet))
+        }
+        return
+      }
+      if (seq != 0) return
+      assembler = FrameAssembler(total, mutableMapOf(), now)
+    } else if (assembler == null) {
+      assembler = FrameAssembler(total, mutableMapOf(), now)
     }
-    assembler.parts[seq] = part
-    if (assembler.parts.size == total) {
+    val current = assembler ?: return
+    current.parts[seq] = part
+    current.startedAt = now
+    if (current.parts.size == total) {
       assemblers.remove(peerId)
       val payload = (0 until total).fold(ByteArray(0)) { acc, index ->
-        acc + (assembler.parts[index] ?: return)
+        acc + (current.parts[index] ?: return)
       }
       val packet = try {
         String(payload, StandardCharsets.UTF_8)
@@ -1355,7 +1372,7 @@ class NoredBluetoothModule : Module() {
         sendEvent("onPacketReceived", mapOf("peerId" to peerId, "packet" to packet))
       }
     } else {
-      assemblers[peerId] = assembler
+      assemblers[peerId] = current
     }
   }
 

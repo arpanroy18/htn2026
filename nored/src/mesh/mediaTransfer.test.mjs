@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { describe, it } from 'node:test';
 
 import {
+  MEDIA_CHUNK_BYTES,
   acceptMediaChunk,
   assembleMediaBytes,
   base64ToBytes,
@@ -12,6 +13,7 @@ import {
   missingMediaChunks,
   splitMediaBytes,
 } from './mediaTransfer.ts';
+import { isWirePacket } from './protocol.ts';
 
 function manifest(overrides = {}) {
   return {
@@ -121,12 +123,16 @@ describe('media base64 codec', () => {
 
 describe('media transfer chunking', () => {
   it('reassembles duplicate and out-of-order chunks without corrupting bytes', () => {
-    const bytes = Uint8Array.from({ length: 5000 }, (_, index) => index % 251);
-    const packet = manifest();
+    const bytes = Uint8Array.from({ length: MEDIA_CHUNK_BYTES * 2 + 50 }, (_, index) => index % 251);
+    const packet = manifest({
+      byteLength: bytes.byteLength,
+      chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
+    });
     const chunks = splitMediaBytes({ manifest: packet, bytes });
     const transfer = createIncomingTransfer(packet);
 
     assert.equal(chunks.length, 3);
+    assert.equal(isWirePacket(chunks[0]), true);
     assert.equal(acceptMediaChunk(transfer, chunks[2]), true);
     assert.equal(acceptMediaChunk(transfer, chunks[0]), true);
     assert.deepEqual(missingMediaChunks(transfer), [1]);
@@ -136,8 +142,11 @@ describe('media transfer chunking', () => {
   });
 
   it('rejects chunks for another transfer and reports missing sequences', () => {
-    const bytes = new Uint8Array(5000);
-    const packet = manifest();
+    const bytes = new Uint8Array(MEDIA_CHUNK_BYTES * 2 + 50);
+    const packet = manifest({
+      byteLength: bytes.byteLength,
+      chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
+    });
     const chunks = splitMediaBytes({ manifest: packet, bytes });
     const transfer = createIncomingTransfer(packet);
 

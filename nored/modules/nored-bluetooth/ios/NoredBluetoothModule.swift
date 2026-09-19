@@ -1179,20 +1179,25 @@ public final class NoredBluetoothModule: Module {
     let total = Int(data[2])
     guard total > 0, seq < total else { return }
     let part = data.subdata(in: 3..<data.count)
-    var assembler = assemblers[peerId] ?? FrameAssembler(
-      total: total,
-      parts: [:],
-      startedAt: Date().timeIntervalSince1970 * 1000
-    )
-    if assembler.total != total {
-      assembler = FrameAssembler(total: total, parts: [:], startedAt: Date().timeIntervalSince1970 * 1000)
+    let now = Date().timeIntervalSince1970 * 1000
+    var assembler = assemblers[peerId]
+    if let existing = assembler, existing.total != total {
+      if seq == 0, total == 1, let packet = String(data: part, encoding: .utf8) {
+        sendEvent("onPacketReceived", ["peerId": peerId, "packet": packet])
+        return
+      }
+      guard seq == 0 else { return }
+      assembler = FrameAssembler(total: total, parts: [:], startedAt: now)
+    } else if assembler == nil {
+      assembler = FrameAssembler(total: total, parts: [:], startedAt: now)
     }
-    assembler.parts[seq] = part
-    if assembler.parts.count == total {
+    assembler!.parts[seq] = part
+    assembler!.startedAt = now
+    if assembler!.parts.count == total {
       assemblers.removeValue(forKey: peerId)
       var payload = Data()
       for index in 0..<total {
-        guard let next = assembler.parts[index] else { return }
+        guard let next = assembler!.parts[index] else { return }
         payload.append(next)
       }
       guard let packet = String(data: payload, encoding: .utf8) else {
@@ -1202,7 +1207,7 @@ public final class NoredBluetoothModule: Module {
       log("info", "[MSG] received \(payload.count) bytes")
       sendEvent("onPacketReceived", ["peerId": peerId, "packet": packet])
     } else {
-      assemblers[peerId] = assembler
+      assemblers[peerId] = assembler!
     }
   }
 

@@ -127,6 +127,7 @@ export class MeshRouter {
   }
   async sendDirect(peer: string, packet: Packet, rank?: number) {
     if (packet.recipientId !== peer || packet.senderId !== this.identity.id) throw new Error('Invalid direct packet identity.');
+    if (!isWirePacket(packet)) throw new Error('Message is too large or invalid.');
     await this.send(peer, packet, rank);
   }
   private control(peer: string, fields: ControlFields): Control {

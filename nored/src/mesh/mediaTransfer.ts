@@ -4,7 +4,8 @@ import type {
   Packet,
 } from '@/transport';
 
-export const MEDIA_CHUNK_BYTES = 2048;
+/** Keep each JSON packet well under MAX_WIRE_BYTES and a handful of BLE frames. */
+export const MEDIA_CHUNK_BYTES = 1024;
 export const MEDIA_REASSEMBLY_TIMEOUT_MS = 10_000;
 
 export type IncomingTransfer = {
