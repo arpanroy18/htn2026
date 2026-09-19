@@ -19,15 +19,29 @@ import {
 } from '@/transport';
 
 import {
+  advancePong,
   appendStroke,
+  createPongMatch,
+  decodeDrawing,
+  encodeDrawing,
   encodeStroke,
   isGamePacket,
   makeGamePacket,
+  nextTelephoneMode,
   participantPayload,
+  type ChessMatch,
   type DrawingPoint,
   type GameParticipant,
+  type PongMatch,
+  type TelephoneChain,
   type TelephoneRound,
 } from './gameStore';
+import {
+  applyChessMove,
+  chessColorForPlayer,
+  INITIAL_CHESS_FEN,
+  playerCanMove,
+} from './chessGame';
 
 type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -51,12 +65,24 @@ type GameUi = {
   pingResults: Record<string, PingResult>;
   batonHolderId?: string;
   telephoneRound?: TelephoneRound;
+  pongMatch?: PongMatch;
+  telephoneChain?: TelephoneChain;
+  chessMatch?: ChessMatch;
   pendingInvite?: GameInvitation;
   joinGame: (gameId: GameId) => Promise<ActionResult>;
   leaveGame: (gameId: GameId) => Promise<void>;
   invitePlayer: (gameId: GameId, peerId: string) => Promise<ActionResult>;
   acceptInvite: () => Promise<ActionResult>;
   dismissInvite: () => void;
+  startPong: () => Promise<ActionResult>;
+  movePongPaddle: (position: number) => void;
+  startTelephoneChain: () => Promise<ActionResult>;
+  submitTelephonePrompt: (text: string) => Promise<ActionResult>;
+  submitTelephoneDrawing: (strokes: DrawingPoint[][]) => Promise<ActionResult>;
+  submitTelephoneGuess: (text: string) => Promise<ActionResult>;
+  startChess: () => Promise<ActionResult>;
+  moveChess: (from: string, to: string, promotion?: string) => Promise<ActionResult>;
+  resignChess: () => Promise<ActionResult>;
   pingPeer: (peerId: string) => Promise<ActionResult>;
   passBaton: (peerId: string) => Promise<ActionResult>;
   startTelephoneRound: () => Promise<ActionResult>;
@@ -67,12 +93,16 @@ const GameContext = createContext<GameUi | null>(null);
 
 const emptyJoined: Record<GameId, boolean> = {
   'mesh-ping': false,
+  pong: false,
   telephone: false,
+  chess: false,
 };
 
 const emptyParticipants: Record<GameId, GameParticipant[]> = {
   'mesh-ping': [],
+  pong: [],
   telephone: [],
+  chess: [],
 };
 
 export function GameProvider({ children }: { children: ReactNode }) {
@@ -82,13 +112,20 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [pingResults, setPingResults] = useState<Record<string, PingResult>>({});
   const [batonHolderId, setBatonHolderId] = useState<string>();
   const [telephoneRound, setTelephoneRound] = useState<TelephoneRound>();
+  const [pongMatch, setPongMatch] = useState<PongMatch>();
+  const [telephoneChain, setTelephoneChain] = useState<TelephoneChain>();
+  const [chessMatch, setChessMatch] = useState<ChessMatch>();
   const [pendingInvite, setPendingInvite] = useState<GameInvitation>();
   const joinedRef = useRef(joinedGames);
   const peersRef = useRef(peers);
   const noredPeersRef = useRef(noredPeers);
   const participantsRef = useRef(participants);
   const telephoneRoundRef = useRef(telephoneRound);
+  const pongMatchRef = useRef(pongMatch);
+  const telephoneChainRef = useRef(telephoneChain);
+  const chessMatchRef = useRef(chessMatch);
   const pendingPings = useRef(new Map<string, { peerId: string; startedAt: number }>());
+  const lastPongInputAt = useRef(0);
 
   useEffect(() => {
     joinedRef.current = joinedGames;
@@ -109,6 +146,18 @@ export function GameProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     telephoneRoundRef.current = telephoneRound;
   }, [telephoneRound]);
+
+  useEffect(() => {
+    pongMatchRef.current = pongMatch;
+  }, [pongMatch]);
+
+  useEffect(() => {
+    telephoneChainRef.current = telephoneChain;
+  }, [telephoneChain]);
+
+  useEffect(() => {
+    chessMatchRef.current = chessMatch;
+  }, [chessMatch]);
 
   const upsertParticipant = useCallback(
     (gameId: GameId, id: string, name?: string) => {
@@ -142,6 +191,30 @@ export function GameProvider({ children }: { children: ReactNode }) {
     );
     return settled.some((result) => result.status === 'fulfilled');
   }, []);
+
+  useEffect(() => {
+    let ticks = 0;
+    const timer = setInterval(() => {
+      const current = pongMatchRef.current;
+      if (!current?.running || current.hostId !== identity.id) return;
+      const next = advancePong(current, 0.05);
+      pongMatchRef.current = next;
+      setPongMatch(next);
+      ticks += 1;
+      if (ticks % 2 === 0) {
+        const packet = makeGamePacket({
+          senderId: identity.id,
+          recipientId: next.guestId,
+          gameId: 'pong',
+          event: 'pong-state',
+          roundId: next.id,
+          payload: JSON.stringify(next),
+        });
+        void sendToPeers(packet, [next.guestId]);
+      }
+    }, 50);
+    return () => clearInterval(timer);
+  }, [identity.id, sendToPeers]);
 
   useEffect(() => {
     const subscription = meshTransport.onPacketReceived((_fromPeerId, packet: Packet) => {
@@ -187,6 +260,180 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
       if (!joinedRef.current[packet.gameId]) return;
       upsertParticipant(packet.gameId, packet.senderId);
+
+      if (packet.gameId === 'pong') {
+        if (packet.event === 'pong-start' && packet.payload) {
+          try {
+            const next = JSON.parse(packet.payload) as PongMatch;
+            if (
+              next.hostId === packet.senderId &&
+              next.guestId === identity.id &&
+              next.id === packet.roundId
+            ) {
+              pongMatchRef.current = next;
+              setPongMatch(next);
+            }
+          } catch {
+            // Ignore malformed match data.
+          }
+        } else if (
+          packet.event === 'pong-input' &&
+          pongMatchRef.current?.hostId === identity.id &&
+          pongMatchRef.current.guestId === packet.senderId
+        ) {
+          const position = Number(packet.payload);
+          if (Number.isFinite(position)) {
+            setPongMatch((current) => {
+              if (!current) return current;
+              const next = { ...current, rightY: Math.max(0.14, Math.min(0.86, position)) };
+              pongMatchRef.current = next;
+              return next;
+            });
+          }
+        } else if (
+          packet.event === 'pong-state' &&
+          pongMatchRef.current?.guestId === identity.id &&
+          packet.senderId === pongMatchRef.current.hostId &&
+          packet.payload
+        ) {
+          try {
+            const next = JSON.parse(packet.payload) as PongMatch;
+            if (next.id === pongMatchRef.current.id) {
+              pongMatchRef.current = next;
+              setPongMatch(next);
+            }
+          } catch {
+            // Ignore malformed host state.
+          }
+        }
+        return;
+      }
+
+      if (packet.gameId === 'telephone') {
+        if (packet.event === 'round-start' && packet.roundId && packet.payload) {
+          try {
+            const playerIds = JSON.parse(packet.payload);
+            if (
+              Array.isArray(playerIds) &&
+              playerIds.length >= 3 &&
+              playerIds.length <= 8 &&
+              playerIds.every((id) => typeof id === 'string') &&
+              playerIds.includes(identity.id)
+            ) {
+              const next: TelephoneChain = {
+                id: packet.roundId,
+                playerIds,
+                turnIndex: 0,
+                mode: 'prompt',
+                entries: [],
+              };
+              telephoneChainRef.current = next;
+              setTelephoneChain(next);
+            }
+          } catch {
+            // Ignore malformed round data.
+          }
+          return;
+        }
+
+        const currentChain = telephoneChainRef.current;
+        if (
+          !currentChain ||
+          packet.roundId !== currentChain.id ||
+          currentChain.playerIds[currentChain.turnIndex] !== packet.senderId
+        ) {
+          return;
+        }
+
+        setTelephoneChain((current) => {
+          if (!current || current.id !== packet.roundId) return current;
+          const expected = current.playerIds[current.turnIndex];
+          if (expected !== packet.senderId) return current;
+          let entry;
+          if (packet.event === 'telephone-prompt' && current.mode === 'prompt') {
+            const text = packet.payload?.trim().slice(0, 80);
+            if (!text) return current;
+            entry = { kind: 'prompt' as const, authorId: packet.senderId, text };
+          } else if (packet.event === 'telephone-drawing' && current.mode === 'draw') {
+            const strokes = decodeDrawing(packet.payload);
+            if (!strokes.length) return current;
+            entry = { kind: 'drawing' as const, authorId: packet.senderId, strokes };
+          } else if (packet.event === 'telephone-guess' && current.mode === 'guess') {
+            const text = packet.payload?.trim().slice(0, 80);
+            if (!text) return current;
+            entry = { kind: 'guess' as const, authorId: packet.senderId, text };
+          } else {
+            return current;
+          }
+          const turnIndex = current.turnIndex + 1;
+          const next = {
+            ...current,
+            turnIndex,
+            mode: nextTelephoneMode(turnIndex, current.playerIds.length),
+            entries: [...current.entries, entry],
+          };
+          telephoneChainRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      if (packet.gameId === 'chess') {
+        if (packet.event === 'chess-start' && packet.payload) {
+          try {
+            const next = JSON.parse(packet.payload) as ChessMatch;
+            if (
+              next.whiteId === packet.senderId &&
+              next.blackId === identity.id &&
+              next.fen === INITIAL_CHESS_FEN
+            ) {
+              chessMatchRef.current = next;
+              setChessMatch(next);
+            }
+          } catch {
+            // Ignore malformed match data.
+          }
+        } else if (
+          packet.event === 'chess-move' &&
+          packet.payload &&
+          chessMatchRef.current &&
+          packet.roundId === chessMatchRef.current.id
+        ) {
+          try {
+            const move = JSON.parse(packet.payload) as {
+              from: string;
+              to: string;
+              promotion?: string;
+            };
+            const current = chessMatchRef.current;
+            const senderColor = chessColorForPlayer(current, packet.senderId);
+            if (!senderColor || !playerCanMove(current, packet.senderId)) return;
+            const next = applyChessMove(current, move);
+            if (next) {
+              chessMatchRef.current = next;
+              setChessMatch(next);
+            }
+          } catch {
+            // Ignore malformed moves.
+          }
+        } else if (
+          packet.event === 'chess-resign' &&
+          chessMatchRef.current &&
+          packet.roundId === chessMatchRef.current.id &&
+          chessColorForPlayer(chessMatchRef.current, packet.senderId)
+        ) {
+          const current = chessMatchRef.current;
+          const next: ChessMatch = {
+            ...current,
+            status: 'resigned',
+            winnerId:
+              packet.senderId === current.whiteId ? current.blackId : current.whiteId,
+          };
+          chessMatchRef.current = next;
+          setChessMatch(next);
+        }
+        return;
+      }
 
       if (packet.gameId === 'mesh-ping') {
         if (packet.event === 'ping' && packet.targetId === identity.id) {
@@ -285,7 +532,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setJoinedGames((current) => ({ ...current, [gameId]: false }));
       setParticipants((current) => ({ ...current, [gameId]: [] }));
       if (gameId === 'mesh-ping') setBatonHolderId(undefined);
-      else setTelephoneRound(undefined);
+      else if (gameId === 'pong') setPongMatch(undefined);
+      else if (gameId === 'telephone') {
+        setTelephoneRound(undefined);
+        setTelephoneChain(undefined);
+      } else if (gameId === 'chess') setChessMatch(undefined);
     },
     [identity.id, sendToPeers],
   );
@@ -320,6 +571,236 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, [joinGame, pendingInvite]);
 
   const dismissInvite = useCallback(() => setPendingInvite(undefined), []);
+
+  const startPong = useCallback(async (): Promise<ActionResult> => {
+    const guest = participantsRef.current.pong.find(
+      (participant) => participant.id !== identity.id,
+    );
+    if (!guest) return { ok: false, error: 'Invite another player before starting.' };
+    const match = createPongMatch(identity.id, guest.id);
+    const packet = makeGamePacket({
+      senderId: identity.id,
+      recipientId: guest.id,
+      gameId: 'pong',
+      event: 'pong-start',
+      roundId: match.id,
+      payload: JSON.stringify(match),
+    });
+    const sent = await sendToPeers(packet, [guest.id]);
+    if (!sent) return { ok: false, error: 'The match could not reach the other player.' };
+    pongMatchRef.current = match;
+    setPongMatch(match);
+    return { ok: true };
+  }, [identity.id, sendToPeers]);
+
+  const movePongPaddle = useCallback(
+    (position: number) => {
+      const current = pongMatchRef.current;
+      if (!current?.running) return;
+      const clamped = Math.max(0.14, Math.min(0.86, position));
+      if (current.hostId === identity.id) {
+        const next = { ...current, leftY: clamped };
+        pongMatchRef.current = next;
+        setPongMatch(next);
+      } else if (current.guestId === identity.id) {
+        const next = { ...current, rightY: clamped };
+        pongMatchRef.current = next;
+        setPongMatch(next);
+        const now = Date.now();
+        if (now - lastPongInputAt.current < 50) return;
+        lastPongInputAt.current = now;
+        const packet = makeGamePacket({
+          senderId: identity.id,
+          recipientId: current.hostId,
+          gameId: 'pong',
+          event: 'pong-input',
+          roundId: current.id,
+          payload: clamped.toFixed(3),
+        });
+        void sendToPeers(packet, [current.hostId]);
+      }
+    },
+    [identity.id, sendToPeers],
+  );
+
+  const startTelephoneChain = useCallback(async (): Promise<ActionResult> => {
+    const others = participantsRef.current.telephone
+      .filter((participant) => participant.id !== identity.id)
+      .map((participant) => participant.id);
+    const playerIds = [identity.id, ...others].slice(0, 8);
+    if (playerIds.length < 3) {
+      return { ok: false, error: 'Drawing Telephone needs at least three joined players.' };
+    }
+    const chain: TelephoneChain = {
+      id: `${Date.now().toString(36)}-${identity.id.slice(0, 6)}`,
+      playerIds,
+      turnIndex: 0,
+      mode: 'prompt',
+      entries: [],
+    };
+    const packet = makeGamePacket({
+      senderId: identity.id,
+      gameId: 'telephone',
+      event: 'round-start',
+      roundId: chain.id,
+      payload: JSON.stringify(playerIds),
+    });
+    const sent = await sendToPeers(packet, others);
+    if (!sent) return { ok: false, error: 'The round could not reach the other players.' };
+    telephoneChainRef.current = chain;
+    setTelephoneChain(chain);
+    return { ok: true };
+  }, [identity.id, sendToPeers]);
+
+  const submitTelephoneEntry = useCallback(
+    async (
+      event: 'telephone-prompt' | 'telephone-drawing' | 'telephone-guess',
+      expectedMode: TelephoneChain['mode'],
+      payload: string,
+    ): Promise<ActionResult> => {
+      const current = telephoneChainRef.current;
+      if (!current || current.mode !== expectedMode) {
+        return { ok: false, error: 'That turn is no longer active.' };
+      }
+      if (current.playerIds[current.turnIndex] !== identity.id) {
+        return { ok: false, error: 'Wait for your turn.' };
+      }
+      const packet = makeGamePacket({
+        senderId: identity.id,
+        gameId: 'telephone',
+        event,
+        roundId: current.id,
+        sequence: current.turnIndex,
+        payload,
+      });
+      const targets = current.playerIds.filter((id) => id !== identity.id);
+      const sent = await sendToPeers(packet, targets);
+      if (!sent) return { ok: false, error: 'Your turn could not be sent.' };
+      let entry;
+      if (event === 'telephone-drawing') {
+        const strokes = decodeDrawing(payload);
+        if (!strokes.length) return { ok: false, error: 'Draw something first.' };
+        entry = { kind: 'drawing' as const, authorId: identity.id, strokes };
+      } else {
+        const text = payload.trim().slice(0, 80);
+        if (!text) return { ok: false, error: 'Enter something first.' };
+        entry = {
+          kind: event === 'telephone-prompt' ? ('prompt' as const) : ('guess' as const),
+          authorId: identity.id,
+          text,
+        };
+      }
+      const turnIndex = current.turnIndex + 1;
+      const next: TelephoneChain = {
+        ...current,
+        turnIndex,
+        mode: nextTelephoneMode(turnIndex, current.playerIds.length),
+        entries: [...current.entries, entry],
+      };
+      telephoneChainRef.current = next;
+      setTelephoneChain(next);
+      return { ok: true };
+    },
+    [identity.id, sendToPeers],
+  );
+
+  const submitTelephonePrompt = useCallback(
+    (text: string) => submitTelephoneEntry('telephone-prompt', 'prompt', text),
+    [submitTelephoneEntry],
+  );
+
+  const submitTelephoneDrawing = useCallback(
+    (strokes: DrawingPoint[][]) =>
+      submitTelephoneEntry('telephone-drawing', 'draw', encodeDrawing(strokes)),
+    [submitTelephoneEntry],
+  );
+
+  const submitTelephoneGuess = useCallback(
+    (text: string) => submitTelephoneEntry('telephone-guess', 'guess', text),
+    [submitTelephoneEntry],
+  );
+
+  const startChess = useCallback(async (): Promise<ActionResult> => {
+    const opponent = participantsRef.current.chess.find(
+      (participant) => participant.id !== identity.id,
+    );
+    if (!opponent) return { ok: false, error: 'Invite another player before starting.' };
+    const match: ChessMatch = {
+      id: `${Date.now().toString(36)}-${identity.id.slice(0, 6)}`,
+      whiteId: identity.id,
+      blackId: opponent.id,
+      fen: INITIAL_CHESS_FEN,
+      status: 'playing',
+    };
+    const packet = makeGamePacket({
+      senderId: identity.id,
+      recipientId: opponent.id,
+      gameId: 'chess',
+      event: 'chess-start',
+      roundId: match.id,
+      payload: JSON.stringify(match),
+    });
+    const sent = await sendToPeers(packet, [opponent.id]);
+    if (!sent) return { ok: false, error: 'The match could not reach your opponent.' };
+    chessMatchRef.current = match;
+    setChessMatch(match);
+    return { ok: true };
+  }, [identity.id, sendToPeers]);
+
+  const moveChess = useCallback(
+    async (from: string, to: string, promotion = 'q'): Promise<ActionResult> => {
+      const current = chessMatchRef.current;
+      if (!current) return { ok: false, error: 'Start a match first.' };
+      if (!playerCanMove(current, identity.id)) {
+        return { ok: false, error: "It is not your turn." };
+      }
+      const move = { from, to, promotion };
+      const next = applyChessMove(current, move);
+      if (!next) return { ok: false, error: 'That move is not legal.' };
+      const opponentId =
+        identity.id === current.whiteId ? current.blackId : current.whiteId;
+      const packet = makeGamePacket({
+        senderId: identity.id,
+        recipientId: opponentId,
+        gameId: 'chess',
+        event: 'chess-move',
+        roundId: current.id,
+        payload: JSON.stringify(move),
+      });
+      const sent = await sendToPeers(packet, [opponentId]);
+      if (!sent) return { ok: false, error: 'The move could not reach your opponent.' };
+      chessMatchRef.current = next;
+      setChessMatch(next);
+      return { ok: true };
+    },
+    [identity.id, sendToPeers],
+  );
+
+  const resignChess = useCallback(async (): Promise<ActionResult> => {
+    const current = chessMatchRef.current;
+    if (!current || current.status !== 'playing') {
+      return { ok: false, error: 'There is no active match.' };
+    }
+    const opponentId =
+      identity.id === current.whiteId ? current.blackId : current.whiteId;
+    const packet = makeGamePacket({
+      senderId: identity.id,
+      recipientId: opponentId,
+      gameId: 'chess',
+      event: 'chess-resign',
+      roundId: current.id,
+    });
+    const sent = await sendToPeers(packet, [opponentId]);
+    if (!sent) return { ok: false, error: 'Your resignation could not be sent.' };
+    const next: ChessMatch = {
+      ...current,
+      status: 'resigned',
+      winnerId: opponentId,
+    };
+    chessMatchRef.current = next;
+    setChessMatch(next);
+    return { ok: true };
+  }, [identity.id, sendToPeers]);
 
   const pingPeer = useCallback(
     async (peerId: string): Promise<ActionResult> => {
@@ -436,12 +917,24 @@ export function GameProvider({ children }: { children: ReactNode }) {
       pingResults,
       batonHolderId,
       telephoneRound,
+      pongMatch,
+      telephoneChain,
+      chessMatch,
       pendingInvite,
       joinGame,
       leaveGame,
       invitePlayer,
       acceptInvite,
       dismissInvite,
+      startPong,
+      movePongPaddle,
+      startTelephoneChain,
+      submitTelephonePrompt,
+      submitTelephoneDrawing,
+      submitTelephoneGuess,
+      startChess,
+      moveChess,
+      resignChess,
       pingPeer,
       passBaton,
       startTelephoneRound,
@@ -450,6 +943,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     [
       batonHolderId,
       acceptInvite,
+      chessMatch,
       dismissInvite,
       invitePlayer,
       joinGame,
@@ -458,10 +952,21 @@ export function GameProvider({ children }: { children: ReactNode }) {
       participants,
       passBaton,
       pendingInvite,
+      pongMatch,
       pingPeer,
       pingResults,
+      moveChess,
+      movePongPaddle,
+      resignChess,
+      startChess,
+      startPong,
+      startTelephoneChain,
       startTelephoneRound,
+      submitTelephoneDrawing,
+      submitTelephoneGuess,
+      submitTelephonePrompt,
       submitStroke,
+      telephoneChain,
       telephoneRound,
     ],
   );

@@ -23,8 +23,48 @@ export type TelephoneRound = {
   finished: boolean;
 };
 
+export type TelephoneEntry =
+  | { kind: 'prompt'; authorId: string; text: string }
+  | { kind: 'drawing'; authorId: string; strokes: DrawingPoint[][] }
+  | { kind: 'guess'; authorId: string; text: string };
+
+export type TelephoneChain = {
+  id: string;
+  playerIds: string[];
+  turnIndex: number;
+  mode: 'prompt' | 'draw' | 'guess' | 'finished';
+  entries: TelephoneEntry[];
+};
+
+export type PongMatch = {
+  id: string;
+  hostId: string;
+  guestId: string;
+  leftY: number;
+  rightY: number;
+  ballX: number;
+  ballY: number;
+  velocityX: number;
+  velocityY: number;
+  leftScore: number;
+  rightScore: number;
+  running: boolean;
+  winnerId?: string;
+};
+
+export type ChessMatch = {
+  id: string;
+  whiteId: string;
+  blackId: string;
+  fen: string;
+  status: 'playing' | 'checkmate' | 'draw' | 'resigned';
+  winnerId?: string;
+  lastMove?: { from: string; to: string; promotion?: string };
+};
+
 export const GAME_ROOM_ID = 'nored-game-room';
 export const MAX_STROKE_POINTS = 24;
+export const MAX_DRAWING_STROKES = 8;
 
 function createGameId() {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -92,6 +132,113 @@ export function decodeStroke(payload?: string): DrawingPoint[] {
         y >= 0 &&
         y <= 100,
     );
+}
+
+export function encodeDrawing(strokes: DrawingPoint[][]) {
+  return strokes
+    .slice(0, MAX_DRAWING_STROKES)
+    .map(encodeStroke)
+    .filter(Boolean)
+    .join('|');
+}
+
+export function decodeDrawing(payload?: string) {
+  if (!payload) return [];
+  return payload
+    .split('|')
+    .slice(0, MAX_DRAWING_STROKES)
+    .map(decodeStroke)
+    .filter((stroke) => stroke.length >= 2);
+}
+
+export function nextTelephoneMode(
+  turnIndex: number,
+  playerCount: number,
+): TelephoneChain['mode'] {
+  if (turnIndex >= playerCount) return 'finished';
+  if (turnIndex === 0) return 'prompt';
+  return turnIndex % 2 === 1 ? 'draw' : 'guess';
+}
+
+export function createPongMatch(hostId: string, guestId: string): PongMatch {
+  return {
+    id: createGameId(),
+    hostId,
+    guestId,
+    leftY: 0.5,
+    rightY: 0.5,
+    ballX: 0.5,
+    ballY: 0.5,
+    velocityX: 0.42,
+    velocityY: 0.28,
+    leftScore: 0,
+    rightScore: 0,
+    running: true,
+  };
+}
+
+export function advancePong(match: PongMatch, seconds: number): PongMatch {
+  if (!match.running) return match;
+  let ballX = match.ballX + match.velocityX * seconds;
+  let ballY = match.ballY + match.velocityY * seconds;
+  let velocityX = match.velocityX;
+  let velocityY = match.velocityY;
+  let leftScore = match.leftScore;
+  let rightScore = match.rightScore;
+
+  if (ballY <= 0.03 || ballY >= 0.97) {
+    ballY = Math.max(0.03, Math.min(0.97, ballY));
+    velocityY *= -1;
+  }
+
+  const paddleHalf = 0.14;
+  if (
+    velocityX < 0 &&
+    ballX <= 0.08 &&
+    ballX >= 0.035 &&
+    Math.abs(ballY - match.leftY) <= paddleHalf
+  ) {
+    ballX = 0.08;
+    velocityX = Math.abs(velocityX) * 1.03;
+    velocityY += (ballY - match.leftY) * 0.8;
+  } else if (
+    velocityX > 0 &&
+    ballX >= 0.92 &&
+    ballX <= 0.965 &&
+    Math.abs(ballY - match.rightY) <= paddleHalf
+  ) {
+    ballX = 0.92;
+    velocityX = -Math.abs(velocityX) * 1.03;
+    velocityY += (ballY - match.rightY) * 0.8;
+  }
+
+  if (ballX < 0) {
+    rightScore += 1;
+    ballX = 0.5;
+    ballY = 0.5;
+    velocityX = -0.42;
+    velocityY = 0.22;
+  } else if (ballX > 1) {
+    leftScore += 1;
+    ballX = 0.5;
+    ballY = 0.5;
+    velocityX = 0.42;
+    velocityY = -0.22;
+  }
+
+  const winnerId =
+    leftScore >= 5 ? match.hostId : rightScore >= 5 ? match.guestId : undefined;
+  return {
+    ...match,
+    ballX,
+    ballY,
+    velocityX,
+    velocityY,
+    leftScore,
+    rightScore,
+    running: !winnerId,
+    winnerId,
+  };
 }
 
 export function appendStroke(

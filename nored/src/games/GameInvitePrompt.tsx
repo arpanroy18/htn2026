@@ -8,7 +8,9 @@ import { useGames } from './GameContext';
 
 const gameNames = {
   'mesh-ping': 'Mesh Ping',
+  pong: 'Bluetooth Pong',
   telephone: 'Drawing Telephone',
+  chess: 'Bluetooth Chess',
 } as const;
 
 export function GameInvitePrompt() {

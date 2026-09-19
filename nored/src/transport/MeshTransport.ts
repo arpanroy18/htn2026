@@ -80,7 +80,7 @@ export type AlertPacket = PacketBase & {
   ttlHops?: number;
 };
 
-export type GameId = 'mesh-ping' | 'telephone';
+export type GameId = 'mesh-ping' | 'pong' | 'telephone' | 'chess';
 
 export type GameEvent =
   | 'invite'
@@ -91,7 +91,16 @@ export type GameEvent =
   | 'baton'
   | 'round-start'
   | 'stroke'
-  | 'round-finish';
+  | 'round-finish'
+  | 'pong-start'
+  | 'pong-input'
+  | 'pong-state'
+  | 'telephone-prompt'
+  | 'telephone-drawing'
+  | 'telephone-guess'
+  | 'chess-start'
+  | 'chess-move'
+  | 'chess-resign';
 
 export type GamePacket = PacketBase & {
   type: 'game';
