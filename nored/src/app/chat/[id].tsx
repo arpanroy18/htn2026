@@ -25,8 +25,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { avatarForPeer } from '@/avatar/profile';
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
-import { Avatar, Chip, IconButton } from '@/components/signal/ui';
+import { Avatar, AvatarStack, Chip, IconButton } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
 import { severityTone } from '@/mesh/alertStore';
 import { useChat } from '@/mesh/ChatContext';
@@ -305,6 +306,19 @@ export default function ChatScreen() {
     return '1:1 · Bluetooth';
   }, [inRange, inRangeCount, isAlertThread, isGroup, memberIds.length]);
 
+  const groupMembers = useMemo(() => {
+    const members = thread?.memberIds ?? [];
+    if (!isGroup || isAlertThread || members.length === 0) return [];
+    return members.map((id) => {
+      const peer = noredPeers.find((item) => item.id === id);
+      const profile = avatarForPeer(id, identity, noredPeers);
+      const label = id === identity.id ? 'You' : (thread?.memberNames[id] ?? peer?.name ?? 'Member');
+      const memberInRange =
+        id === identity.id || Boolean(peer?.identityConfirmed);
+      return { id, label, profile, memberInRange, peer };
+    });
+  }, [identity, isAlertThread, isGroup, noredPeers, thread?.memberIds, thread?.memberNames]);
+
   const send = () => {
     const body = draft.trim();
     if (!body || !threadId) return;
@@ -342,10 +356,18 @@ export default function ChatScreen() {
         recorderPrepared.current = false;
         try {
           await audioRecorder.stop();
-          await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-          if (sendRecording && audioRecorder.uri && durationMs >= 300) {
+          await setAudioModeAsync({
+            allowsRecording: false,
+            playsInSilentMode: true,
+            interruptionMode: 'mixWithOthers',
+          });
+          const recordingUri = audioRecorder.uri;
+          if (sendRecording && durationMs >= 300) {
+            if (!recordingUri) {
+              throw new Error('The recording file was not available.');
+            }
             setPreparingMedia(true);
-            await sendVoiceNote(threadId, audioRecorder.uri, durationMs);
+            await sendVoiceNote(threadId, recordingUri, durationMs);
           }
         } catch (error) {
           Alert.alert(
@@ -370,10 +392,15 @@ export default function ChatScreen() {
       return;
     }
     try {
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      await audioRecorder.prepareToRecordAsync();
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        interruptionMode: 'doNotMix',
+        shouldPlayInBackground: false,
+      });
+      await audioRecorder.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
       recorderPrepared.current = true;
-      audioRecorder.record({ forDuration: MAX_VOICE_SECONDS });
+      audioRecorder.record();
       recordingStartedAt.current = Date.now();
       setIsRecording(true);
       setStartingRecording(false);
@@ -403,8 +430,11 @@ export default function ChatScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: false,
-      quality: 1,
+      quality: 0.4,
       selectionLimit: 1,
+      exif: false,
+      preferredAssetRepresentationMode:
+        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
     const image = result.assets?.[0];
     if (!image || result.canceled) return;
@@ -427,17 +457,36 @@ export default function ChatScreen() {
       keyboardVerticalOffset={headerHeight}
       style={styles.safe}>
       <Stack.Screen options={{ title }} />
-      <View style={styles.threadBar}>
-          <Text style={styles.subtitle}>{subtitle}</Text>
-          {isGroup && !isAlertThread ? (
-            <Pressable
-              onPress={() => setEmergency((v) => !v)}
-              style={({ pressed }) => [styles.emergencyToggle, emergency && styles.emergencyToggleOn, pressed && styles.pressed]}>
-              <AlertsIcon color={emergency ? signal.white : signal.slate} size={14} />
-              <Text style={[styles.emergencyLabel, emergency && styles.emergencyLabelOn]}>Emergency</Text>
-            </Pressable>
-          ) : null}
-        </View>
+      {groupMembers.length > 0 ? (
+          <View style={styles.groupHeader}>
+            <AvatarStack
+              members={groupMembers.map((member) => ({
+                id: member.id,
+                name: member.label,
+                peerId: member.id,
+                icon: member.profile.icon,
+                color: member.profile.colorIndex,
+              }))}
+              size={36}
+            />
+            <Text numberOfLines={1} style={styles.memberNames}>
+              {groupMembers.map((member) => member.label).join(', ')}
+            </Text>
+            <View style={styles.groupMeta}>
+              <Text style={styles.groupSubtitle}>{subtitle}</Text>
+              <Pressable
+                onPress={() => setEmergency((v) => !v)}
+                style={({ pressed }) => [styles.emergencyToggle, emergency && styles.emergencyToggleOn, pressed && styles.pressed]}>
+                <AlertsIcon color={emergency ? signal.white : signal.slate} size={14} />
+                <Text style={[styles.emergencyLabel, emergency && styles.emergencyLabelOn]}>Emergency</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.threadBar}>
+            <Text style={styles.subtitle}>{subtitle}</Text>
+          </View>
+        )}
 
         <ScrollView
           contentContainerStyle={styles.messages}
@@ -468,10 +517,22 @@ export default function ChatScreen() {
                   : 'This phone is out of range. You can still type — it will queue.'}
             </Text>
           ) : (
-            rows.map(({ message, first, last }) => (
+            rows.map(({ message, first, last }) => {
+              const senderProfile = avatarForPeer(message.senderId, identity, noredPeers);
+              return (
               <View key={message.id} style={[styles.rowWrap, message.mine ? styles.rowWrapMine : styles.rowWrapTheirs, first && styles.rowSpaced]}>
                 {!message.mine ? (
-                  <View style={styles.avatarSlot}>{last ? <Avatar name={message.sender} size={26} /> : null}</View>
+                  <View style={styles.avatarSlot}>
+                    {last ? (
+                      <Avatar
+                        color={senderProfile.colorIndex}
+                        icon={senderProfile.icon}
+                        name={message.sender}
+                        peerId={message.senderId}
+                        size={26}
+                      />
+                    ) : null}
+                  </View>
                 ) : null}
                 <View style={[styles.column, message.mine && styles.columnMine]}>
                   {!message.mine && first ? <Text style={styles.sender}>{message.sender}</Text> : null}
@@ -489,7 +550,8 @@ export default function ChatScreen() {
                   ) : null}
                 </View>
               </View>
-            ))
+            );
+            })
           )}
         </ScrollView>
 
@@ -598,6 +660,34 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   subtitle: { color: signal.slate, flex: 1, fontSize: 13, lineHeight: 18, marginRight: 12 },
+  groupHeader: {
+    alignItems: 'center',
+    borderBottomColor: signal.fog,
+    borderBottomWidth: 1,
+    gap: 8,
+    paddingBottom: 14,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  memberNames: {
+    color: signal.ink,
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 18,
+    maxWidth: '100%',
+    textAlign: 'center',
+  },
+  groupMeta: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  groupSubtitle: {
+    color: signal.slate,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   emergencyToggle: {
     alignItems: 'center',
     backgroundColor: signal.white,

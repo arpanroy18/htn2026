@@ -9,7 +9,15 @@ import { formatThreadTime, isAlertThreadId, type ChatThread } from '@/mesh/chatS
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
-function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }) {
+function ThreadRow({
+  thread,
+  inRange,
+  peer,
+}: {
+  thread: ChatThread;
+  inRange: boolean;
+  peer?: { avatarIcon?: string; avatarColor?: number };
+}) {
   const unread = thread.unread > 0;
   const isGroup = thread.kind === 'group';
   return (
@@ -21,7 +29,14 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
         })
       }
       style={styles.row}>
-      <Avatar kind={isGroup ? 'group' : 'dm'} name={thread.name} size={52} />
+      <Avatar
+        color={peer?.avatarColor}
+        icon={peer?.avatarIcon}
+        kind={isGroup ? 'group' : 'dm'}
+        name={thread.name}
+        peerId={isGroup ? undefined : thread.peerId}
+        size={52}
+      />
       <View style={styles.main}>
         <View style={styles.titleRow}>
           <Text numberOfLines={1} style={[styles.name, unread && styles.nameUnread]}>
@@ -94,7 +109,12 @@ export default function ChatsScreen() {
                 <Text style={[styles.groupLabel, groups.length ? styles.spaced : null]}>DIRECT</Text>
                 <GroupedList>
                   {dms.map((thread) => (
-                    <ThreadRow inRange={inRange.has(thread.peerId)} key={thread.id} thread={thread} />
+                    <ThreadRow
+                      inRange={inRange.has(thread.peerId)}
+                      key={thread.id}
+                      peer={noredPeers.find((peer) => peer.id === thread.peerId)}
+                      thread={thread}
+                    />
                   ))}
                 </GroupedList>
               </>

@@ -12,7 +12,6 @@ export default function GamesScreen() {
     <Screen>
       <ScreenHeader title="Games" />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        <Text style={styles.groupLabel}>AVAILABLE</Text>
         <GroupedList>
           {mockGames.map((game) => (
             <RowPress
@@ -38,14 +37,6 @@ export default function GamesScreen() {
 
 const styles = StyleSheet.create({
   body: { gap: 8, paddingBottom: 36, paddingHorizontal: 24 },
-  groupLabel: {
-    color: signal.slate,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 1.4,
-    marginTop: 10,
-    marginBottom: 2,
-  },
   row: {
     alignItems: 'center',
     flexDirection: 'row',

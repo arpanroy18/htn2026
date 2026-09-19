@@ -6,6 +6,8 @@ export type Peer = {
   nored?: boolean;
   identityConfirmed?: boolean;
   replacesId?: string;
+  avatarIcon?: string;
+  avatarColor?: number;
 };
 
 type PacketBase = {
@@ -125,6 +127,8 @@ export type Packet =
 export type DeviceIdentity = {
   id: string;
   name: string;
+  avatarIcon?: string;
+  avatarColor?: number;
 };
 
 export type TransportState =

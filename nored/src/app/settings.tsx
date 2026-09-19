@@ -16,7 +16,13 @@ export default function SettingsScreen() {
     <SafeAreaView edges={['bottom']} style={styles.safe}>
       <ScrollView contentContainerStyle={styles.body}>
         <View style={styles.profile}>
-          <Avatar name={identity.name} size={64} />
+          <Avatar
+            color={identity.avatarColor}
+            icon={identity.avatarIcon}
+            name={identity.name}
+            peerId={identity.id}
+            size={64}
+          />
           <Text style={styles.name}>{identity.name}</Text>
           <Text style={styles.meta}>No account · Device ID {identity.id.slice(0, 8)}</Text>
         </View>

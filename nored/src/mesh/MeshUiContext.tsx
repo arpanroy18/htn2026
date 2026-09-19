@@ -14,7 +14,9 @@ function peersEqual(a: Peer, b: Peer) {
     a.name === b.name &&
     a.nored === b.nored &&
     a.identityConfirmed === b.identityConfirmed &&
-    a.rssi === b.rssi
+    a.rssi === b.rssi &&
+    a.avatarIcon === b.avatarIcon &&
+    a.avatarColor === b.avatarColor
   );
 }
 
@@ -72,6 +74,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
         nored: withoutReplaced[index].nored || peer.nored,
         identityConfirmed:
           withoutReplaced[index].identityConfirmed || peer.identityConfirmed,
+        avatarIcon: peer.avatarIcon ?? withoutReplaced[index].avatarIcon,
+        avatarColor: peer.avatarColor ?? withoutReplaced[index].avatarColor,
         replacesId: peer.replacesId ?? withoutReplaced[index].replacesId,
       };
       if (withoutReplaced === current && peersEqual(withoutReplaced[index], merged)) return current;
