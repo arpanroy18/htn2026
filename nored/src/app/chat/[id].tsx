@@ -28,9 +28,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
 import { Avatar, IconButton } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
+import { EMERGENCY_BROADCAST_ID, isEmergencyThreadId } from '@/mesh/alertStore';
 import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
-import type { ChatDelivery, ChatMessage } from '@/mesh/chatStore';
+import { formatMessageClock, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
 import { MAX_VOICE_SECONDS, VOICE_RECORDING_OPTIONS } from '@/mesh/mediaFiles';
 import { signal } from '@/theme/signal';
 
@@ -198,7 +199,7 @@ function groupMessages(items: ChatMessage[]): Row[] {
 export default function ChatScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; kind?: string }>();
   const { identity, noredPeers } = useMeshUi();
-  const { broadcastAlert } = useAlerts();
+  const { alerts, broadcastAlert } = useAlerts();
   const {
     threadFor,
     messagesFor,
@@ -212,21 +213,25 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const headerHeight = insets.top + 44;
   const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const isEmergencyChannel = isEmergencyThreadId(threadId);
   const thread = threadFor(threadId ?? '');
-  const title = thread?.name ?? params.title ?? 'Chat';
-  const isGroup = (thread?.kind ?? params.kind) === 'group';
+  const title = isEmergencyChannel ? 'EMERGENCY' : (thread?.name ?? params.title ?? 'Chat');
+  const isGroup = isEmergencyChannel || (thread?.kind ?? params.kind) === 'group';
   const memberIds = thread?.memberIds ?? [];
   const inRangeCount = memberIds.filter((id) =>
     id !== identity.id && noredPeers.some((peer) => peer.id === id && peer.identityConfirmed),
   ).length;
-  const inRange = isGroup
-    ? inRangeCount > 0
-    : noredPeers.some(
-        (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
-      );
+  const meshInRange = noredPeers.some((peer) => peer.identityConfirmed);
+  const inRange = isEmergencyChannel
+    ? meshInRange
+    : isGroup
+      ? inRangeCount > 0
+      : noredPeers.some(
+          (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
+        );
 
   const [draft, setDraft] = useState('');
-  const [emergency, setEmergency] = useState(false);
+  const [emergency, setEmergency] = useState(isEmergencyChannel);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [preparingMedia, setPreparingMedia] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -237,8 +242,25 @@ export default function ChatScreen() {
   const recordingStartedAt = useRef<number | null>(null);
   const recorderPrepared = useRef(false);
   const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
-  const items = messagesFor(threadId ?? '');
+  const chatItems = messagesFor(threadId ?? '');
+  const items = useMemo(() => {
+    if (!isEmergencyChannel) return chatItems;
+    return [...alerts]
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .map((item) => ({
+        id: item.id,
+        threadId: EMERGENCY_BROADCAST_ID,
+        senderId: item.senderId,
+        sender: item.sender,
+        mine: Boolean(item.mine),
+        kind: 'text' as const,
+        body: item.body,
+        time: formatMessageClock(item.timestamp),
+        timestamp: item.timestamp,
+      }));
+  }, [alerts, chatItems, isEmergencyChannel]);
   const rows = useMemo(() => groupMessages(items), [items]);
+  const sendAsEmergency = isEmergencyChannel || emergency;
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -256,11 +278,11 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (!threadId) return;
+    if (!threadId || isEmergencyChannel) return;
     if (!isGroup) openDm(threadId, title);
     markRead(threadId);
     return () => clearActive();
-  }, [clearActive, isGroup, markRead, openDm, threadId, title]);
+  }, [clearActive, isEmergencyChannel, isGroup, markRead, openDm, threadId, title]);
 
   useEffect(
     () => () => {
@@ -284,6 +306,11 @@ export default function ChatScreen() {
   }, [isRecording]);
 
   const subtitle = useMemo(() => {
+    if (isEmergencyChannel) {
+      return inRange
+        ? 'Broadcasts to every reachable phone on the mesh'
+        : 'No phones in range · follow-ups still go out when someone appears';
+    }
     if (isGroup) {
       const total = Math.max(memberIds.length, 1);
       if (!inRange) return `${total} members · out of range · will queue`;
@@ -291,14 +318,20 @@ export default function ChatScreen() {
     }
     if (!inRange) return 'Out of range · will queue until they reappear';
     return '1:1 · Bluetooth';
-  }, [inRange, inRangeCount, isGroup, memberIds.length]);
+  }, [inRange, inRangeCount, isEmergencyChannel, isGroup, memberIds.length]);
 
   const send = () => {
     const body = draft.trim();
     if (!body || !threadId) return;
     setDraft('');
-    if (emergency) {
-      void broadcastAlert({ body, severity: 'HELP' });
+    if (sendAsEmergency) {
+      void (async () => {
+        const result = await broadcastAlert({ body, severity: 'HELP' });
+        if (!result.ok) {
+          setDraft(body);
+          Alert.alert('Could not broadcast', result.error);
+        }
+      })();
       return;
     }
     void sendText(threadId, body);
@@ -411,7 +444,7 @@ export default function ChatScreen() {
       <Stack.Screen options={{ title }} />
       <View style={styles.threadBar}>
           <Text style={styles.subtitle}>{subtitle}</Text>
-          {isGroup ? (
+          {isGroup && !isEmergencyChannel ? (
             <Pressable
               onPress={() => setEmergency((v) => !v)}
               style={({ pressed }) => [styles.emergencyToggle, emergency && styles.emergencyToggleOn, pressed && styles.pressed]}>
@@ -428,7 +461,9 @@ export default function ChatScreen() {
           showsVerticalScrollIndicator={false}>
           {rows.length === 0 ? (
             <Text style={styles.empty}>
-              {isGroup
+              {isEmergencyChannel
+                ? 'Follow-ups here flood to every reachable phone, same as the original alert.'
+                : isGroup
                 ? inRange
                   ? 'Group is live on the mesh. Send a text.'
                   : 'No members in range. You can still type — it will queue.'
@@ -465,10 +500,10 @@ export default function ChatScreen() {
         <View
           style={[
             styles.composer,
-            emergency && styles.composerEmergency,
+            sendAsEmergency && styles.composerEmergency,
             { paddingBottom: keyboardVisible ? 10 : Math.max(insets.bottom, 10) },
           ]}>
-          {emergency ? (
+          {sendAsEmergency ? (
             <Text style={styles.emergencyHint}>Sends as an EMERGENCY broadcast to every reachable phone</Text>
           ) : null}
           {isRecording || startingRecording ? (
@@ -499,20 +534,22 @@ export default function ChatScreen() {
             </View>
           ) : (
             <View style={styles.composerRow}>
-              <IconButton onPress={() => void chooseImage()} tone="outline">
-                <PlusIcon color={signal.blue} size={16} />
-              </IconButton>
+              {isEmergencyChannel ? null : (
+                <IconButton onPress={() => void chooseImage()} tone="outline">
+                  <PlusIcon color={signal.blue} size={16} />
+                </IconButton>
+              )}
               <View style={styles.inputPill}>
                 <TextInput
                   accessibilityLabel="Message"
                   editable={!preparingMedia}
-                  maxLength={emergency ? 280 : 2000}
+                  maxLength={sendAsEmergency ? 280 : 2000}
                   multiline
                   onChangeText={setDraft}
                   placeholder={
                     preparingMedia
                       ? 'Preparing media…'
-                      : emergency
+                      : sendAsEmergency
                         ? 'Emergency broadcast'
                         : 'Message'
                   }
@@ -520,7 +557,7 @@ export default function ChatScreen() {
                   style={styles.input}
                   value={draft}
                 />
-                {!draft.trim() ? (
+                {!draft.trim() && !isEmergencyChannel ? (
                   <Pressable
                     accessibilityLabel="Choose image"
                     accessibilityRole="button"
@@ -535,7 +572,7 @@ export default function ChatScreen() {
                   </Pressable>
                 ) : null}
               </View>
-              {draft.trim() ? (
+              {draft.trim() || isEmergencyChannel ? (
                 <IconButton onPress={send} tone="outline">
                   <SendIcon color={signal.blue} size={16} />
                 </IconButton>

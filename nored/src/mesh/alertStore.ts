@@ -22,6 +22,11 @@ export const ALERT_RATE_LIMIT_MS = 5000;
 export const ALERT_TTL_HOPS = 10;
 export const EMERGENCY_BROADCAST_ID = 'emergency-broadcast';
 
+export function isEmergencyThreadId(threadId: string | undefined) {
+  if (!threadId) return false;
+  return threadId === EMERGENCY_BROADCAST_ID || threadId.startsWith('alert-');
+}
+
 export function isAlertPinned(severity: Severity) {
   return severity === 'DANGER' || severity === 'HELP';
 }

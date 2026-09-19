@@ -6,7 +6,7 @@ import { AlertsIcon, PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
-import { type AlertItem, severityTone } from '@/mesh/alertStore';
+import { EMERGENCY_BROADCAST_ID, type AlertItem, severityTone } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
 
 function AlertRow({ item }: { item: AlertItem }) {
@@ -15,7 +15,7 @@ function AlertRow({ item }: { item: AlertItem }) {
       onPress={() =>
         router.push({
           pathname: '/chat/[id]',
-          params: { id: `alert-${item.id}`, title: 'EMERGENCY', kind: 'group' },
+          params: { id: EMERGENCY_BROADCAST_ID, title: 'EMERGENCY', kind: 'group' },
         })
       }
       style={styles.row}>
