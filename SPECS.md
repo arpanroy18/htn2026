@@ -124,3 +124,37 @@ Acceptance:
 - 2 phones, airplane mode + BT on: discover, DM text, voice, image.
 - 3 phones in line (A—B—C, A/C out of direct range): A broadcasts, C receives via B.
 - Airplane mode transcription + translation demo.
+
+## 10. Bluetooth Games
+
+### Purpose
+Leverage the peer-to-peer Bluetooth mesh to enable low-bandwidth multiplayer games during downtime or in scenarios with no internet—engaging, stress-relieving, icebreaker, or morale-boost activities for event attendees or first responders.
+
+### MVP Game Proposals
+
+- **"Mesh Ping"**: Simple latency/mesh reliability checker—users attempt to "pass" a ping or virtual baton around the mesh, with a leaderboard showing round-trip timing and how many hops it took. Visualizes mesh health in a fun way.
+- **Trivia Relay**: Group or peer-to-peer quiz questions, where questions and answers are relayed with acknowledgments. Multiple choice or true/false, results shown when mesh is rejoined if temporarily offline.
+- **Drawing Telephone**: Each peer receives and modifies a doodle; the result is shown at the end. Low-bandwidth by sending compressed bitmap or vector deltas.
+- **Word Chain**: Each participant adds a word to a story or chain (e.g., classic "word association"), relayed through the mesh and reconstructed as a group activity.
+- **Find the Beacon**: One user acts as "it"; others hunt by RSSI signal strength as a hot/cold indicator, useful as both a game and a test of mesh proximity/distance features.
+
+### Requirements
+
+- All game messages/operations happen offline over mesh/BLE, no central server.
+- Minimal data per move; broadcast or specifically relayed as required by game logic.
+- Works across platforms (iOS + Android) with the same mesh engine.
+- Game logic designed to tolerate out-of-order, delayed, or repeated packets.
+- Participation is opt-in, with dedicated "Games" tab or button to avoid accidental joins.
+
+### Stretch/Ideas
+
+- Support custom community mini-games via simple scripting or templates.
+- Allow lightweight badge/achievement system for game participation, stored locally.
+- Games should pause and resume cleanly if connection drops or app backgrounded.
+
+### Out of Scope (for MVP)
+
+- Real-time, low-latency action games.
+- Games requiring heavy assets or large visuals.
+
+---
