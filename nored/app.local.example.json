@@ -1,0 +1,6 @@
+{
+  "ios": {
+    "bundleIdentifier": "com.yourname.nored",
+    "appleTeamId": "YOURTEAMID"
+  }
+}
