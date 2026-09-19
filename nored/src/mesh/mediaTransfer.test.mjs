@@ -42,6 +42,23 @@ describe('media packet validation', () => {
       }),
       true,
     );
+    assert.equal(
+      isPacket({
+        version: 1,
+        id: 'sync-1',
+        senderId: 'sender',
+        recipientId: 'group-1',
+        groupId: 'group-1',
+        type: 'group-sync',
+        timestamp: 100,
+        name: 'Hallway Ops',
+        members: [
+          { id: 'sender', name: 'Ada' },
+          { id: 'recipient', name: 'Taylor' },
+        ],
+      }),
+      true,
+    );
     assert.equal(isPacket({ ...manifest(), chunkCount: 0 }), false);
     assert.equal(isPacket({ ...manifest(), type: 'unknown' }), false);
   });

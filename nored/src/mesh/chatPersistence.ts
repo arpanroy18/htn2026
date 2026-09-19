@@ -1,6 +1,6 @@
 import { File, Paths } from 'expo-file-system';
 
-import { emptyChatState, type ChatState } from './chatStore';
+import { emptyChatState, normalizeChatState, type ChatState } from './chatStore';
 
 function chatStateFile() {
   return new File(Paths.document, 'nored-chat-state.json');
@@ -14,7 +14,7 @@ export async function loadChatState(): Promise<ChatState> {
     if (!parsed || !Array.isArray(parsed.threads) || !parsed.messages) {
       return emptyChatState;
     }
-    return parsed;
+    return normalizeChatState(parsed);
   } catch {
     return emptyChatState;
   }

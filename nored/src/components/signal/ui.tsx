@@ -175,18 +175,21 @@ export function RowPress({
   children,
   onPress,
   onLongPress,
+  disabled,
   style,
 }: {
   children: ReactNode;
   onPress?: () => void;
   onLongPress?: () => void;
+  disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 } & Pick<PressableProps, 'onPress'>) {
   return (
     <Pressable
+      disabled={disabled}
       onLongPress={onLongPress}
       onPress={onPress}
-      style={({ pressed }) => [style, pressed && styles.rowPressed]}>
+      style={({ pressed }) => [style, pressed && styles.rowPressed, disabled && styles.disabled]}>
       {children}
     </Pressable>
   );

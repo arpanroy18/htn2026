@@ -11,16 +11,17 @@ import { signal } from '@/theme/signal';
 
 function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }) {
   const unread = thread.unread > 0;
+  const isGroup = thread.kind === 'group';
   return (
     <RowPress
       onPress={() =>
         router.push({
           pathname: '/chat/[id]',
-          params: { id: thread.id, title: thread.name, kind: 'dm' },
+          params: { id: thread.id, title: thread.name, kind: thread.kind },
         })
       }
       style={styles.row}>
-      <Avatar kind="dm" name={thread.name} size={52} />
+      <Avatar kind={isGroup ? 'group' : 'dm'} name={thread.name} size={52} />
       <View style={styles.main}>
         <View style={styles.titleRow}>
           <Text numberOfLines={1} style={[styles.name, unread && styles.nameUnread]}>
@@ -47,10 +48,15 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
 
 export default function ChatsScreen() {
   const { threads } = useChat();
-  const { noredPeers } = useMeshUi();
+  const { identity, noredPeers } = useMeshUi();
   const inRange = new Set(
     noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
   );
+  const groups = threads.filter((thread) => thread.kind === 'group');
+  const dms = threads.filter((thread) => thread.kind !== 'group');
+
+  const groupInRange = (thread: ChatThread) =>
+    thread.memberIds.some((id) => id !== identity.id && inRange.has(id));
 
   return (
     <Screen>
@@ -67,17 +73,31 @@ export default function ChatsScreen() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>
-              Tap a Nored phone on Nearby to start a chat. Text, photos, and voice notes travel over Bluetooth and queue if the other phone drops out of range.
+              Tap a Nored phone on Nearby to start a chat, or create a group. Text, photos, and voice notes travel over Bluetooth and queue if nobody is in range.
             </Text>
           </View>
         ) : (
           <>
-            <Text style={styles.groupLabel}>DIRECT</Text>
-            <GroupedList>
-              {threads.map((thread) => (
-                <ThreadRow inRange={inRange.has(thread.peerId)} key={thread.id} thread={thread} />
-              ))}
-            </GroupedList>
+            {groups.length ? (
+              <>
+                <Text style={styles.groupLabel}>GROUPS</Text>
+                <GroupedList>
+                  {groups.map((thread) => (
+                    <ThreadRow inRange={groupInRange(thread)} key={thread.id} thread={thread} />
+                  ))}
+                </GroupedList>
+              </>
+            ) : null}
+            {dms.length ? (
+              <>
+                <Text style={[styles.groupLabel, groups.length ? styles.spaced : null]}>DIRECT</Text>
+                <GroupedList>
+                  {dms.map((thread) => (
+                    <ThreadRow inRange={inRange.has(thread.peerId)} key={thread.id} thread={thread} />
+                  ))}
+                </GroupedList>
+              </>
+            ) : null}
           </>
         )}
       </ScrollView>
@@ -94,6 +114,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     marginBottom: 6,
   },
+  spaced: { marginTop: 16 },
   row: {
     alignItems: 'center',
     flexDirection: 'row',

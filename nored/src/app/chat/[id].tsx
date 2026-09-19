@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
 import { Avatar, IconButton } from '@/components/signal/ui';
+import { useAlerts } from '@/mesh/AlertContext';
 import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import type { ChatDelivery, ChatMessage } from '@/mesh/chatStore';
@@ -196,7 +197,8 @@ function groupMessages(items: ChatMessage[]): Row[] {
 
 export default function ChatScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; kind?: string }>();
-  const { noredPeers } = useMeshUi();
+  const { identity, noredPeers } = useMeshUi();
+  const { broadcastAlert } = useAlerts();
   const {
     threadFor,
     messagesFor,
@@ -212,11 +214,16 @@ export default function ChatScreen() {
   const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
   const thread = threadFor(threadId ?? '');
   const title = thread?.name ?? params.title ?? 'Chat';
-  const kind = params.kind ?? thread?.kind ?? 'dm';
-  const isGroup = kind === 'group';
-  const inRange = noredPeers.some(
-    (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
-  );
+  const isGroup = (thread?.kind ?? params.kind) === 'group';
+  const memberIds = thread?.memberIds ?? [];
+  const inRangeCount = memberIds.filter((id) =>
+    id !== identity.id && noredPeers.some((peer) => peer.id === id && peer.identityConfirmed),
+  ).length;
+  const inRange = isGroup
+    ? inRangeCount > 0
+    : noredPeers.some(
+        (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
+      );
 
   const [draft, setDraft] = useState('');
   const [emergency, setEmergency] = useState(false);
@@ -249,8 +256,8 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (!threadId || isGroup) return;
-    openDm(threadId, title);
+    if (!threadId) return;
+    if (!isGroup) openDm(threadId, title);
     markRead(threadId);
     return () => clearActive();
   }, [clearActive, isGroup, markRead, openDm, threadId, title]);
@@ -277,15 +284,23 @@ export default function ChatScreen() {
   }, [isRecording]);
 
   const subtitle = useMemo(() => {
-    if (isGroup) return 'Groups are still local — Bluetooth text is 1:1 for now';
+    if (isGroup) {
+      const total = Math.max(memberIds.length, 1);
+      if (!inRange) return `${total} members · out of range · will queue`;
+      return `${total} members · ${inRangeCount} in range · Bluetooth`;
+    }
     if (!inRange) return 'Out of range · will queue until they reappear';
     return '1:1 · Bluetooth';
-  }, [inRange, isGroup]);
+  }, [inRange, inRangeCount, isGroup, memberIds.length]);
 
   const send = () => {
     const body = draft.trim();
-    if (!body || !threadId || isGroup) return;
+    if (!body || !threadId) return;
     setDraft('');
+    if (emergency) {
+      void broadcastAlert({ body, severity: 'HELP' });
+      return;
+    }
     void sendText(threadId, body);
   };
 
@@ -328,7 +343,7 @@ export default function ChatScreen() {
   );
 
   const startRecording = async () => {
-    if (!threadId || isGroup || preparingMedia || isRecording || startingRecording) return;
+    if (!threadId || preparingMedia || isRecording || startingRecording) return;
     setStartingRecording(true);
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) {
@@ -361,7 +376,7 @@ export default function ChatScreen() {
   };
 
   const chooseImage = async () => {
-    if (!threadId || isGroup || preparingMedia || isRecording || startingRecording) return;
+    if (!threadId || preparingMedia || isRecording || startingRecording) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Photos permission needed', 'Allow photo access to send an image.');
@@ -414,7 +429,9 @@ export default function ChatScreen() {
           {rows.length === 0 ? (
             <Text style={styles.empty}>
               {isGroup
-                ? 'Group mesh send is not wired yet.'
+                ? inRange
+                  ? 'Group is live on the mesh. Send a text.'
+                  : 'No members in range. You can still type — it will queue.'
                 : inRange
                   ? 'Bluetooth is linked. Send a text.'
                   : 'This phone is out of range. You can still type — it will queue.'}
@@ -452,7 +469,7 @@ export default function ChatScreen() {
             { paddingBottom: keyboardVisible ? 10 : Math.max(insets.bottom, 10) },
           ]}>
           {emergency ? (
-            <Text style={styles.emergencyHint}>Emergency broadcasts are not sent over the mesh yet</Text>
+            <Text style={styles.emergencyHint}>Sends as an EMERGENCY broadcast to every reachable phone</Text>
           ) : null}
           {isRecording || startingRecording ? (
             <View style={styles.recordingRow}>
@@ -488,12 +505,16 @@ export default function ChatScreen() {
               <View style={styles.inputPill}>
                 <TextInput
                   accessibilityLabel="Message"
-                  editable={!isGroup && !preparingMedia}
-                  maxLength={2000}
+                  editable={!preparingMedia}
+                  maxLength={emergency ? 280 : 2000}
                   multiline
                   onChangeText={setDraft}
                   placeholder={
-                    isGroup ? 'Groups coming later' : preparingMedia ? 'Preparing media…' : 'Message'
+                    preparingMedia
+                      ? 'Preparing media…'
+                      : emergency
+                        ? 'Emergency broadcast'
+                        : 'Message'
                   }
                   placeholderTextColor={signal.slate}
                   style={styles.input}

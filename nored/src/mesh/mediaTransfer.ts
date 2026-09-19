@@ -66,6 +66,9 @@ export function splitMediaBytes(input: {
       id: `${input.manifest.id}:chunk:${sequence}`,
       senderId: input.manifest.senderId,
       recipientId: input.manifest.recipientId,
+      groupId: input.manifest.groupId,
+      hops: input.manifest.hops,
+      ttlHops: input.manifest.ttlHops,
       type: 'media-chunk',
       timestamp: input.manifest.timestamp,
       transferId: input.manifest.id,
@@ -169,6 +172,20 @@ export function isPacket(value: unknown): value is Packet {
         (packet.severity === 'INFO' ||
           packet.severity === 'HELP' ||
           packet.severity === 'DANGER')
+      );
+    case 'group-sync':
+      return (
+        typeof packet.groupId === 'string' &&
+        packet.groupId.length > 0 &&
+        typeof packet.name === 'string' &&
+        packet.name.trim().length > 0 &&
+        Array.isArray((packet as { members?: unknown }).members) &&
+        (packet as { members: unknown[] }).members.length > 0 &&
+        (packet as { members: unknown[] }).members.every((member) => {
+          if (!member || typeof member !== 'object') return false;
+          const entry = member as { id?: unknown; name?: unknown };
+          return typeof entry.id === 'string' && entry.id.length > 0 && typeof entry.name === 'string';
+        })
       );
     default:
       return false;

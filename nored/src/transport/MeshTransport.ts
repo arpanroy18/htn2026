@@ -14,11 +14,26 @@ type PacketBase = {
   senderId: string;
   recipientId: string;
   timestamp: number;
+  groupId?: string;
+  hops?: number;
+  ttlHops?: number;
 };
 
 export type TextPacket = PacketBase & {
   type: 'text';
   payload: string;
+};
+
+export type GroupMember = {
+  id: string;
+  name: string;
+};
+
+export type GroupSyncPacket = PacketBase & {
+  type: 'group-sync';
+  groupId: string;
+  name: string;
+  members: GroupMember[];
 };
 
 export type MediaKind = 'image' | 'audio';
@@ -67,6 +82,7 @@ export type AlertPacket = PacketBase & {
 
 export type Packet =
   | TextPacket
+  | GroupSyncPacket
   | MediaManifestPacket
   | MediaChunkPacket
   | MediaAckPacket
