@@ -27,8 +27,16 @@ export class RouterStore {
   constructor(persistence: Persistence) { this.persistence = persistence; }
   async init() { this.data = await this.persistence.load() ?? emptyData(); }
   subscribe(callback: () => void) { this.listeners.add(callback); return () => { this.listeners.delete(callback); }; }
-  transaction(change: (draft: RouterData) => void): Promise<void> {
+  transaction(change: (draft: RouterData) => void, persist = true): Promise<void> {
     const work = this.tail.then(async () => {
+      if (!persist) {
+        const draft: RouterData = { ...this.data };
+        change(draft);
+        if (draft === this.data) return;
+        this.data = draft;
+        for (const listener of this.listeners) listener();
+        return;
+      }
       const draft: RouterData = JSON.parse(JSON.stringify(this.data));
       change(draft);
       if (JSON.stringify(draft) === JSON.stringify(this.data)) return;

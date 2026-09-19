@@ -114,13 +114,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const meshRouter = useRouterService();
   const data = useRouterData();
   const state = data.chat;
-  const setState = useCallback((change: (current: ChatState) => ChatState) => {
+  const setState = useCallback((change: (current: ChatState) => ChatState, persist = true) => {
     const epoch = meshRouter.epoch;
     const result = meshRouter.store.transaction((draft) => {
       if (epoch !== meshRouter.epoch) return;
       draft.chat = change(draft.chat);
       stateRef.current = draft.chat;
-    });
+    }, persist);
     void result.catch((error) => console.warn('[STORE]', error instanceof Error ? error.message : 'Write failed'));
     return result;
   }, [meshRouter]);
@@ -339,6 +339,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         if (!onlySequences) {
           setState((current) =>
             patchMessage(current, threadId, manifest.id, { transferProgress: 0, transferError: undefined }),
+            false,
           );
           await sendPacket(peerId, manifest);
         }
@@ -352,6 +353,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 transferProgress: (index + 1) / Math.max(1, chunks.length),
                 transferError: undefined,
               }),
+              false,
             );
           }
         }
@@ -600,10 +602,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         // Flooding re-delivers chunks constantly; only write when progress moved.
         if (received === before && !complete) return;
         const chunkThreadId = mediaThreadId(transfer.manifest, packet.senderId);
-        setState((current) =>
-          patchMessage(current, chunkThreadId, packet.transferId, {
-            transferProgress: received / transfer.manifest.chunkCount,
-          }),
+        setState(
+          (current) =>
+            patchMessage(current, chunkThreadId, packet.transferId, {
+              transferProgress: received / transfer.manifest.chunkCount,
+            }),
+          false,
         );
         if (!complete) return;
         try {

@@ -431,7 +431,7 @@ public final class NoredBluetoothModule: Module {
     )
     let tx = CBMutableCharacteristic(
       type: txUUID,
-      properties: [.notify],
+      properties: [.indicate],
       value: nil,
       permissions: []
     )
@@ -914,6 +914,9 @@ public final class NoredBluetoothModule: Module {
   }
 
   public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
+    if sending, sendQueue.first?.writePeripheral == nil {
+      sending = false
+    }
     publishIdentityUpdate()
     pumpSend()
   }
@@ -1057,27 +1060,20 @@ public final class NoredBluetoothModule: Module {
     }
     let frame = current.frames[current.index]
     sending = true
+    if let peripheral = sendQueue.first?.writePeripheral, let characteristic = sendQueue.first?.writeCharacteristic {
+      armSendTimeout(peerId: current.peerId, frameIndex: current.index)
+      peripheral.writeValue(frame, for: characteristic, type: .withResponse)
+      return
+    }
     if let tx = txCharacteristic, let central = current.notifyCentral {
       let ok = peripheralManager?.updateValue(frame, for: tx, onSubscribedCentrals: [central]) ?? false
       if ok {
         finishCurrentFrame()
         return
       }
-      sendQueue[0].retryCount += 1
-      if sendQueue[0].retryCount <= 3 {
-        sending = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-          self?.pumpSend()
-        }
-        return
-      }
-      sendQueue[0].notifyCentral = nil
-      sendQueue[0].retryCount = 0
-      log("warn", "[MSG] notify path failed, retrying over write")
-    }
-    if let peripheral = sendQueue.first?.writePeripheral, let characteristic = sendQueue.first?.writeCharacteristic {
+      sending = false
       armSendTimeout(peerId: current.peerId, frameIndex: current.index)
-      peripheral.writeValue(frame, for: characteristic, type: .withResponse)
+      log("warn", "[MSG] indicate queue full, waiting to retry")
       return
     }
     failCurrentSend("Peer is not connected over Bluetooth.")
@@ -1197,14 +1193,9 @@ public final class NoredBluetoothModule: Module {
     let part = data.subdata(in: 3..<data.count)
     let now = Date().timeIntervalSince1970 * 1000
     var assembler = assemblers[peerId]
-    if let existing = assembler, existing.total != total {
-      if seq == 0, total == 1, let packet = String(data: part, encoding: .utf8) {
-        sendEvent("onPacketReceived", ["peerId": peerId, "packet": packet])
-        return
-      }
+    let stale = assembler.map { now - $0.startedAt > 2_500 } ?? false
+    if seq == 0 || assembler == nil || assembler?.total != total || stale {
       guard seq == 0 else { return }
-      assembler = FrameAssembler(total: total, parts: [:], startedAt: now)
-    } else if assembler == nil {
       assembler = FrameAssembler(total: total, parts: [:], startedAt: now)
     }
     assembler!.parts[seq] = part

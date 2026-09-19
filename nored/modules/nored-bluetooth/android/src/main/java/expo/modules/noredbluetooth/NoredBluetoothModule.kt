@@ -109,6 +109,7 @@ class NoredBluetoothModule : Module() {
   private val assemblers = ConcurrentHashMap<String, FrameAssembler>()
   private val serverDevices = ConcurrentHashMap<String, BluetoothDevice>()
   private val subscribedAddresses = ConcurrentHashMap.newKeySet<String>()
+  private val indicateAddresses = ConcurrentHashMap.newKeySet<String>()
   private val identitySubscribedAddresses = ConcurrentHashMap.newKeySet<String>()
   private val clientMtuByAddress = ConcurrentHashMap<String, Int>()
   private val serverMtuByAddress = ConcurrentHashMap<String, Int>()
@@ -360,7 +361,7 @@ class NoredBluetoothModule : Module() {
     )
     val tx = BluetoothGattCharacteristic(
       TX_UUID,
-      BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+      BluetoothGattCharacteristic.PROPERTY_INDICATE,
       BluetoothGattCharacteristic.PERMISSION_READ,
     )
     tx.addDescriptor(
@@ -513,6 +514,7 @@ class NoredBluetoothModule : Module() {
     writeBusy.clear()
     serverDevices.clear()
     subscribedAddresses.clear()
+    indicateAddresses.clear()
     identitySubscribedAddresses.clear()
     clientMtuByAddress.clear()
     serverMtuByAddress.clear()
@@ -731,10 +733,10 @@ class NoredBluetoothModule : Module() {
       if (descriptor == null) {
         readIdentity(gatt, identity)
       } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        gatt.writeDescriptor(descriptor, cccdEnableValue(tx))
       } else {
         @Suppress("DEPRECATION")
-        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        descriptor.value = cccdEnableValue(tx)
         @Suppress("DEPRECATION")
         gatt.writeDescriptor(descriptor)
       }
@@ -855,6 +857,7 @@ class NoredBluetoothModule : Module() {
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         serverDevices.remove(device.address)
         subscribedAddresses.remove(device.address)
+        indicateAddresses.remove(device.address)
         identitySubscribedAddresses.remove(device.address)
         serverMtuByAddress.remove(device.address)
         log("info", "[CONNECTION] central disconnected ${device.address}")
@@ -920,9 +923,21 @@ class NoredBluetoothModule : Module() {
       value: ByteArray?,
     ) {
       if (descriptor.uuid == CCCD_UUID) {
-        val enabled = value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        val enabled = cccdEnabled(value)
         when (descriptor.characteristic.uuid) {
-          TX_UUID -> if (enabled) subscribedAddresses.add(device.address) else subscribedAddresses.remove(device.address)
+          TX_UUID -> {
+            if (enabled) {
+              subscribedAddresses.add(device.address)
+              if (value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)) {
+                indicateAddresses.add(device.address)
+              } else {
+                indicateAddresses.remove(device.address)
+              }
+            } else {
+              subscribedAddresses.remove(device.address)
+              indicateAddresses.remove(device.address)
+            }
+          }
           IDENTITY_UUID -> if (enabled) {
             identitySubscribedAddresses.add(device.address)
             identityNotifyQueue.add(device)
@@ -1184,20 +1199,26 @@ class NoredBluetoothModule : Module() {
     }
     val frame = job.frames[job.index]
     sending = true
+    val address = job.address
+    if (address != null) {
+      enqueueWrite(address, frame, packet = true)
+      return
+    }
     if (job.serverDevice != null && txCharacteristic != null) {
       val device = job.serverDevice
       val tx = txCharacteristic
+      val confirm = true
       val notified = try {
         if (device == null || tx == null) {
           false
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-          gattServer?.notifyCharacteristicChanged(device, tx, false, frame) ==
+          gattServer?.notifyCharacteristicChanged(device, tx, confirm, frame) ==
             BluetoothStatusCodes.SUCCESS
         } else {
           @Suppress("DEPRECATION")
           tx.value = frame
           @Suppress("DEPRECATION")
-          gattServer?.notifyCharacteristicChanged(device, tx, false) == true
+          gattServer?.notifyCharacteristicChanged(device, tx, confirm) == true
         }
       } catch (_: Exception) {
         false
@@ -1208,11 +1229,6 @@ class NoredBluetoothModule : Module() {
       }
       log("warn", "[MSG] notify path failed, retrying over write")
       job.serverDevice = null
-    }
-    val address = job.address
-    if (address != null) {
-      enqueueWrite(address, frame, packet = true)
-      return
     }
     failCurrentSend("Peer is not connected over Bluetooth.")
   }
@@ -1353,21 +1369,9 @@ class NoredBluetoothModule : Module() {
     val part = data.copyOfRange(3, data.size)
     val now = System.currentTimeMillis()
     var assembler = assemblers[peerId]
-    if (assembler != null && assembler.total != total) {
-      if (seq == 0 && total == 1) {
-        val packet = try {
-          String(part, StandardCharsets.UTF_8)
-        } catch (_: Exception) {
-          return
-        }
-        mainHandler.post {
-          sendEvent("onPacketReceived", mapOf("peerId" to peerId, "packet" to packet))
-        }
-        return
-      }
+    val stale = assembler != null && now - assembler.startedAt > 2_500L
+    if (seq == 0 || assembler == null || assembler.total != total || stale) {
       if (seq != 0) return
-      assembler = FrameAssembler(total, mutableMapOf(), now)
-    } else if (assembler == null) {
       assembler = FrameAssembler(total, mutableMapOf(), now)
     }
     val current = assembler ?: return
@@ -1391,6 +1395,19 @@ class NoredBluetoothModule : Module() {
     } else {
       assemblers[peerId] = current
     }
+  }
+
+  private fun cccdEnableValue(characteristic: BluetoothGattCharacteristic): ByteArray {
+    return if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) {
+      BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+    } else {
+      BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+    }
+  }
+
+  private fun cccdEnabled(value: ByteArray?): Boolean {
+    return value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ||
+      value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
   }
 
   private fun sanitizeRssi(raw: Int?): Int? {
