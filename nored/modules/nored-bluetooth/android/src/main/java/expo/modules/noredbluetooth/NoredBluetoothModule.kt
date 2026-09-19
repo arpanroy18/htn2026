@@ -53,7 +53,8 @@ private const val AVATAR_ICON = "avatar_icon"
 private const val AVATAR_COLOR = "avatar_color"
 private val AVATAR_ICONS = listOf("nearby", "chats", "alerts", "games", "gear", "mic", "image", "send")
 private const val AVATAR_COLOR_COUNT = 9
-private const val STALE_PEER_MS = 20_000L
+private const val STALE_PEER_MS = 45_000L
+private const val STALE_BLUETOOTH_PEER_MS = 90_000L
 private const val PACKET_MAGIC: Byte = 0x4E
 private const val MAX_CONNECTIONS = 6
 
@@ -122,6 +123,7 @@ class NoredBluetoothModule : Module() {
   private var identityNotifyInFlight = false
   private var identityPushPending = false
   private var started = false
+  private var scannerRunning = false
   private var receiverRegistered = false
   private var keepAliveTicks = 0
 
@@ -293,15 +295,20 @@ class NoredBluetoothModule : Module() {
   }
 
   @SuppressLint("MissingPermission")
-  private fun startScannerOnly() {
+  private fun startScannerOnly(restart: Boolean = false) {
     if (!started || !hasPermissions() || adapter?.isEnabled != true) return
     val scanner = adapter?.bluetoothLeScanner ?: run {
       emitState("unsupported")
       return
     }
+    if (scannerRunning && !restart) {
+      emitState("running")
+      return
+    }
     try {
       scanner.stopScan(scanCallback)
       scanner.stopScan(noredScanCallback)
+      scannerRunning = false
       val settings = ScanSettings.Builder()
         .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
         .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -311,12 +318,15 @@ class NoredBluetoothModule : Module() {
       scanner.startScan(null, settings, scanCallback)
       val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
       scanner.startScan(listOf(filter), settings, noredScanCallback)
+      scannerRunning = true
       log("info", "[BLE] scanner started")
       emitState("running")
     } catch (error: SecurityException) {
+      scannerRunning = false
       emitState("unauthorized")
       log("error", "[ERROR] scanner permission denied")
     } catch (error: Exception) {
+      scannerRunning = false
       log("error", "[ERROR] scanner failed: ${error.javaClass.simpleName}")
     }
   }
@@ -428,6 +438,7 @@ class NoredBluetoothModule : Module() {
       if (hasPermissions()) {
         adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         adapter?.bluetoothLeScanner?.stopScan(noredScanCallback)
+        scannerRunning = false
       }
     } catch (_: Exception) {}
     stopAdvertiser()
@@ -516,9 +527,10 @@ class NoredBluetoothModule : Module() {
   private val cleanupPeers = object : Runnable {
     override fun run() {
       if (!started) return
-      val cutoff = System.currentTimeMillis() - STALE_PEER_MS
+      val now = System.currentTimeMillis()
       peers.values.filter {
-        it.lastSeen < cutoff &&
+        val ttl = if (it.nored) STALE_PEER_MS else STALE_BLUETOOTH_PEER_MS
+        it.lastSeen < now - ttl &&
           !gatts.containsKey(it.address) &&
           serverDevices.values.none { device -> device.address == it.address }
       }.forEach {
@@ -530,7 +542,9 @@ class NoredBluetoothModule : Module() {
       val assemblerCutoff = System.currentTimeMillis() - 10_000L
       assemblers.entries.removeAll { it.value.startedAt < assemblerCutoff }
       keepAliveTicks += 1
-      if (keepAliveTicks % 2 == 0) {
+      if (keepAliveTicks % 12 == 0) {
+        startScannerOnly(restart = true)
+      } else {
         startScannerOnly()
       }
       if (keepAliveTicks % 6 == 0 && !sending) {
@@ -564,6 +578,8 @@ class NoredBluetoothModule : Module() {
       if (isNored && it.equals("Unknown device", ignoreCase = true)) "Nored user" else it
     }
     val nameChanged = existing != null && displayName != existing.name
+    val bucketChanged = signalBucket(sanitizeRssi(result.rssi) ?: existing?.rssi) != signalBucket(existing?.rssi)
+    val noredChanged = existing?.nored != isNored
     val record = PeerRecord(
       id = peerId,
       name = displayName,
@@ -578,8 +594,7 @@ class NoredBluetoothModule : Module() {
     }
     peers[peerId] = record
     addressToPeerId[address] = peerId
-    val last = lastEmitAt[peerId] ?: 0L
-    if (!alreadyNored && isNored || nameChanged || now - last >= 1_000L) {
+    if (existing == null || noredChanged || nameChanged || bucketChanged) {
       lastEmitAt[peerId] = now
       emitPeer(record)
     }
@@ -616,8 +631,9 @@ class NoredBluetoothModule : Module() {
     }
 
     override fun onScanFailed(errorCode: Int) {
+      scannerRunning = false
       log("error", "[ERROR] scanner failed code=$errorCode")
-      mainHandler.postDelayed({ if (started) startScannerOnly() }, 2_000L)
+      mainHandler.postDelayed({ if (started) startScannerOnly(restart = true) }, 2_000L)
     }
   }
 
@@ -627,8 +643,9 @@ class NoredBluetoothModule : Module() {
     }
 
     override fun onScanFailed(errorCode: Int) {
+      scannerRunning = false
       log("error", "[ERROR] nored scanner failed code=$errorCode")
-      mainHandler.postDelayed({ if (started) startScannerOnly() }, 2_000L)
+      mainHandler.postDelayed({ if (started) startScannerOnly(restart = true) }, 2_000L)
     }
   }
 
@@ -1385,10 +1402,11 @@ class NoredBluetoothModule : Module() {
     return records.mapNotNull { sanitizeRssi(it?.rssi) }.firstOrNull()
   }
 
-  private fun signalBucket(rssi: Int): Int {
+  private fun signalBucket(rssi: Int?): Int {
+    val value = sanitizeRssi(rssi) ?: return 0
     return when {
-      rssi >= -60 -> 3
-      rssi >= -75 -> 2
+      value >= -60 -> 3
+      value >= -75 -> 2
       else -> 1
     }
   }
@@ -1423,12 +1441,10 @@ class NoredBluetoothModule : Module() {
     val peer = peers[peerId] ?: peers[address] ?: return
     val previous = peer.rssi
     if (previous == rssi) return
-    val bucketChanged = previous == null || signalBucket(previous) != signalBucket(rssi)
+    val bucketChanged = signalBucket(previous) != signalBucket(rssi)
     peer.rssi = rssi
-    val now = System.currentTimeMillis()
-    val last = lastEmitAt[peer.id] ?: 0L
-    if (bucketChanged || now - last >= 1_000L) {
-      lastEmitAt[peer.id] = now
+    if (bucketChanged) {
+      lastEmitAt[peer.id] = System.currentTimeMillis()
       emitPeer(peer)
     }
   }

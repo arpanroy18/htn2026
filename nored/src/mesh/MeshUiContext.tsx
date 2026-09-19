@@ -8,17 +8,45 @@ function hasDisplayName(peer: Peer) {
   return name.toLowerCase() !== 'unknown device';
 }
 
+function rssiBucket(rssi?: number | null) {
+  if (!isValidRssi(rssi)) return 0;
+  if (rssi >= -60) return 3;
+  if (rssi >= -75) return 2;
+  return 1;
+}
+
+function stabilizeRssi(next?: number | null, previous?: number | null): number | undefined {
+  if (!isValidRssi(next)) return isValidRssi(previous) ? previous : undefined;
+  if (!isValidRssi(previous)) return next;
+  const nextBucket = rssiBucket(next);
+  const previousBucket = rssiBucket(previous);
+  if (nextBucket === previousBucket) return previous;
+  if (nextBucket > previousBucket) {
+    if (nextBucket === 3 && next < -58) return previous;
+    if (nextBucket === 2 && next < -73) return previous;
+    return next;
+  }
+  if (previousBucket === 3 && next > -62) return previous;
+  if (previousBucket === 2 && next > -77) return previous;
+  return next;
+}
+
 function peersEqual(a: Peer, b: Peer) {
   return (
     a.id === b.id &&
     a.name === b.name &&
     a.nored === b.nored &&
     a.identityConfirmed === b.identityConfirmed &&
-    a.rssi === b.rssi &&
-    a.lastSeen === b.lastSeen &&
+    rssiBucket(a.rssi) === rssiBucket(b.rssi) &&
     a.avatarIcon === b.avatarIcon &&
     a.avatarColor === b.avatarColor
   );
+}
+
+function comparePeers(a: Peer, b: Peer) {
+  const bucket = rssiBucket(b.rssi) - rssiBucket(a.rssi);
+  if (bucket !== 0) return bucket;
+  return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 }
 
 export function isValidRssi(rssi?: number | null): rssi is number {
@@ -73,7 +101,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
         ? current.filter((item) => item.id !== peer.replacesId && item.id !== peer.id)
         : current;
       const index = withoutReplaced.findIndex((item) => item.id === peer.id);
-      const rssi = isValidRssi(peer.rssi) ? peer.rssi : (index === -1 ? replaced?.rssi : withoutReplaced[index].rssi);
+      const previousRssi = index === -1 ? replaced?.rssi : withoutReplaced[index].rssi;
+      const rssi = stabilizeRssi(peer.rssi, previousRssi);
       if (index === -1) return [...withoutReplaced, { ...peer, rssi }];
       const merged = {
         ...withoutReplaced[index],
@@ -160,7 +189,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
           peer.identityConfirmed &&
           peer.id !== identity.id,
       )
-      .sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+      .sort(comparePeers);
   }, [identity.id, peers]);
 
   const otherPeers = useMemo(() => {
@@ -173,7 +202,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
           !noredIds.has(peer.id) &&
           !noredNames.has(peer.name.trim().toLowerCase()),
       )
-      .sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+      .sort(comparePeers);
   }, [peers, noredPeers]);
 
   const value = useMemo(

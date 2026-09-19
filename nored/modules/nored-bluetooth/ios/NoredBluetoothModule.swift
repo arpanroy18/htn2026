@@ -12,7 +12,8 @@ private let avatarIconKey = "nored_ble_avatar_icon"
 private let avatarColorKey = "nored_ble_avatar_color"
 private let avatarIcons = ["nearby", "chats", "alerts", "games", "gear", "mic", "image", "send"]
 private let avatarColorCount = 9
-private let stalePeerMs: Double = 20_000
+private let stalePeerMs: Double = 45_000
+private let staleBluetoothPeerMs: Double = 90_000
 private let packetMagic: UInt8 = 0x4E
 private let maxConnections = 6
 
@@ -478,19 +479,28 @@ public final class NoredBluetoothModule: Module {
     }
   }
 
-  private func beginScanningIfReady() {
+  private func beginScanningIfReady(restart: Bool = false) {
     guard started else { return }
     let scanOptions = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+    var startedScan = false
     if centralManager?.state == .poweredOn {
-      centralManager?.stopScan()
-      centralManager?.scanForPeripherals(withServices: nil, options: scanOptions)
+      if restart || centralManager?.isScanning != true {
+        centralManager?.stopScan()
+        centralManager?.scanForPeripherals(withServices: nil, options: scanOptions)
+        startedScan = true
+      }
     }
     if noredCentralManager?.state == .poweredOn {
-      noredCentralManager?.stopScan()
-      noredCentralManager?.scanForPeripherals(withServices: [serviceUUID], options: scanOptions)
+      if restart || noredCentralManager?.isScanning != true {
+        noredCentralManager?.stopScan()
+        noredCentralManager?.scanForPeripherals(withServices: [serviceUUID], options: scanOptions)
+        startedScan = true
+      }
     }
     if centralManager?.state == .poweredOn || noredCentralManager?.state == .poweredOn {
-      log("info", "[BLE] scanner started")
+      if startedScan {
+        log("info", "[BLE] scanner started")
+      }
       emitState("running")
     }
   }
@@ -502,7 +512,9 @@ public final class NoredBluetoothModule: Module {
     if peripheralManager?.state == .poweredOn, identityCharacteristic != nil, peripheralManager?.isAdvertising != true {
       startAdvertising()
     }
-    if keepAliveTicks.isMultiple(of: 2) {
+    if keepAliveTicks.isMultiple(of: 12) {
+      beginScanningIfReady(restart: true)
+    } else {
       beginScanningIfReady()
     }
     if keepAliveTicks.isMultiple(of: 6), !sending {
@@ -523,8 +535,11 @@ public final class NoredBluetoothModule: Module {
 
   private func dropStalePeers() {
     guard started else { return }
-    let cutoff = Date().timeIntervalSince1970 * 1000 - stalePeerMs
-    let stale = peers.filter { $0.value.lastSeen < cutoff }.map(\.key)
+    let cutoffNored = Date().timeIntervalSince1970 * 1000 - stalePeerMs
+    let cutoffBluetooth = Date().timeIntervalSince1970 * 1000 - staleBluetoothPeerMs
+    let stale = peers.filter { _, peer in
+      peer.lastSeen < (peer.nored ? cutoffNored : cutoffBluetooth)
+    }.map(\.key)
     for id in stale {
       if clientLinks.values.contains(where: { $0.peerId == id }) { continue }
       if centralByPeerId[id] != nil { continue }
@@ -636,9 +651,10 @@ public final class NoredBluetoothModule: Module {
     peers[peerId] = record
     hardwareIdToPeerId[hardwareId] = peerId
     let nameChanged = existing?.name != record.name
-    if replacesId == nil, !isNored || alreadyNored, let last = lastEmitAt[peerId], now - last < 1000, !nameChanged {
-      // still try connect below
-    } else {
+    let noredChanged = existing?.nored != record.nored
+    let bucketChanged = signalBucket(rssi) != signalBucket(existing?.rssi)
+    let shouldEmit = existing == nil || replacesId != nil || nameChanged || noredChanged || bucketChanged
+    if shouldEmit {
       lastEmitAt[peerId] = now
       sendEvent("onPeerDiscovered", peerMap(record, replacesId: replacesId))
     }
@@ -1259,7 +1275,8 @@ public final class NoredBluetoothModule: Module {
     return raw
   }
 
-  private func signalBucket(_ rssi: Int) -> Int {
+  private func signalBucket(_ rssi: Int?) -> Int {
+    guard let rssi = sanitizedRssi(rssi) else { return 0 }
     if rssi >= -60 { return 3 }
     if rssi >= -75 { return 2 }
     return 1
@@ -1282,13 +1299,11 @@ public final class NoredBluetoothModule: Module {
     guard var peer = peers[peerId] ?? peers[hardwareId] else { return }
     let previous = peer.rssi
     if previous == rssi { return }
-    let bucketChanged = previous == nil || signalBucket(previous!) != signalBucket(rssi)
+    let bucketChanged = signalBucket(previous) != signalBucket(rssi)
     peer.rssi = rssi
     peers[peer.id] = peer
-    let now = Date().timeIntervalSince1970 * 1000
-    let last = lastEmitAt[peer.id] ?? 0
-    if bucketChanged || now - last >= 1000 {
-      lastEmitAt[peer.id] = now
+    if bucketChanged {
+      lastEmitAt[peer.id] = Date().timeIntervalSince1970 * 1000
       sendEvent("onPeerDiscovered", peerMap(peer))
     }
   }

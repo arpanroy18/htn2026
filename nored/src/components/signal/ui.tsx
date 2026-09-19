@@ -1,4 +1,4 @@
-import { Children, Fragment, type ReactNode } from 'react';
+import { Children, Fragment, isValidElement, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View, type PressableProps, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
 import { avatarFromSeed, resolveAvatar } from '@/avatar/profile';
@@ -288,7 +288,7 @@ export function GroupedList({ children, style }: { children: ReactNode; style?: 
   return (
     <View style={[styles.group, style]}>
       {items.map((child, index) => (
-        <Fragment key={index}>
+        <Fragment key={isValidElement(child) && child.key != null ? String(child.key) : String(index)}>
           {child}
           {index < items.length - 1 ? <Hairline /> : null}
         </Fragment>
