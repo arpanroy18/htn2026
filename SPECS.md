@@ -65,6 +65,7 @@ Acceptance:
 | Text | 2000 chars | Plaintext, no markdown except line breaks |
 | Audio | 60s max, Opus/M4A compressed | Record in-app, waveform UI, tap-to-play |
 | Image | 1280px max side, JPEG 0.7, <500KB | Auto-compress before send, tap-to-fullscreen |
+| Files | 2MB max, any file type, chunked send with CRC, auto-detect MIME, non-executable warning, tap-to-download, stored as local blob, no in-app preview for MVP |
 
 - All messages schema: `{ id, senderId, threadId, type, payloadRef, ts, ttlHops, hash }`
 - Chunking: split >20KB payloads into BLE chunks with reassembly + CRC.
