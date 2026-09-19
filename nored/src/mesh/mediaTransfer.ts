@@ -193,7 +193,10 @@ export function isPacket(value: unknown): value is Packet {
       );
     case 'game':
       return (
-        (packet.gameId === 'mesh-ping' || packet.gameId === 'telephone') &&
+        (packet.gameId === 'mesh-ping' ||
+          packet.gameId === 'pong' ||
+          packet.gameId === 'telephone' ||
+          packet.gameId === 'chess') &&
         (packet.event === 'invite' ||
           packet.event === 'join' ||
           packet.event === 'leave' ||
@@ -202,7 +205,16 @@ export function isPacket(value: unknown): value is Packet {
           packet.event === 'baton' ||
           packet.event === 'round-start' ||
           packet.event === 'stroke' ||
-          packet.event === 'round-finish') &&
+          packet.event === 'round-finish' ||
+          packet.event === 'pong-start' ||
+          packet.event === 'pong-input' ||
+          packet.event === 'pong-state' ||
+          packet.event === 'telephone-prompt' ||
+          packet.event === 'telephone-drawing' ||
+          packet.event === 'telephone-guess' ||
+          packet.event === 'chess-start' ||
+          packet.event === 'chess-move' ||
+          packet.event === 'chess-resign') &&
         (packet.roundId === undefined || typeof packet.roundId === 'string') &&
         (packet.targetId === undefined || typeof packet.targetId === 'string') &&
         (packet.sequence === undefined ||

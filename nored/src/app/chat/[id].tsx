@@ -27,11 +27,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
-import { Avatar, IconButton } from '@/components/signal/ui';
+import { Avatar, Chip, IconButton } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
+import { severityTone } from '@/mesh/alertStore';
 import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
-import type { ChatDelivery, ChatMessage } from '@/mesh/chatStore';
+import { ALERT_THREAD_PREFIX, isAlertThreadId, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
 import { MAX_VOICE_SECONDS, VOICE_RECORDING_OPTIONS } from '@/mesh/mediaFiles';
 import { signal } from '@/theme/signal';
 
@@ -205,7 +206,7 @@ export default function ChatScreen() {
   const { identity, noredPeers } = useMeshUi();
   const meshRouter = useRouterService();
   const { contacts } = useRouterData();
-  const { broadcastAlert } = useAlerts();
+  const { alerts, broadcastAlert } = useAlerts();
   const {
     threadFor,
     messagesFor,
@@ -219,18 +220,24 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const headerHeight = insets.top + 44;
   const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const isAlertThread = isAlertThreadId(threadId);
+  const alertId = isAlertThread && threadId ? threadId.slice(ALERT_THREAD_PREFIX.length) : undefined;
+  const alertItem = alerts.find((item) => item.id === alertId);
   const thread = threadFor(threadId ?? '');
-  const title = thread?.name ?? params.title ?? 'Chat';
-  const isGroup = (thread?.kind ?? params.kind) === 'group';
+  const title = isAlertThread ? 'Alert' : (thread?.name ?? params.title ?? 'Chat');
+  const isGroup = isAlertThread || (thread?.kind ?? params.kind) === 'group';
   const memberIds = thread?.memberIds ?? [];
   const inRangeCount = memberIds.filter((id) =>
     id !== identity.id && noredPeers.some((peer) => peer.id === id && peer.identityConfirmed),
   ).length;
-  const inRange = isGroup
-    ? inRangeCount > 0
-    : noredPeers.some(
-        (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
-      );
+  const meshInRange = noredPeers.some((peer) => peer.identityConfirmed);
+  const inRange = isAlertThread
+    ? meshInRange
+    : isGroup
+      ? inRangeCount > 0
+      : noredPeers.some(
+          (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
+        );
 
   const savedContact = !!contacts[thread?.peerId ?? threadId];
   const addContact = () => {
@@ -297,6 +304,11 @@ export default function ChatScreen() {
   }, [isRecording]);
 
   const subtitle = useMemo(() => {
+    if (isAlertThread) {
+      return inRange
+        ? 'Comments stay on this alert · not a new broadcast'
+        : 'No phones in range · comments will queue';
+    }
     if (isGroup) {
       const total = Math.max(memberIds.length, 1);
       if (!inRange) return `${total} members · out of range · will queue`;
@@ -306,12 +318,12 @@ export default function ChatScreen() {
       ? 'Text relays through nearby phones · media waits for a direct connection'
       : 'Add as a contact while nearby to send from afar';
     return '1:1 · Bluetooth';
-  }, [contacts, inRange, inRangeCount, isGroup, memberIds.length, thread?.peerId, threadId]);
+  }, [contacts, inRange, inRangeCount, isAlertThread, isGroup, memberIds.length, thread?.peerId, threadId]);
 
   const send = () => {
     const body = draft.trim();
     if (!body || !threadId) return;
-    if (emergency) {
+    if (!isAlertThread && emergency) {
       void broadcastAlert({ body, severity: 'HELP' }).then((result) => {
         if (result.ok) setDraft('');
         else Alert.alert('Alert not sent', result.error);
@@ -435,7 +447,7 @@ export default function ChatScreen() {
       <Stack.Screen options={{ title }} />
       <View style={styles.threadBar}>
           <Text style={styles.subtitle}>{subtitle}</Text>
-          {isGroup ? (
+          {isGroup && !isAlertThread ? (
             <Pressable
               onPress={() => setEmergency((v) => !v)}
               style={({ pressed }) => [styles.emergencyToggle, emergency && styles.emergencyToggleOn, pressed && styles.pressed]}>
@@ -453,9 +465,22 @@ export default function ChatScreen() {
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
           ref={scrollRef}
           showsVerticalScrollIndicator={false}>
+          {isAlertThread && alertItem ? (
+            <View style={styles.alertCard}>
+              <View style={styles.alertCardTop}>
+                <Chip label={alertItem.severity} tone={severityTone(alertItem.severity)} />
+                <Text style={styles.alertCardMeta}>
+                  {alertItem.sender} · {alertItem.time}
+                </Text>
+              </View>
+              <Text style={styles.alertCardBody}>{alertItem.body}</Text>
+            </View>
+          ) : null}
           {rows.length === 0 ? (
             <Text style={styles.empty}>
-              {isGroup
+              {isAlertThread
+                ? 'Comments on this alert reach nearby phones without sending a new alert.'
+                : isGroup
                 ? inRange
                   ? 'Group is live on the mesh. Send a text.'
                   : 'No members in range. You can still type — it will queue.'
@@ -499,7 +524,7 @@ export default function ChatScreen() {
                 : Math.max(insets.bottom + ANDROID_NAV_BAR_GAP, 10),
             },
           ]}>
-          {emergency ? (
+          {emergency && !isAlertThread ? (
             <Text style={styles.emergencyHint}>Sends as an EMERGENCY broadcast to every reachable phone</Text>
           ) : null}
           {isRecording || startingRecording ? (
@@ -537,15 +562,17 @@ export default function ChatScreen() {
                 <TextInput
                   accessibilityLabel="Message"
                   editable={!preparingMedia}
-                  maxLength={emergency ? 280 : 2000}
+                  maxLength={emergency && !isAlertThread ? 280 : 2000}
                   multiline
                   onChangeText={setDraft}
                   placeholder={
                     preparingMedia
                       ? 'Preparing media…'
-                      : emergency
-                        ? 'Emergency broadcast'
-                        : 'Message'
+                      : isAlertThread
+                        ? 'Comment'
+                        : emergency
+                          ? 'Emergency broadcast'
+                          : 'Message'
                   }
                   placeholderTextColor={signal.slate}
                   style={styles.input}
@@ -611,6 +638,16 @@ const styles = StyleSheet.create({
   emergencyLabel: { color: signal.slate, fontSize: 12, fontWeight: '600' },
   emergencyLabelOn: { color: signal.white },
   messages: { flexGrow: 1, gap: 2, padding: 20, paddingBottom: 12 },
+  alertCard: {
+    backgroundColor: signal.mist,
+    borderRadius: 16,
+    gap: 8,
+    marginBottom: 12,
+    padding: 16,
+  },
+  alertCardTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  alertCardMeta: { color: signal.slate, fontSize: 12 },
+  alertCardBody: { color: signal.ink, fontSize: 16, lineHeight: 22 },
   empty: { color: signal.slate, fontSize: 15, lineHeight: 22, marginTop: 12 },
   rowWrap: { flexDirection: 'row', gap: 8, maxWidth: '100%' },
   rowWrapTheirs: { alignSelf: 'flex-start' },

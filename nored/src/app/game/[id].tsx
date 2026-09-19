@@ -15,8 +15,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { GamesIcon } from '@/components/signal/icons';
 import { Chip, MistButton, OutlinedButton } from '@/components/signal/ui';
 import { mockGames } from '@/data/mock';
+import { ChessBoard } from '@/games/ChessBoard';
 import { useGames } from '@/games/GameContext';
+import { DrawingTelephoneBoard as DrawingTelephoneGameBoard } from '@/games/DrawingTelephoneBoard';
 import { MAX_STROKE_POINTS, type DrawingPoint } from '@/games/gameStore';
+import { PongBoard } from '@/games/PongBoard';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 import type { GameId } from '@/transport';
@@ -57,7 +60,7 @@ function JoinGameButton({ onPress }: { onPress: () => void }) {
   );
 }
 
-function MeshPingBoard() {
+export function MeshPingBoard() {
   const { identity } = useMeshUi();
   const {
     participants,
@@ -161,7 +164,7 @@ function StrokeView({
   );
 }
 
-function DrawingTelephoneBoard({
+export function DrawingTelephoneBoard({
   setScrollEnabled,
 }: {
   setScrollEnabled: (enabled: boolean) => void;
@@ -313,7 +316,7 @@ export default function GameScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const game = useMemo(() => mockGames.find((item) => item.id === id), [id]);
   const supportedGameId: GameId | undefined =
-    id === 'mesh-ping' || id === 'telephone' ? id : undefined;
+    id === 'pong' || id === 'telephone' || id === 'chess' ? id : undefined;
   const { noredPeers } = useMeshUi();
   const { joinedGames, participants, joinGame, leaveGame, invitePlayer } = useGames();
   const [scrollEnabled, setScrollEnabled] = useState(true);
@@ -351,7 +354,7 @@ export default function GameScreen() {
           <Text style={styles.lede}>{game?.blurb}</Text>
           <View style={styles.chips}>
             <Chip label={game?.players ?? 'Nearby'} tone="mist" />
-            <Chip label="≤180 bytes / turn" />
+            <Chip label="Nearby Bluetooth" />
           </View>
         </View>
 
@@ -420,10 +423,12 @@ export default function GameScreen() {
             </Text>
             <View style={styles.placeholder} />
           </View>
-        ) : id === 'mesh-ping' ? (
-          <MeshPingBoard />
+        ) : id === 'pong' ? (
+          <PongBoard />
         ) : id === 'telephone' ? (
-          <DrawingTelephoneBoard setScrollEnabled={setScrollEnabled} />
+          <DrawingTelephoneGameBoard setScrollEnabled={setScrollEnabled} />
+        ) : id === 'chess' ? (
+          <ChessBoard />
         ) : (
           <View style={styles.board}>
             <Text style={styles.boardTitle}>Coming soon</Text>
