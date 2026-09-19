@@ -1,4 +1,4 @@
-import type { Packet, Peer } from '@/transport';
+import type { MediaKind, MediaManifestPacket, Packet, Peer, TextPacket } from '@/transport';
 
 export type ChatDelivery = 'queued' | 'sent' | 'relayed' | 'failed';
 
@@ -19,8 +19,17 @@ export type ChatMessage = {
   senderId: string;
   sender: string;
   mine: boolean;
-  kind: 'text';
+  kind: 'text' | 'image' | 'audio';
   body: string;
+  localUri?: string;
+  mimeType?: string;
+  byteLength?: number;
+  hash?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  transferProgress?: number;
+  transferError?: string;
   status?: ChatDelivery;
   time: string;
   timestamp: number;
@@ -59,7 +68,7 @@ export function makeTextPacket(input: {
   senderId: string;
   recipientId: string;
   body: string;
-}): Packet {
+}): TextPacket {
   return {
     version: 1,
     id: createId(),
@@ -71,8 +80,46 @@ export function makeTextPacket(input: {
   };
 }
 
-export function isTextPacket(value: Packet): value is Packet {
+export function isTextPacket(value: Packet): value is TextPacket {
   return value?.type === 'text' && typeof value.payload === 'string' && typeof value.id === 'string';
+}
+
+export function makeMediaManifest(input: {
+  id: string;
+  senderId: string;
+  recipientId: string;
+  mediaKind: MediaKind;
+  mimeType: string;
+  byteLength: number;
+  chunkCount: number;
+  hash: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  timestamp?: number;
+}): MediaManifestPacket {
+  return {
+    version: 1,
+    id: input.id,
+    senderId: input.senderId,
+    recipientId: input.recipientId,
+    type: 'media-manifest',
+    timestamp: input.timestamp ?? Date.now(),
+    mediaKind: input.mediaKind,
+    mimeType: input.mimeType,
+    byteLength: input.byteLength,
+    chunkCount: input.chunkCount,
+    hash: input.hash,
+    width: input.width,
+    height: input.height,
+    durationMs: input.durationMs,
+  };
+}
+
+export function messagePreview(message: Pick<ChatMessage, 'kind' | 'body'>) {
+  if (message.kind === 'image') return 'Photo';
+  if (message.kind === 'audio') return 'Voice message';
+  return message.body;
 }
 
 function upsertThread(threads: ChatThread[], next: ChatThread) {
@@ -130,7 +177,7 @@ export function appendMessage(
     kind: 'dm',
     peerId: message.threadId,
     name: threadName,
-    preview: message.body,
+    preview: messagePreview(message),
     updatedAt: message.timestamp,
     unread: unread ? (current?.unread ?? 0) + 1 : (current?.unread ?? 0),
     queued,
@@ -172,7 +219,7 @@ export function migrateDmPeer(
     kind: 'dm',
     peerId,
     name: name || currentThread?.name || previousThread?.name || 'Nearby peer',
-    preview: latest?.body ?? currentThread?.preview ?? previousThread?.preview ?? 'No messages yet',
+    preview: latest ? messagePreview(latest) : currentThread?.preview ?? previousThread?.preview ?? 'No messages yet',
     updatedAt,
     unread: (currentThread?.unread ?? 0) + (previousThread?.unread ?? 0),
     queued: messages.some((message) => message.mine && message.status === 'queued'),
@@ -217,7 +264,7 @@ export function markThreadRead(state: ChatState, threadId: string): ChatState {
 
 export function queuedPackets(state: ChatState, peerId: string, senderId: string): Packet[] {
   return (state.messages[peerId] ?? [])
-    .filter((item) => item.mine && item.status === 'queued')
+    .filter((item) => item.mine && item.status === 'queued' && item.kind === 'text')
     .map((item) => ({
       version: 1 as const,
       id: item.id,

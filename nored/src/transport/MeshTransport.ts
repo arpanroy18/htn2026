@@ -8,15 +8,58 @@ export type Peer = {
   replacesId?: string;
 };
 
-export type Packet = {
+type PacketBase = {
   version: 1;
   id: string;
   senderId: string;
   recipientId: string;
-  type: 'text';
   timestamp: number;
+};
+
+export type TextPacket = PacketBase & {
+  type: 'text';
   payload: string;
 };
+
+export type MediaKind = 'image' | 'audio';
+
+export type MediaManifestPacket = PacketBase & {
+  type: 'media-manifest';
+  mediaKind: MediaKind;
+  mimeType: string;
+  byteLength: number;
+  chunkCount: number;
+  hash: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+};
+
+export type MediaChunkPacket = PacketBase & {
+  type: 'media-chunk';
+  transferId: string;
+  sequence: number;
+  total: number;
+  payload: string;
+};
+
+export type MediaAckPacket = PacketBase & {
+  type: 'media-ack';
+  transferId: string;
+};
+
+export type MediaRetryPacket = PacketBase & {
+  type: 'media-retry';
+  transferId: string;
+  missing: number[];
+};
+
+export type Packet =
+  | TextPacket
+  | MediaManifestPacket
+  | MediaChunkPacket
+  | MediaAckPacket
+  | MediaRetryPacket;
 
 export type DeviceIdentity = {
   id: string;

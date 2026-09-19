@@ -67,7 +67,7 @@ export default function ChatsScreen() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>
-              Tap a Nored phone on Nearby to start a 1:1 text thread. Messages travel over Bluetooth and queue if the other phone drops out of range.
+              Tap a Nored phone on Nearby to start a chat. Text, photos, and voice notes travel over Bluetooth and queue if the other phone drops out of range.
             </Text>
           </View>
         ) : (

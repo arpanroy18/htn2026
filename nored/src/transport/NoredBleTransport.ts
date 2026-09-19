@@ -2,6 +2,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 
 import NoredBluetooth from '@/../modules/nored-bluetooth';
 import type { Peer as NativePeer } from '@/../modules/nored-bluetooth';
+import { isPacket } from '@/mesh/mediaTransfer';
 
 import type {
   DeviceIdentity,
@@ -89,17 +90,8 @@ class NoredBleTransport implements MeshTransport {
   onPacketReceived(callback: (peerId: string, packet: Packet) => void): Subscription {
     return NoredBluetooth.addListener('onPacketReceived', (event: { peerId: string; packet: string }) => {
       try {
-        const packet = JSON.parse(event.packet) as Packet;
-        if (
-          packet?.version !== 1 ||
-          !packet.id ||
-          packet.type !== 'text' ||
-          typeof packet.senderId !== 'string' ||
-          typeof packet.recipientId !== 'string' ||
-          typeof packet.payload !== 'string'
-        ) {
-          return;
-        }
+        const packet = JSON.parse(event.packet) as unknown;
+        if (!isPacket(packet)) return;
         callback(normalizePeerId(event.peerId), {
           ...packet,
           senderId: normalizePeerId(packet.senderId),

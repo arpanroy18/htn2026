@@ -5,6 +5,7 @@ import {
   appendMessage,
   emptyChatState,
   ensureDmThread,
+  messagePreview,
   migrateDmPeer,
   patchMessage,
   queuedPackets,
@@ -112,5 +113,17 @@ describe('chatStore delivery and unread state', () => {
     assert.equal(queued.messages[peerId][0].status, 'queued');
     assert.equal(sent.messages[peerId][0].status, 'sent');
     assert.equal(sent.threads[0].queued, false);
+  });
+
+  it('uses readable previews for image and voice messages', () => {
+    const image = message({ id: 'photo', kind: 'image', body: '' });
+    const audio = message({ id: 'voice', kind: 'audio', body: '' });
+    const state = appendMessage(emptyChatState, image, 'Taylor', true);
+
+    assert.equal(messagePreview(image), 'Photo');
+    assert.equal(messagePreview(audio), 'Voice message');
+    assert.equal(state.threads[0].preview, 'Photo');
+    assert.equal(state.threads[0].unread, 1);
+    assert.deepEqual(queuedPackets(state, previousId, 'local-device'), []);
   });
 });

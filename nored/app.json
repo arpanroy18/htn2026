@@ -43,7 +43,24 @@
           "imageWidth": 76
         }
       ],
-      "./modules/nored-bluetooth/app.plugin.js"
+      "./modules/nored-bluetooth/app.plugin.js",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Nored to record voice notes.",
+          "recordAudioAndroid": true,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Nored to choose photos to send over Bluetooth.",
+          "cameraPermission": false
+        }
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,

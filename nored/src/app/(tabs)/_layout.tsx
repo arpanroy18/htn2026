@@ -2,9 +2,11 @@ import { Tabs } from 'expo-router';
 import { Platform, StyleSheet } from 'react-native';
 
 import { AlertsIcon, ChatsIcon, GamesIcon, NearbyIcon } from '@/components/signal/icons';
+import { useChat } from '@/mesh/ChatContext';
 import { signal } from '@/theme/signal';
 
 export default function TabsLayout() {
+  const { totalUnread } = useChat();
   return (
     <Tabs
       screenOptions={{
@@ -27,6 +29,9 @@ export default function TabsLayout() {
         options={{
           title: 'Chats',
           tabBarIcon: ({ color }) => <ChatsIcon color={String(color)} size={24} />,
+          tabBarBadge:
+            totalUnread > 0 ? (totalUnread > 99 ? '99+' : totalUnread) : undefined,
+          tabBarBadgeStyle: styles.badge,
         }}
       />
       <Tabs.Screen
@@ -62,5 +67,11 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 11,
     fontWeight: '600',
+  },
+  badge: {
+    backgroundColor: signal.deep,
+    color: signal.white,
+    fontSize: 10,
+    fontWeight: '800',
   },
 });

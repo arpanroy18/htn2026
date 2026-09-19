@@ -9,15 +9,24 @@ import {
   type ReactNode,
 } from 'react';
 
-import { meshTransport, type Packet } from '@/transport';
+import {
+  meshTransport,
+  type MediaAckPacket,
+  type MediaChunkPacket,
+  type MediaManifestPacket,
+  type MediaRetryPacket,
+  type Packet,
+} from '@/transport';
 
 import { useMeshUi } from './MeshUiContext';
 import {
   appendMessage,
+  createId,
   emptyChatState,
   ensureDmThread,
   formatMessageClock,
   isTextPacket,
+  makeMediaManifest,
   makeTextPacket,
   markThreadRead,
   migrateDmPeer,
@@ -28,6 +37,23 @@ import {
   type ChatState,
   type ChatThread,
 } from './chatStore';
+import {
+  fileBytes,
+  prepareImage,
+  persistVoiceNote,
+  sha256,
+  writeMediaBytes,
+} from './mediaFiles';
+import {
+  MEDIA_CHUNK_BYTES,
+  MEDIA_REASSEMBLY_TIMEOUT_MS,
+  acceptMediaChunk,
+  assembleMediaBytes,
+  createIncomingTransfer,
+  missingMediaChunks,
+  splitMediaBytes,
+  type IncomingTransfer,
+} from './mediaTransfer';
 
 type ChatUi = {
   threads: ChatThread[];
@@ -35,6 +61,14 @@ type ChatUi = {
   messagesFor: (threadId: string) => ChatMessage[];
   openDm: (peerId: string, name: string) => void;
   sendText: (peerId: string, body: string) => Promise<void>;
+  sendImage: (
+    peerId: string,
+    sourceUri: string,
+    width: number,
+    height: number,
+  ) => Promise<void>;
+  sendVoiceNote: (peerId: string, sourceUri: string, durationMs: number) => Promise<void>;
+  totalUnread: number;
   markRead: (threadId: string) => void;
   clearActive: () => void;
 };
@@ -51,6 +85,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const peerAliases = useRef(new Map<string, string>());
   const flushing = useRef(new Set<string>());
   const lastFlushAt = useRef(new Map<string, number>());
+  const incomingTransfers = useRef(new Map<string, IncomingTransfer>());
+  const outgoingTransfers = useRef(
+    new Map<string, { manifest: MediaManifestPacket; chunks: MediaChunkPacket[] }>(),
+  );
 
   useEffect(() => {
     stateRef.current = state;
@@ -123,12 +161,105 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     await meshTransport.sendPacket(peerId, packet);
   }, []);
 
+  const appendMediaMessage = useCallback(
+    (
+      manifest: MediaManifestPacket,
+      threadName: string,
+      mine: boolean,
+      localUri: string | undefined,
+      status: ChatMessage['status'],
+      unread: boolean,
+    ) => {
+      remember(manifest.id);
+      const threadId = mine ? manifest.recipientId : manifest.senderId;
+      const message: ChatMessage = {
+        id: manifest.id,
+        threadId,
+        senderId: manifest.senderId,
+        sender: mine ? 'You' : threadName,
+        mine,
+        kind: manifest.mediaKind,
+        body: manifest.mediaKind === 'image' ? 'Photo' : 'Voice message',
+        localUri,
+        mimeType: manifest.mimeType,
+        byteLength: manifest.byteLength,
+        hash: manifest.hash,
+        width: manifest.width,
+        height: manifest.height,
+        durationMs: manifest.durationMs,
+        transferProgress: localUri ? 0 : 0,
+        status: mine ? status : undefined,
+        timestamp: manifest.timestamp,
+        time: formatMessageClock(manifest.timestamp),
+      };
+      setState((current) => appendMessage(current, message, threadName, unread));
+    },
+    [remember],
+  );
+
+  const transmitMedia = useCallback(
+    async (
+      peerId: string,
+      manifest: MediaManifestPacket,
+      bytes: Uint8Array,
+      onlySequences?: number[],
+    ) => {
+      const allChunks = splitMediaBytes({ manifest, bytes });
+      outgoingTransfers.current.set(manifest.id, { manifest, chunks: allChunks });
+      const chunks = onlySequences
+        ? onlySequences.map((sequence) => allChunks[sequence]).filter(Boolean)
+        : allChunks;
+      if (!onlySequences) await sendPacket(peerId, manifest);
+      for (let index = 0; index < chunks.length; index += 1) {
+        await sendPacket(peerId, chunks[index]);
+        const completed = onlySequences
+          ? undefined
+          : Math.min(0.98, (index + 1) / Math.max(1, chunks.length));
+        if (completed !== undefined) {
+          setState((current) =>
+            patchMessage(current, peerId, manifest.id, { transferProgress: completed }),
+          );
+        }
+      }
+    },
+    [sendPacket],
+  );
+
+  const sendStoredMedia = useCallback(
+    async (peerId: string, message: ChatMessage) => {
+      if (!message.localUri || !message.hash || !message.mimeType || !message.byteLength) return;
+      const bytes = await fileBytes(message.localUri);
+      const manifest = makeMediaManifest({
+        id: message.id,
+        senderId: identity.id,
+        recipientId: peerId,
+        mediaKind: message.kind === 'image' ? 'image' : 'audio',
+        mimeType: message.mimeType,
+        byteLength: message.byteLength,
+        chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
+        hash: message.hash,
+        width: message.width,
+        height: message.height,
+        durationMs: message.durationMs,
+        timestamp: message.timestamp,
+      });
+      await transmitMedia(peerId, manifest, bytes);
+    },
+    [identity.id, transmitMedia],
+  );
+
   const flushPeer = useCallback(
     async (peerId: string) => {
       peerId = resolvePeerId(peerId);
       if (flushing.current.has(peerId)) return;
       const pending = queuedPackets(stateRef.current, peerId, identity.id);
-      if (!pending.length) return;
+      const pendingMedia = (stateRef.current.messages[peerId] ?? []).filter(
+        (message) =>
+          message.mine &&
+          message.status === 'queued' &&
+          (message.kind === 'image' || message.kind === 'audio'),
+      );
+      if (!pending.length && !pendingMedia.length) return;
       const last = lastFlushAt.current.get(peerId) ?? 0;
       if (Date.now() - last < 2000) return;
       flushing.current.add(peerId);
@@ -142,25 +273,172 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             break;
           }
         }
+        for (const message of pendingMedia) {
+          try {
+            await sendStoredMedia(peerId, message);
+          } catch {
+            break;
+          }
+        }
       } finally {
         flushing.current.delete(peerId);
       }
     },
-    [identity.id, resolvePeerId, sendPacket],
+    [identity.id, resolvePeerId, sendPacket, sendStoredMedia],
+  );
+
+  const handlePacket = useCallback(
+    async (packet: Packet) => {
+      if (packet.senderId === identity.id || packet.recipientId !== identity.id) return;
+      const name = peerName(peersRef.current, packet.senderId, 'Nearby peer');
+
+      if (isTextPacket(packet)) {
+        if (seenIds.current.has(packet.id)) return;
+        const unread = activeThread.current !== packet.senderId;
+        ingest(packet, name, false, undefined, unread);
+        return;
+      }
+
+      if (packet.type === 'media-manifest') {
+        if (seenIds.current.has(packet.id)) {
+          if (incomingTransfers.current.has(packet.id)) return;
+          const ack: MediaAckPacket = {
+            version: 1,
+            id: `${packet.id}:ack:repeat`,
+            senderId: identity.id,
+            recipientId: packet.senderId,
+            type: 'media-ack',
+            timestamp: Date.now(),
+            transferId: packet.id,
+          };
+          await sendPacket(packet.senderId, ack);
+          return;
+        }
+        incomingTransfers.current.set(packet.id, createIncomingTransfer(packet));
+        appendMediaMessage(
+          packet,
+          name,
+          false,
+          undefined,
+          undefined,
+          activeThread.current !== packet.senderId,
+        );
+        return;
+      }
+
+      if (packet.type === 'media-chunk') {
+        const transfer = incomingTransfers.current.get(packet.transferId);
+        if (!transfer || !acceptMediaChunk(transfer, packet)) return;
+        const received = transfer.chunks.size;
+        setState((current) =>
+          patchMessage(current, packet.senderId, packet.transferId, {
+            transferProgress: received / transfer.manifest.chunkCount,
+          }),
+        );
+        if (received !== transfer.manifest.chunkCount) return;
+        try {
+          const bytes = assembleMediaBytes(transfer);
+          if ((await sha256(bytes)) !== transfer.manifest.hash) {
+            throw new Error('The media integrity check failed.');
+          }
+          const extension = transfer.manifest.mediaKind === 'image' ? 'jpg' : 'm4a';
+          const localUri = await writeMediaBytes(transfer.manifest.id, extension, bytes);
+          incomingTransfers.current.delete(packet.transferId);
+          setState((current) =>
+            patchMessage(current, packet.senderId, packet.transferId, {
+              localUri,
+              transferProgress: 1,
+              transferError: undefined,
+            }),
+          );
+          const ack: MediaAckPacket = {
+            version: 1,
+            id: `${packet.transferId}:ack`,
+            senderId: identity.id,
+            recipientId: packet.senderId,
+            type: 'media-ack',
+            timestamp: Date.now(),
+            transferId: packet.transferId,
+          };
+          await sendPacket(packet.senderId, ack);
+        } catch (error) {
+          transfer.chunks.clear();
+          transfer.updatedAt = 0;
+          setState((current) =>
+            patchMessage(current, packet.senderId, packet.transferId, {
+              transferError: error instanceof Error ? error.message : 'Media transfer failed.',
+            }),
+          );
+        }
+        return;
+      }
+
+      if (packet.type === 'media-ack') {
+        const outgoing = outgoingTransfers.current.get(packet.transferId);
+        if (!outgoing) return;
+        outgoingTransfers.current.delete(packet.transferId);
+        setState((current) =>
+          patchMessage(current, packet.senderId, packet.transferId, {
+            status: 'sent',
+            transferProgress: 1,
+            transferError: undefined,
+          }),
+        );
+        return;
+      }
+
+      if (packet.type === 'media-retry') {
+        const outgoing = outgoingTransfers.current.get(packet.transferId);
+        if (!outgoing) return;
+        for (const sequence of packet.missing) {
+          const chunk = outgoing.chunks[sequence];
+          if (chunk) await sendPacket(packet.senderId, chunk);
+        }
+      }
+    },
+    [appendMediaMessage, identity.id, ingest, sendPacket],
   );
 
   useEffect(() => {
     const subscription = meshTransport.onPacketReceived((_peerId, packet) => {
-      if (!isTextPacket(packet)) return;
-      if (packet.senderId === identity.id) return;
-      if (packet.recipientId && packet.recipientId !== identity.id) return;
-      if (seenIds.current.has(packet.id)) return;
-      const name = peerName(peersRef.current, packet.senderId, 'Nearby peer');
-      const unread = activeThread.current !== packet.senderId;
-      ingest(packet, name, false, undefined, unread);
+      void handlePacket(packet);
     });
     return () => subscription.remove();
-  }, [identity.id, ingest]);
+  }, [handlePacket]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      for (const transfer of incomingTransfers.current.values()) {
+        if (now - transfer.updatedAt < MEDIA_REASSEMBLY_TIMEOUT_MS) continue;
+        const missing = missingMediaChunks(transfer);
+        if (!missing.length) continue;
+        if (transfer.retries >= 3) {
+          incomingTransfers.current.delete(transfer.manifest.id);
+          setState((current) =>
+            patchMessage(current, transfer.manifest.senderId, transfer.manifest.id, {
+              transferError: 'Transfer timed out.',
+            }),
+          );
+          continue;
+        }
+        transfer.retries += 1;
+        transfer.updatedAt = now;
+        const retry: MediaRetryPacket = {
+          version: 1,
+          id: `${transfer.manifest.id}:retry:${transfer.retries}`,
+          senderId: identity.id,
+          recipientId: transfer.manifest.senderId,
+          type: 'media-retry',
+          timestamp: now,
+          transferId: transfer.manifest.id,
+          missing,
+        };
+        void sendPacket(transfer.manifest.senderId, retry);
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [identity.id, sendPacket]);
 
   const sendablePeerKey = useMemo(
     () =>
@@ -218,6 +496,85 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [identity.id, ingest, noredPeers, peers, resolvePeerId, sendPacket],
   );
 
+  const sendPreparedMedia = useCallback(
+    async (
+      peerId: string,
+      mediaKind: 'image' | 'audio',
+      prepared: {
+        uri: string;
+        mimeType: string;
+        byteLength: number;
+        hash: string;
+        width?: number;
+        height?: number;
+        durationMs?: number;
+      },
+      id: string,
+    ) => {
+      peerId = resolvePeerId(peerId);
+      const bytes = await fileBytes(prepared.uri);
+      const manifest = makeMediaManifest({
+        id,
+        senderId: identity.id,
+        recipientId: peerId,
+        mediaKind,
+        mimeType: prepared.mimeType,
+        byteLength: prepared.byteLength,
+        chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
+        hash: prepared.hash,
+        width: prepared.width,
+        height: prepared.height,
+        durationMs: prepared.durationMs,
+      });
+      const name = peerName(noredPeers, peerId, peerName(peers, peerId, 'Nearby peer'));
+      appendMediaMessage(manifest, name, true, prepared.uri, 'queued', false);
+      const canSend = noredPeers.some(
+        (peer) => peer.id === peerId && peer.identityConfirmed,
+      );
+      if (!canSend) return;
+      try {
+        await transmitMedia(peerId, manifest, bytes);
+      } catch (error) {
+        setState((current) =>
+          patchMessage(current, peerId, manifest.id, {
+            transferError: error instanceof Error ? error.message : 'Media transfer failed.',
+          }),
+        );
+      }
+    },
+    [
+      appendMediaMessage,
+      identity.id,
+      noredPeers,
+      peers,
+      resolvePeerId,
+      transmitMedia,
+    ],
+  );
+
+  const sendImage = useCallback(
+    async (peerId: string, sourceUri: string, width: number, height: number) => {
+      const id = createId();
+      const prepared = await prepareImage(sourceUri, id, width, height);
+      await sendPreparedMedia(peerId, 'image', prepared, id);
+    },
+    [sendPreparedMedia],
+  );
+
+  const sendVoiceNote = useCallback(
+    async (peerId: string, sourceUri: string, durationMs: number) => {
+      const id = createId();
+      const prepared = await persistVoiceNote(sourceUri, id);
+      await sendPreparedMedia(
+        peerId,
+        'audio',
+        { ...prepared, durationMs: Math.min(durationMs, 60_000) },
+        id,
+      );
+    },
+    [sendPreparedMedia],
+  );
+
   const messagesFor = useCallback(
     (threadId: string) => state.messages[resolvePeerId(threadId)] ?? [],
     [resolvePeerId, state.messages],
@@ -238,6 +595,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [resolvePeerId, threads],
   );
 
+  const totalUnread = useMemo(
+    () => threads.reduce((total, thread) => total + thread.unread, 0),
+    [threads],
+  );
+
   const value = useMemo(
     () => ({
       threads,
@@ -245,10 +607,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       messagesFor,
       openDm,
       sendText,
+      sendImage,
+      sendVoiceNote,
+      totalUnread,
       markRead,
       clearActive,
     }),
-    [clearActive, markRead, messagesFor, openDm, sendText, threadFor, threads],
+    [
+      clearActive,
+      markRead,
+      messagesFor,
+      openDm,
+      sendImage,
+      sendText,
+      sendVoiceNote,
+      threadFor,
+      threads,
+      totalUnread,
+    ],
   );
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
