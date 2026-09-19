@@ -97,3 +97,4 @@ tmp/
 temp/
 .turbo/
 .vercel/
+nored/app.local.json
