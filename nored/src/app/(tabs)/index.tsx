@@ -29,7 +29,13 @@ function levelFor(rssi?: number): 0 | 1 | 2 | 3 {
 function PeerRow({ peer, onPress, onLongPress }: { peer: Peer; onPress: () => void; onLongPress: () => void }) {
   return (
     <RowPress onLongPress={onLongPress} onPress={onPress} style={styles.peer}>
-      <Avatar name={peer.name} size={44} />
+      <Avatar
+        color={peer.avatarColor}
+        icon={peer.avatarIcon}
+        name={peer.name}
+        peerId={peer.id}
+        size={44}
+      />
       <View style={styles.peerMain}>
         <Text style={styles.peerName}>{peer.name}</Text>
         <Text style={styles.peerMeta}>
@@ -97,7 +103,7 @@ export default function NearbyScreen() {
         <ScreenHeader
           action={
             <IconButton onPress={() => router.push('/settings')} tone="ghost">
-              <GearIcon color={signal.slate} size={22} />
+              <GearIcon color={signal.slate} size={24} />
             </IconButton>
           }
           title="Nearby"
@@ -105,7 +111,13 @@ export default function NearbyScreen() {
 
         <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
           <RowPress onPress={() => setEditingName(true)} style={styles.identity}>
-            <Avatar name={identity.name} size={52} />
+            <Avatar
+              color={identity.avatarColor}
+              icon={identity.avatarIcon}
+              name={identity.name}
+              peerId={identity.id}
+              size={52}
+            />
             <View style={styles.identityMain}>
               {editingName ? (
                 <TextInput

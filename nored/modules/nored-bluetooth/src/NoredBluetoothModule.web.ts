@@ -18,11 +18,21 @@ class NoredBluetoothModule extends NativeModule<NoredBluetoothModuleEvents> {
   async stop() {}
 
   getIdentity() {
-    return { id: 'web-preview', name: 'Web preview' };
+    return {
+      id: 'web-preview',
+      name: 'Web preview',
+      avatarIcon: 'games',
+      avatarColor: 2,
+    };
   }
 
   async setDisplayName(name: string) {
-    return { id: 'web-preview', name };
+    return {
+      id: 'web-preview',
+      name,
+      avatarIcon: 'games',
+      avatarColor: 2,
+    };
   }
 
   getPeers() {

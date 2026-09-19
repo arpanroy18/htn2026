@@ -39,6 +39,7 @@ export default function RootLayout() {
               <Stack
               screenOptions={{
                 contentStyle: { backgroundColor: signal.paper },
+                headerBackButtonDisplayMode: 'minimal',
                 headerShadowVisible: false,
                 headerTintColor: signal.deep,
                 headerTitleStyle: { color: signal.ink, fontWeight: '600' },

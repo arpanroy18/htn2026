@@ -69,7 +69,13 @@ export default function NewGroupScreen() {
               const on = picked.includes(peer.id);
               return (
                 <RowPress key={peer.id} onPress={() => toggle(peer.id)} style={styles.row}>
-                  <Avatar name={peer.name} size={38} />
+                  <Avatar
+                    color={peer.avatarColor}
+                    icon={peer.avatarIcon}
+                    name={peer.name}
+                    peerId={peer.id}
+                    size={38}
+                  />
                   <Text style={styles.person}>{peer.name}</Text>
                   <View style={[styles.check, on && styles.checkOn]} />
                 </RowPress>

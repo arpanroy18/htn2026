@@ -1,16 +1,30 @@
 import { useMemo } from 'react';
-import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  Image,
+  ImageBackground,
+  PanResponder,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
 import { useGames } from './GameContext';
 
-const BOARD_HEIGHT = 280;
+const BOARD_HEIGHT = 220;
+const TABLE_IMAGE = require('../../public/assets/pong/table.png');
+const BLUE_PADDLE = require('../../public/assets/pong/blue-paddle.png');
+const RED_PADDLE = require('../../public/assets/pong/red-paddle.png');
+const YELLOW_BALL = require('../../public/assets/pong/yellow-ball.png');
 
 export function PongBoard() {
   const { identity } = useMeshUi();
   const { participants, pongMatch, startPong, movePongPaddle } = useGames();
+  const canStart = participants.pong.length >= 2;
   const isPlayer = Boolean(
     pongMatch &&
       (pongMatch.hostId === identity.id || pongMatch.guestId === identity.id),
@@ -60,23 +74,33 @@ export function PongBoard() {
         </View>
       </View>
 
-      <View style={styles.court} {...panResponder.panHandlers}>
-        <View style={styles.centerLine} />
-        <View
+      <ImageBackground
+        imageStyle={styles.courtImage}
+        resizeMode="stretch"
+        source={TABLE_IMAGE}
+        style={styles.court}
+        {...panResponder.panHandlers}>
+        <Image
+          resizeMode="contain"
+          source={BLUE_PADDLE}
           style={[
             styles.paddle,
             styles.leftPaddle,
             { top: `${((pongMatch?.leftY ?? 0.5) * 100) - 14}%` },
           ]}
         />
-        <View
+        <Image
+          resizeMode="contain"
+          source={RED_PADDLE}
           style={[
             styles.paddle,
             styles.rightPaddle,
             { top: `${((pongMatch?.rightY ?? 0.5) * 100) - 14}%` },
           ]}
         />
-        <View
+        <Image
+          resizeMode="contain"
+          source={YELLOW_BALL}
           style={[
             styles.ball,
             {
@@ -87,17 +111,30 @@ export function PongBoard() {
         />
         {!pongMatch ? (
           <View style={styles.courtMessage}>
-            <Text style={styles.courtMessageTitle}>Ready?</Text>
-            <Text style={styles.courtMessageBody}>Two joined players are required.</Text>
+            <Text style={styles.courtMessageTitle}>
+              {canStart ? 'Ready?' : 'Waiting for another player'}
+            </Text>
+            <Text style={styles.courtMessageBody}>
+              {canStart
+                ? 'Start when both players are ready.'
+                : 'Invite one nearby person to start a match.'}
+            </Text>
           </View>
         ) : null}
-      </View>
+      </ImageBackground>
 
       {!pongMatch || !pongMatch.running ? (
         <Pressable
+          disabled={!canStart}
           onPress={() => void start()}
-          style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}>
-          <Text style={styles.startLabel}>{pongMatch ? 'Rematch' : 'Start match'}</Text>
+          style={({ pressed }) => [
+            styles.startButton,
+            pressed && styles.pressed,
+            !canStart && styles.disabled,
+          ]}>
+          <Text style={styles.startLabel}>
+            {!canStart ? 'Waiting for player' : pongMatch ? 'Rematch' : 'Start match'}
+          </Text>
         </Pressable>
       ) : null}
     </View>
@@ -128,37 +165,23 @@ const styles = StyleSheet.create({
   },
   scoreText: { color: signal.deep, fontSize: 18, fontWeight: '800' },
   court: {
-    backgroundColor: signal.twilight,
-    borderColor: signal.mist,
     borderRadius: 14,
-    borderWidth: 2,
     height: BOARD_HEIGHT,
     overflow: 'hidden',
     position: 'relative',
   },
-  centerLine: {
-    borderColor: 'rgba(255,255,255,0.35)',
-    borderStyle: 'dashed',
-    borderWidth: 1,
-    height: '100%',
-    left: '50%',
-    position: 'absolute',
-  },
+  courtImage: { borderRadius: 14 },
   paddle: {
-    backgroundColor: signal.white,
-    borderRadius: 5,
     height: '28%',
     position: 'absolute',
-    width: 10,
+    width: '30%',
   },
-  leftPaddle: { left: '4%' },
-  rightPaddle: { right: '4%' },
+  leftPaddle: { left: '-9%' },
+  rightPaddle: { right: '-9%' },
   ball: {
-    backgroundColor: signal.sky,
-    borderRadius: 8,
-    height: 16,
+    height: 20,
     position: 'absolute',
-    width: 16,
+    width: 20,
   },
   courtMessage: {
     alignItems: 'center',
@@ -167,7 +190,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 18,
     position: 'absolute',
-    top: 100,
+    top: 70,
   },
   courtMessageTitle: { color: signal.white, fontSize: 22, fontWeight: '800' },
   courtMessageBody: { color: signal.fog, fontSize: 13, marginTop: 4 },
@@ -180,4 +203,5 @@ const styles = StyleSheet.create({
   },
   startLabel: { color: signal.white, fontSize: 16, fontWeight: '700' },
   pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.4 },
 });

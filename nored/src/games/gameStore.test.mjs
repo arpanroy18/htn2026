@@ -3,7 +3,10 @@ import { describe, it } from 'node:test';
 
 import {
   advancePong,
+  appendTelephoneEntry,
   appendStroke,
+  assignedTelephoneChain,
+  createTelephoneGame,
   createPongMatch,
   decodeDrawing,
   decodeStroke,
@@ -83,6 +86,51 @@ describe('draw-and-guess telephone', () => {
     assert.equal(nextTelephoneMode(3, 4), 'draw');
     assert.equal(nextTelephoneMode(4, 4), 'finished');
   });
+
+  it('rotates every chain through every player before reveal', () => {
+    const players = ['a', 'b', 'c'];
+    let game = createTelephoneGame('round-1', players);
+
+    for (const player of players) {
+      game = appendTelephoneEntry(game, {
+        authorId: player,
+        chainId: assignedTelephoneChain(game, player),
+        round: 0,
+        entry: { kind: 'prompt', text: `Prompt ${player}` },
+      });
+    }
+    assert.equal(game.roundIndex, 1);
+    assert.equal(game.mode, 'draw');
+    assert.equal(assignedTelephoneChain(game, 'a'), 'c');
+
+    for (const player of players) {
+      game = appendTelephoneEntry(game, {
+        authorId: player,
+        chainId: assignedTelephoneChain(game, player),
+        round: 1,
+        entry: {
+          kind: 'drawing',
+          strokes: [[{ x: 0, y: 0 }, { x: 10, y: 10 }]],
+        },
+      });
+    }
+    assert.equal(game.roundIndex, 2);
+    assert.equal(game.mode, 'guess');
+
+    for (const player of players) {
+      game = appendTelephoneEntry(game, {
+        authorId: player,
+        chainId: assignedTelephoneChain(game, player),
+        round: 2,
+        entry: { kind: 'guess', text: `Guess ${player}` },
+      });
+    }
+    assert.equal(game.mode, 'finished');
+    assert.deepEqual(
+      game.chains.a.map((entry) => entry.authorId),
+      ['a', 'b', 'c'],
+    );
+  });
 });
 
 describe('pong simulation', () => {
@@ -117,4 +165,5 @@ describe('standard chess rules', () => {
     assert.equal(next.lastMove.from, 'e2');
     assert.equal(next.lastMove.to, 'e4');
   });
+
 });

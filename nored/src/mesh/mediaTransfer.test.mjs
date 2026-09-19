@@ -83,7 +83,7 @@ describe('media packet validation', () => {
         type: 'game',
         gameId: 'telephone',
         event: 'stroke',
-        payload: 'x'.repeat(2001),
+        payload: 'x'.repeat(8001),
       }),
       false,
     );

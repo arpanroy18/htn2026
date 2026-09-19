@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   Alert,
   PanResponder,
@@ -14,16 +14,17 @@ import { signal } from '@/theme/signal';
 
 import { useGames } from './GameContext';
 import {
+  assignedTelephoneChain,
   MAX_DRAWING_STROKES,
   MAX_STROKE_POINTS,
+  telephoneRoundSubmissions,
   type DrawingPoint,
-  type TelephoneEntry,
+  type TelephoneChain,
 } from './gameStore';
 
-const CANVAS_HEIGHT = 240;
-const COLORS = [signal.deep, signal.blue, signal.twilight, signal.mist];
+const CANVAS_HEIGHT = 250;
 
-function Drawing({
+const Drawing = memo(function Drawing({
   strokes,
   width,
   height,
@@ -48,7 +49,7 @@ function Drawing({
               style={[
                 styles.line,
                 {
-                  backgroundColor: COLORS[strokeIndex % COLORS.length],
+                  backgroundColor: signal.ink,
                   left: (x1 + x2 - length) / 2,
                   top: (y1 + y2) / 2 - 2,
                   transform: [{ rotate: `${Math.atan2(y2 - y1, x2 - x1)}rad` }],
@@ -61,12 +62,13 @@ function Drawing({
       )}
     </>
   );
-}
+});
 
-function entryLabel(entry: TelephoneEntry) {
-  if (entry.kind === 'prompt') return 'Original phrase';
-  if (entry.kind === 'guess') return 'Guess';
-  return 'Drawing';
+function modeCopy(mode: TelephoneChain['mode']) {
+  if (mode === 'prompt') return { eyebrow: 'WRITE', title: 'Start with a secret phrase' };
+  if (mode === 'draw') return { eyebrow: 'DRAW', title: 'Turn these words into a picture' };
+  if (mode === 'guess') return { eyebrow: 'GUESS', title: 'What do you think this is?' };
+  return { eyebrow: 'REVEAL', title: 'See how every chain changed' };
 }
 
 export function DrawingTelephoneBoard({
@@ -87,15 +89,22 @@ export function DrawingTelephoneBoard({
   const [strokes, setStrokes] = useState<DrawingPoint[][]>([]);
   const [currentStroke, setCurrentStroke] = useState<DrawingPoint[]>([]);
   const [canvasWidth, setCanvasWidth] = useState(1);
-  const currentPlayerId =
-    telephoneChain?.playerIds[telephoneChain.turnIndex];
-  const isMyTurn = currentPlayerId === identity.id;
-  const currentName =
-    currentPlayerId === identity.id
+
+  const game = telephoneChain;
+  const chainId = game ? assignedTelephoneChain(game, identity.id) : undefined;
+  const assignedEntries = chainId && game ? game.chains[chainId] ?? [] : [];
+  const previousEntry = assignedEntries[assignedEntries.length - 1];
+  const submitted = Boolean(
+    game &&
+      assignedEntries.some((entry) => entry.round === game.roundIndex),
+  );
+  const readyCount = game ? telephoneRoundSubmissions(game) : 0;
+
+  const nameFor = (playerId: string) =>
+    playerId === identity.id
       ? 'You'
-      : participants.telephone.find((player) => player.id === currentPlayerId)?.name ??
+      : participants.telephone.find((player) => player.id === playerId)?.name ??
         'Nearby player';
-  const previousEntry = telephoneChain?.entries[telephoneChain.entries.length - 1];
 
   const pointFromEvent = (x: number, y: number) => ({
     x: Math.max(0, Math.min(100, (x / canvasWidth) * 100)),
@@ -106,9 +115,13 @@ export function DrawingTelephoneBoard({
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () =>
-          Boolean(isMyTurn && telephoneChain?.mode === 'draw'),
+          Boolean(game?.mode === 'draw' && !submitted),
+        onStartShouldSetPanResponderCapture: () =>
+          Boolean(game?.mode === 'draw' && !submitted),
         onMoveShouldSetPanResponder: () =>
-          Boolean(isMyTurn && telephoneChain?.mode === 'draw'),
+          Boolean(game?.mode === 'draw' && !submitted),
+        onMoveShouldSetPanResponderCapture: () =>
+          Boolean(game?.mode === 'draw' && !submitted),
         onPanResponderGrant: (event) => {
           if (strokes.length >= MAX_DRAWING_STROKES) return;
           setScrollEnabled(false);
@@ -122,13 +135,18 @@ export function DrawingTelephoneBoard({
             event.nativeEvent.locationY,
           );
           setCurrentStroke((current) => {
-            if (current.length >= MAX_STROKE_POINTS) return current;
             const previous = current[current.length - 1];
             if (
               previous &&
-              Math.hypot(point.x - previous.x, point.y - previous.y) < 1.5
+              Math.hypot(point.x - previous.x, point.y - previous.y) < 2
             ) {
               return current;
+            }
+            if (current.length >= MAX_STROKE_POINTS) {
+              return [
+                ...current.filter((_, index) => index % 2 === 0),
+                point,
+              ];
             }
             return [...current, point];
           });
@@ -136,21 +154,30 @@ export function DrawingTelephoneBoard({
         onPanResponderRelease: () => {
           setScrollEnabled(true);
           setCurrentStroke((current) => {
-            if (current.length >= 2) {
-              setStrokes((existing) => [...existing, current]);
-            }
+            if (current.length >= 2) setStrokes((existing) => [...existing, current]);
             return [];
           });
         },
         onPanResponderTerminate: () => {
           setScrollEnabled(true);
-          setCurrentStroke([]);
+          setCurrentStroke((current) => {
+            if (current.length >= 2) setStrokes((existing) => [...existing, current]);
+            return [];
+          });
         },
+        onPanResponderTerminationRequest: () => false,
+        onShouldBlockNativeResponder: () => true,
       }),
     // Gesture ownership and dimensions intentionally rebuild the responder.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canvasWidth, isMyTurn, strokes.length, telephoneChain?.mode],
+    [canvasWidth, game?.mode, strokes.length, submitted],
   );
+
+  const clearComposer = () => {
+    setText('');
+    setStrokes([]);
+    setCurrentStroke([]);
+  };
 
   const run = async (
     action: () => Promise<{ ok: true } | { ok: false; error: string }>,
@@ -160,66 +187,106 @@ export function DrawingTelephoneBoard({
     return result.ok;
   };
 
-  const start = async () => {
-    if (await run(startTelephoneChain)) {
-      setText('');
-      setStrokes([]);
-    }
+  const startGame = async () => {
+    if (await run(startTelephoneChain)) clearComposer();
   };
 
   const submit = async () => {
-    if (!telephoneChain) return;
-    let ok = false;
-    if (telephoneChain.mode === 'prompt') {
-      ok = await run(() => submitTelephonePrompt(text));
-    } else if (telephoneChain.mode === 'draw') {
-      ok = await run(() => submitTelephoneDrawing(strokes));
-    } else if (telephoneChain.mode === 'guess') {
-      ok = await run(() => submitTelephoneGuess(text));
-    }
-    if (ok) {
-      setText('');
-      setStrokes([]);
-      setCurrentStroke([]);
-    }
+    if (!game) return;
+    const ok =
+      game.mode === 'prompt'
+        ? await run(() => submitTelephonePrompt(text))
+        : game.mode === 'draw'
+          ? await run(() => submitTelephoneDrawing(strokes))
+          : await run(() => submitTelephoneGuess(text));
+    if (ok) clearComposer();
   };
 
-  if (!telephoneChain) {
+  if (!game) {
+    const joined = participants.telephone;
     return (
       <View style={styles.card}>
-        <Text style={styles.title}>Start a secret chain</Text>
-        <Text style={styles.body}>
-          The first player writes a phrase, the next draws it, and the next guesses.
-          Three or more joined players are required.
-        </Text>
+        <View style={styles.lobbyHero}>
+          <Text style={styles.lobbyEyebrow}>DRAWING TELEPHONE</Text>
+          <Text style={styles.lobbyTitle}>Waiting for players</Text>
+          <Text style={styles.lobbyBody}>
+            Once everyone is in the room, start the game. At least three players are required.
+          </Text>
+        </View>
+
+        <Text style={styles.sectionLabel}>PLAYERS IN ROOM</Text>
+        <View style={styles.playerList}>
+          {joined.map((player) => (
+            <View key={player.id} style={styles.playerPill}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>
+                  {player.name.trim().slice(0, 1).toUpperCase() || '?'}
+                </Text>
+              </View>
+              <Text style={styles.playerName}>
+                {player.id === identity.id ? 'You' : player.name}
+              </Text>
+            </View>
+          ))}
+        </View>
+
         <Pressable
-          onPress={() => void start()}
-          style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-          <Text style={styles.primaryLabel}>Start telephone</Text>
+          disabled={joined.length < 3}
+          onPress={() => void startGame()}
+          style={({ pressed }) => [
+            styles.primary,
+            pressed && styles.pressed,
+            joined.length < 3 && styles.disabled,
+          ]}>
+          <Text style={styles.primaryLabel}>
+            {joined.length < 3 ? 'Need 3 players to start' : 'Start game'}
+          </Text>
         </Pressable>
       </View>
     );
   }
 
-  if (telephoneChain.mode === 'finished') {
+  if (game.mode === 'finished') {
     return (
       <View style={styles.card}>
-        <Text style={styles.title}>The full chain</Text>
-        <Text style={styles.body}>See how the original phrase changed along the way.</Text>
-        {telephoneChain.entries.map((entry, index) => (
-          <View key={`${entry.authorId}-${index}`} style={styles.revealCard}>
-            <Text style={styles.revealLabel}>{entryLabel(entry)} · Turn {index + 1}</Text>
-            {entry.kind === 'drawing' ? (
-              <View style={styles.revealDrawing}>
-                <Drawing height={130} strokes={entry.strokes} width={250} />
+        <View style={styles.revealHero}>
+          <Text style={styles.revealEmoji}>✨</Text>
+          <Text style={styles.lobbyTitle}>All chains revealed</Text>
+          <Text style={styles.lobbyBody}>From original prompts to final guesses.</Text>
+        </View>
+        {game.playerIds.map((originId, chainIndex) => (
+          <View key={originId} style={styles.chainCard}>
+            <Text style={styles.chainTitle}>
+              Chain {chainIndex + 1} · started by {nameFor(originId)}
+            </Text>
+            {(game.chains[originId] ?? []).map((entry, index) => (
+              <View key={`${entry.authorId}-${entry.round}`} style={styles.revealEntry}>
+                <View style={styles.revealMarker}>
+                  <Text style={styles.revealMarkerText}>{index + 1}</Text>
+                </View>
+                <View style={styles.revealContent}>
+                  <Text style={styles.revealMeta}>
+                    {entry.kind === 'prompt'
+                      ? 'PROMPT'
+                      : entry.kind === 'drawing'
+                        ? 'DRAWING'
+                        : 'GUESS'}{' '}
+                    · {nameFor(entry.authorId)}
+                  </Text>
+                  {entry.kind === 'drawing' ? (
+                    <View style={styles.revealDrawing}>
+                      <Drawing height={130} strokes={entry.strokes} width={250} />
+                    </View>
+                  ) : (
+                    <Text style={styles.revealText}>“{entry.text}”</Text>
+                  )}
+                </View>
               </View>
-            ) : (
-              <Text style={styles.revealText}>“{entry.text}”</Text>
-            )}
+            ))}
           </View>
         ))}
         <Pressable
-          onPress={() => void start()}
+          onPress={() => void startGame()}
           style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
           <Text style={styles.primaryLabel}>Play again</Text>
         </Pressable>
@@ -227,47 +294,95 @@ export function DrawingTelephoneBoard({
     );
   }
 
-  return (
-    <View style={styles.card}>
-      <View style={styles.turnHeader}>
-        <View>
-          <Text style={styles.title}>
-            {isMyTurn ? 'Your turn' : `${currentName}'s turn`}
-          </Text>
-          <Text style={styles.body}>
-            {telephoneChain.mode === 'prompt'
-              ? 'Write a short phrase to begin.'
-              : telephoneChain.mode === 'draw'
-                ? 'Draw the phrase without using words.'
-                : 'Guess what the drawing represents.'}
+  const copy = modeCopy(game.mode);
+  if (submitted) {
+    return (
+      <View style={styles.card}>
+        <View style={styles.progressHeader}>
+          <Text style={styles.roundLabel}>
+            ROUND {game.roundIndex + 1} OF {game.playerIds.length}
           </Text>
         </View>
-        <View style={styles.turnBadge}>
-          <Text style={styles.turnBadgeText}>
-            {telephoneChain.turnIndex + 1}/{telephoneChain.playerIds.length}
+        <View style={styles.waitingPanel}>
+          <View style={styles.sentCheck}>
+            <Text style={styles.sentCheckText}>✓</Text>
+          </View>
+          <Text style={styles.waitingTitle}>Your response is in</Text>
+          <Text style={styles.waitingBody}>
+            {readyCount} of {game.playerIds.length} players are ready.
           </Text>
+          <View style={styles.readyList}>
+            {game.playerIds.map((playerId) => {
+              const playerChain = assignedTelephoneChain(game, playerId);
+              const ready = Boolean(
+                playerChain &&
+                  game.chains[playerChain]?.some(
+                    (entry) => entry.round === game.roundIndex,
+                  ),
+              );
+              return (
+                <View key={playerId} style={styles.readyRow}>
+                  <View style={[styles.readyDot, ready && styles.readyDotOn]} />
+                  <Text style={styles.readyName}>{nameFor(playerId)}</Text>
+                  <Text style={styles.readyStatus}>{ready ? 'Ready' : 'Working…'}</Text>
+                </View>
+              );
+            })}
+          </View>
         </View>
       </View>
+    );
+  }
 
-      {isMyTurn && telephoneChain.mode === 'draw' ? (
+  return (
+    <View style={styles.card}>
+      <View style={styles.progressHeader}>
+        <View>
+          <Text style={styles.roundLabel}>
+            ROUND {game.roundIndex + 1} OF {game.playerIds.length}
+          </Text>
+          <Text style={styles.taskEyebrow}>{copy.eyebrow}</Text>
+        </View>
+      </View>
+      <Text style={styles.taskTitle}>{copy.title}</Text>
+
+      {game.mode === 'draw' && previousEntry && previousEntry.kind !== 'drawing' ? (
+        <View style={styles.clue}>
+          <Text style={styles.clueLabel}>DRAW THIS</Text>
+          <Text style={styles.clueText}>{previousEntry.text}</Text>
+        </View>
+      ) : null}
+
+      {game.mode === 'guess' && previousEntry?.kind === 'drawing' ? (
+        <View style={styles.guessDrawing}>
+          <Drawing height={210} strokes={previousEntry.strokes} width={300} />
+        </View>
+      ) : null}
+
+      {game.mode === 'draw' ? (
         <>
-          <View style={styles.clue}>
-            <Text style={styles.clueLabel}>DRAW THIS</Text>
-            <Text style={styles.clueText}>
-              {previousEntry && previousEntry.kind !== 'drawing'
-                ? previousEntry.text
-                : 'Mystery phrase'}
-            </Text>
-          </View>
           <View
             onLayout={(event) => setCanvasWidth(event.nativeEvent.layout.width)}
+            onTouchCancel={() => setScrollEnabled(true)}
+            onTouchEnd={() => setScrollEnabled(true)}
+            onTouchStart={() => setScrollEnabled(false)}
             style={styles.canvas}
             {...panResponder.panHandlers}>
             <Drawing
               height={CANVAS_HEIGHT}
-              strokes={[...strokes, currentStroke]}
+              strokes={strokes}
               width={canvasWidth}
             />
+            {currentStroke.length ? (
+              <Drawing
+                height={CANVAS_HEIGHT}
+                strokes={[currentStroke]}
+                width={canvasWidth}
+              />
+            ) : null}
+            {!strokes.length && !currentStroke.length ? (
+              <Text style={styles.canvasHint}>Draw with your finger</Text>
+            ) : null}
           </View>
           <View style={styles.actions}>
             <Pressable
@@ -291,25 +406,18 @@ export function DrawingTelephoneBoard({
             </Pressable>
           </View>
         </>
-      ) : isMyTurn ? (
+      ) : (
         <>
-          {telephoneChain.mode === 'guess' &&
-          previousEntry?.kind === 'drawing' ? (
-            <View style={styles.guessDrawing}>
-              <Drawing height={200} strokes={previousEntry.strokes} width={300} />
-            </View>
-          ) : null}
           <TextInput
             autoCapitalize="sentences"
             maxLength={80}
             onChangeText={setText}
-            placeholder={
-              telephoneChain.mode === 'prompt' ? 'A cat on the moon…' : 'Your guess…'
-            }
-            placeholderTextColor={signal.slate}
+            placeholder={game.mode === 'prompt' ? 'A penguin making pancakes…' : 'Your best guess…'}
+            placeholderTextColor="#8a8f9b"
             style={styles.input}
             value={text}
           />
+          <Text style={styles.characterCount}>{text.length}/80</Text>
           <Pressable
             disabled={!text.trim()}
             onPress={() => void submit()}
@@ -319,16 +427,10 @@ export function DrawingTelephoneBoard({
               !text.trim() && styles.disabled,
             ]}>
             <Text style={styles.primaryLabel}>
-              {telephoneChain.mode === 'prompt' ? 'Start chain' : 'Send guess'}
+              {game.mode === 'prompt' ? 'Lock in phrase' : 'Send guess'}
             </Text>
           </Pressable>
         </>
-      ) : (
-        <View style={styles.waiting}>
-          <Text style={styles.waitingIcon}>•••</Text>
-          <Text style={styles.waitingText}>Waiting for {currentName}</Text>
-          <Text style={styles.waitingMeta}>Their answer stays hidden until the reveal.</Text>
-        </View>
       )}
     </View>
   );
@@ -338,106 +440,175 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: signal.white,
     borderColor: signal.fog,
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1,
     padding: 20,
   },
-  title: { color: signal.ink, fontSize: 21, fontWeight: '800' },
-  body: { color: signal.slate, fontSize: 14, lineHeight: 21, marginTop: 6 },
+  lobbyHero: { alignItems: 'center', paddingHorizontal: 8, paddingVertical: 10 },
+  lobbyEyebrow: {
+    color: signal.deep,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+  lobbyTitle: {
+    color: signal.ink,
+    fontSize: 25,
+    fontWeight: '900',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  lobbyBody: {
+    color: signal.slate,
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  sectionLabel: {
+    color: signal.slate,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.9,
+    marginTop: 22,
+  },
+  playerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  playerPill: {
+    alignItems: 'center',
+    backgroundColor: signal.paper,
+    borderRadius: 18,
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  avatar: {
+    alignItems: 'center',
+    backgroundColor: signal.mist,
+    borderRadius: 12,
+    height: 24,
+    justifyContent: 'center',
+    width: 24,
+  },
+  avatarText: { color: signal.ink, fontSize: 10, fontWeight: '900' },
+  playerName: { color: signal.ink, fontSize: 12, fontWeight: '700' },
   primary: {
     alignItems: 'center',
     backgroundColor: signal.deep,
-    borderRadius: 10,
+    borderRadius: 11,
     marginTop: 16,
     paddingHorizontal: 18,
-    paddingVertical: 13,
+    paddingVertical: 14,
   },
-  primaryLabel: { color: signal.white, fontSize: 15, fontWeight: '700' },
+  primaryLabel: { color: signal.white, fontSize: 15, fontWeight: '800' },
   pressed: { opacity: 0.7 },
   disabled: { opacity: 0.35 },
-  turnHeader: {
-    alignItems: 'flex-start',
+  progressHeader: {
+    alignItems: 'center',
     flexDirection: 'row',
-    gap: 12,
     justifyContent: 'space-between',
   },
-  turnBadge: {
-    backgroundColor: signal.sky,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  turnBadgeText: { color: signal.ink, fontSize: 12, fontWeight: '800' },
-  clue: {
-    backgroundColor: signal.sky,
-    borderRadius: 12,
-    marginTop: 16,
-    padding: 14,
-  },
-  clueLabel: { color: signal.slate, fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
-  clueText: { color: signal.ink, fontSize: 18, fontWeight: '700', marginTop: 4 },
-  canvas: {
-    backgroundColor: signal.paper,
-    borderColor: signal.fog,
-    borderRadius: 12,
-    borderWidth: 1,
-    height: CANVAS_HEIGHT,
-    marginTop: 12,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  line: { borderRadius: 2, height: 4, position: 'absolute' },
-  actions: { flexDirection: 'row', gap: 10 },
-  secondary: {
-    alignItems: 'center',
-    borderColor: signal.blue,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    marginTop: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 13,
-  },
-  secondaryLabel: { color: signal.blue, fontSize: 15, fontWeight: '700' },
-  actionFlex: { flex: 1 },
+  roundLabel: { color: signal.slate, fontSize: 11, fontWeight: '900', letterSpacing: 0.7 },
+  taskEyebrow: { color: signal.deep, fontSize: 12, fontWeight: '900', marginTop: 5 },
+  taskTitle: { color: signal.ink, fontSize: 24, fontWeight: '900', marginTop: 12 },
+  clue: { backgroundColor: signal.sky, borderRadius: 12, marginTop: 16, padding: 14 },
+  clueLabel: { color: signal.slate, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  clueText: { color: signal.ink, fontSize: 19, fontWeight: '800', marginTop: 5 },
   input: {
     backgroundColor: signal.paper,
     borderColor: signal.fog,
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     color: signal.ink,
     fontSize: 17,
     marginTop: 18,
-    padding: 14,
+    padding: 15,
   },
+  characterCount: { color: signal.slate, fontSize: 11, marginTop: 6, textAlign: 'right' },
+  canvas: {
+    alignItems: 'center',
+    backgroundColor: '#fbfbfd',
+    borderColor: signal.fog,
+    borderRadius: 14,
+    borderWidth: 1,
+    height: CANVAS_HEIGHT,
+    justifyContent: 'center',
+    marginTop: 14,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  canvasHint: { color: '#9da2ae', fontSize: 14 },
+  line: { borderRadius: 2.5, height: 5, position: 'absolute' },
+  actions: { flexDirection: 'row', gap: 10 },
+  secondary: {
+    alignItems: 'center',
+    borderColor: signal.blue,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    marginTop: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  secondaryLabel: { color: signal.blue, fontSize: 15, fontWeight: '800' },
+  actionFlex: { flex: 1 },
   guessDrawing: {
     backgroundColor: signal.paper,
-    borderRadius: 12,
-    height: 200,
+    borderRadius: 14,
+    height: 210,
     marginTop: 16,
     overflow: 'hidden',
     position: 'relative',
   },
-  waiting: {
+  waitingPanel: { alignItems: 'center', paddingTop: 22 },
+  sentCheck: {
     alignItems: 'center',
-    backgroundColor: signal.paper,
-    borderRadius: 12,
-    marginTop: 18,
-    padding: 30,
+    backgroundColor: signal.deep,
+    borderRadius: 28,
+    height: 56,
+    justifyContent: 'center',
+    width: 56,
   },
-  waitingIcon: { color: signal.deep, fontSize: 24, fontWeight: '800', letterSpacing: 4 },
-  waitingText: { color: signal.ink, fontSize: 17, fontWeight: '700', marginTop: 8 },
-  waitingMeta: { color: signal.slate, fontSize: 13, marginTop: 5, textAlign: 'center' },
-  revealCard: {
+  sentCheckText: { color: signal.white, fontSize: 28, fontWeight: '900' },
+  waitingTitle: { color: signal.ink, fontSize: 22, fontWeight: '900', marginTop: 13 },
+  waitingBody: { color: signal.slate, fontSize: 14, marginTop: 5 },
+  readyList: { marginTop: 18, width: '100%' },
+  readyRow: {
+    alignItems: 'center',
+    borderTopColor: signal.fog,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    paddingVertical: 11,
+  },
+  readyDot: { backgroundColor: signal.fog, borderRadius: 5, height: 10, marginRight: 10, width: 10 },
+  readyDotOn: { backgroundColor: signal.deep },
+  readyName: { color: signal.ink, flex: 1, fontSize: 14, fontWeight: '700' },
+  readyStatus: { color: signal.slate, fontSize: 12 },
+  revealHero: { alignItems: 'center', marginBottom: 8 },
+  revealEmoji: { fontSize: 32 },
+  chainCard: {
     backgroundColor: signal.paper,
-    borderRadius: 12,
-    marginTop: 12,
+    borderRadius: 14,
+    marginTop: 14,
     padding: 14,
   },
-  revealLabel: { color: signal.slate, fontSize: 10, fontWeight: '800', letterSpacing: 0.7 },
-  revealText: { color: signal.ink, fontSize: 18, fontWeight: '700', marginTop: 7 },
+  chainTitle: { color: signal.ink, fontSize: 15, fontWeight: '900' },
+  revealEntry: { flexDirection: 'row', marginTop: 14 },
+  revealMarker: {
+    alignItems: 'center',
+    backgroundColor: signal.sky,
+    borderRadius: 12,
+    height: 24,
+    justifyContent: 'center',
+    marginRight: 10,
+    width: 24,
+  },
+  revealMarkerText: { color: signal.ink, fontSize: 10, fontWeight: '900' },
+  revealContent: { flex: 1 },
+  revealMeta: { color: signal.slate, fontSize: 9, fontWeight: '900', letterSpacing: 0.7 },
+  revealText: { color: signal.ink, fontSize: 17, fontWeight: '800', marginTop: 5 },
   revealDrawing: {
     height: 130,
-    marginTop: 8,
+    marginTop: 7,
     overflow: 'hidden',
     position: 'relative',
   },

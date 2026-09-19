@@ -1,6 +1,14 @@
 import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
 import { useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type ImageSourcePropType,
+} from 'react-native';
 
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
@@ -8,10 +16,42 @@ import { signal } from '@/theme/signal';
 import { chessColorForPlayer, legalTargets, playerCanMove } from './chessGame';
 import { useGames } from './GameContext';
 
-const PIECES: Record<Color, Record<PieceSymbol, string>> = {
-  w: { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙' },
-  b: { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' },
+const PIECE_IMAGES: Record<Color, Record<PieceSymbol, ImageSourcePropType>> = {
+  w: {
+    b: require('../../public/assets/chess-pieces/white-bishop.png'),
+    r: require('../../public/assets/chess-pieces/white-rook.png'),
+    k: require('../../public/assets/chess-pieces/white-king.png'),
+    n: require('../../public/assets/chess-pieces/white-knight.png'),
+    q: require('../../public/assets/chess-pieces/white-queen.png'),
+    p: require('../../public/assets/chess-pieces/white-pawn.png'),
+  },
+  b: {
+    b: require('../../public/assets/chess-pieces/blue-bishop.png'),
+    r: require('../../public/assets/chess-pieces/blue-rook.png'),
+    k: require('../../public/assets/chess-pieces/blue-king.png'),
+    n: require('../../public/assets/chess-pieces/blue-knight.png'),
+    q: require('../../public/assets/chess-pieces/blue-queen.png'),
+    p: require('../../public/assets/chess-pieces/blue-pawn.png'),
+  },
 };
+
+function ChessPieceSprite({
+  color,
+  type,
+  size,
+}: {
+  color: Color;
+  type: PieceSymbol;
+  size: number;
+}) {
+  return (
+    <Image
+      resizeMode="contain"
+      source={PIECE_IMAGES[color][type]}
+      style={{ height: size, width: size }}
+    />
+  );
+}
 
 function squaresFor(color: Color) {
   const files = color === 'w' ? 'abcdefgh' : 'hgfedcba';
@@ -22,6 +62,7 @@ function squaresFor(color: Color) {
 export function ChessBoard() {
   const { identity } = useMeshUi();
   const { participants, chessMatch, startChess, moveChess, resignChess } = useGames();
+  const hasOpponent = participants.chess.some((player) => player.id !== identity.id);
   const [selected, setSelected] = useState<string>();
   const [boardWidth, setBoardWidth] = useState(320);
   const chess = useMemo(() => new Chess(chessMatch?.fen), [chessMatch?.fen]);
@@ -101,7 +142,9 @@ export function ChessBoard() {
           <Text style={styles.subtitle}>
             {chessMatch
               ? `You are ${myColor === 'w' ? 'White' : 'Black'} · ${opponentName}`
-              : 'Invite one nearby player, then start.'}
+              : hasOpponent
+                ? 'A nearby opponent is ready.'
+                : 'Invite a nearby opponent to start.'}
           </Text>
         </View>
         {chessMatch?.status === 'playing' ? (
@@ -110,57 +153,76 @@ export function ChessBoard() {
       </View>
 
       <View
-        onLayout={(event) => setBoardWidth(event.nativeEvent.layout.width)}
+        onLayout={(event) =>
+          setBoardWidth(Math.max(8, event.nativeEvent.layout.width - 4))
+        }
         style={styles.board}>
-        {squares.map((square, index) => {
-          const piece = chess.get(square);
-          const file = square.charCodeAt(0) - 97;
-          const rank = Number(square[1]);
-          const dark = (file + rank) % 2 === 1;
-          const isSelected = selected === square;
-          const isTarget = targets.includes(square);
-          const isLastMove =
-            chessMatch?.lastMove?.from === square || chessMatch?.lastMove?.to === square;
-          return (
-            <Pressable
-              key={square}
-              accessibilityLabel={`${square}${piece ? ` ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}`}
-              onPress={() => chooseSquare(square)}
-              style={[
-                styles.square,
-                {
-                  backgroundColor: dark ? '#91a7d8' : '#eaf0fc',
-                  height: boardWidth / 8,
-                  width: boardWidth / 8,
-                },
-                isLastMove && styles.lastMove,
-                isSelected && styles.selected,
-              ]}>
-              {piece ? (
-                <Text style={[styles.piece, { fontSize: boardWidth / 11 }]}>
-                  {PIECES[piece.color][piece.type]}
-                </Text>
-              ) : null}
-              {isTarget ? <View style={styles.target} /> : null}
-              {index >= 56 ? <Text style={styles.fileLabel}>{square[0]}</Text> : null}
-            </Pressable>
-          );
-        })}
+        {Array.from({ length: 8 }, (_, rowIndex) => (
+          <View key={rowIndex} style={styles.boardRow}>
+            {squares.slice(rowIndex * 8, rowIndex * 8 + 8).map((square) => {
+              const piece = chess.get(square);
+              const file = square.charCodeAt(0) - 97;
+              const rank = Number(square[1]);
+              const dark = (file + rank) % 2 === 1;
+              const isSelected = selected === square;
+              const isTarget = targets.includes(square);
+              const isLastMove =
+                chessMatch?.lastMove?.from === square ||
+                chessMatch?.lastMove?.to === square;
+              return (
+                <Pressable
+                  key={square}
+                  accessibilityLabel={`${square}${piece ? ` ${piece.color === 'w' ? 'white' : 'black'} ${piece.type}` : ''}`}
+                  onPress={() => chooseSquare(square)}
+                  style={[
+                    styles.square,
+                    { backgroundColor: dark ? '#91a7d8' : '#eaf0fc' },
+                    isLastMove && styles.lastMove,
+                    isSelected && styles.selected,
+                  ]}>
+                  {piece ? (
+                    <ChessPieceSprite
+                      color={piece.color}
+                      size={(boardWidth / 8) * 0.82}
+                      type={piece.type}
+                    />
+                  ) : null}
+                  {isTarget ? <View style={styles.target} /> : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
       </View>
 
       {!chessMatch || chessMatch.status !== 'playing' ? (
         <Pressable
+          disabled={!hasOpponent}
           onPress={() => void start()}
-          style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-          <Text style={styles.primaryLabel}>{chessMatch ? 'New match' : 'Start match'}</Text>
+          style={({ pressed }) => [
+            styles.primary,
+            pressed && styles.pressed,
+            !hasOpponent && styles.disabled,
+          ]}>
+          <Text style={styles.primaryLabel}>
+            {hasOpponent ? (chessMatch ? 'New match' : 'Start match') : 'Waiting for player'}
+          </Text>
         </Pressable>
       ) : (
         <Pressable
           onPress={() =>
-            Alert.alert('Resign match?', 'Your opponent will win.', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Resign', style: 'destructive', onPress: () => void run(resignChess) },
-            ])
+            Alert.alert(
+              'Resign match?',
+              'Your opponent will win.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Resign',
+                  style: 'destructive',
+                  onPress: () => void run(resignChess),
+                },
+              ],
+            )
           }
           style={({ pressed }) => [styles.resign, pressed && styles.pressed]}>
           <Text style={styles.resignLabel}>Resign</Text>
@@ -201,17 +263,16 @@ const styles = StyleSheet.create({
     borderColor: signal.twilight,
     borderRadius: 4,
     borderWidth: 2,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     overflow: 'hidden',
     width: '100%',
   },
+  boardRow: { flex: 1, flexDirection: 'row' },
   square: {
     alignItems: 'center',
+    flex: 1,
     justifyContent: 'center',
     position: 'relative',
   },
-  piece: { color: signal.ink, lineHeight: 45 },
   selected: { borderColor: signal.deep, borderWidth: 3 },
   lastMove: { backgroundColor: '#f4dc78' },
   target: {
@@ -220,14 +281,6 @@ const styles = StyleSheet.create({
     height: 16,
     position: 'absolute',
     width: 16,
-  },
-  fileLabel: {
-    bottom: 1,
-    color: signal.slate,
-    fontSize: 8,
-    fontWeight: '700',
-    position: 'absolute',
-    right: 2,
   },
   primary: {
     alignItems: 'center',
@@ -247,4 +300,5 @@ const styles = StyleSheet.create({
   },
   resignLabel: { color: signal.slate, fontSize: 15, fontWeight: '700' },
   pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.4 },
 });

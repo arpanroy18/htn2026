@@ -49,6 +49,10 @@ private const val TAG = "NoredBLE"
 private const val PREFS = "nored_ble_identity"
 private const val DEVICE_ID = "device_id"
 private const val DISPLAY_NAME = "display_name"
+private const val AVATAR_ICON = "avatar_icon"
+private const val AVATAR_COLOR = "avatar_color"
+private val AVATAR_ICONS = listOf("nearby", "chats", "alerts", "games", "gear", "mic", "image", "send")
+private const val AVATAR_COLOR_COUNT = 9
 private const val STALE_PEER_MS = 20_000L
 private const val PACKET_MAGIC: Byte = 0x4E
 private const val MAX_CONNECTIONS = 6
@@ -67,6 +71,8 @@ private data class PeerRecord(
   var lastSeen: Long,
   var nored: Boolean = false,
   var confirmedIdentity: Boolean = false,
+  var avatarIcon: String? = null,
+  var avatarColor: Int? = null,
 )
 
 private data class WriteJob(
@@ -170,6 +176,32 @@ class NoredBluetoothModule : Module() {
 
   private fun preferences() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+  private fun stableHash(input: String): UInt {
+    var hash = 0u
+    input.forEach { character ->
+      hash = (hash * 31u + character.code.toUInt()) and 0xFFFFFFFFu
+    }
+    return hash
+  }
+
+  private fun avatarProfile(id: String): Pair<String, Int> {
+    val hash = stableHash(id)
+    val icon = AVATAR_ICONS[(hash % AVATAR_ICONS.size.toUInt()).toInt()]
+    val color = ((hash * 31u) % AVATAR_COLOR_COUNT.toUInt()).toInt()
+    return icon to color
+  }
+
+  private fun ensureAvatarProfile(id: String): Pair<String, Int> {
+    val prefs = preferences()
+    val storedIcon = prefs.getString(AVATAR_ICON, null)
+    if (storedIcon != null && prefs.contains(AVATAR_COLOR)) {
+      return storedIcon to prefs.getInt(AVATAR_COLOR, 0)
+    }
+    val profile = avatarProfile(id)
+    prefs.edit().putString(AVATAR_ICON, profile.first).putInt(AVATAR_COLOR, profile.second).apply()
+    return profile
+  }
+
   private fun identityMap(): Map<String, Any> {
     val prefs = preferences()
     var id = prefs.getString(DEVICE_ID, null)
@@ -182,7 +214,13 @@ class NoredBluetoothModule : Module() {
     if (storedName != name) {
       prefs.edit().putString(DISPLAY_NAME, name).apply()
     }
-    return mapOf("id" to id, "name" to name)
+    val avatar = ensureAvatarProfile(id)
+    return mapOf(
+      "id" to id,
+      "name" to name,
+      "avatarIcon" to avatar.first,
+      "avatarColor" to avatar.second,
+    )
   }
 
   private fun normalizedDisplayName(rawName: String): String? {
@@ -205,9 +243,11 @@ class NoredBluetoothModule : Module() {
   private fun identityJson(): ByteArray {
     val identity = identityMap()
     return JSONObject()
-      .put("v", 1)
+      .put("v", 2)
       .put("id", identity.getValue("id"))
       .put("name", identity.getValue("name"))
+      .put("avatarIcon", identity.getValue("avatarIcon"))
+      .put("avatarColor", identity.getValue("avatarColor"))
       .toString()
       .toByteArray(StandardCharsets.UTF_8)
   }
@@ -935,6 +975,8 @@ class NoredBluetoothModule : Module() {
       val json = JSONObject(String(bytes, StandardCharsets.UTF_8))
       val id = json.getString("id").lowercase()
       val name = json.optString("name", "Nored device").take(40)
+      val avatarIcon = json.optString("avatarIcon", "").ifEmpty { null }
+      val avatarColor = if (json.has("avatarColor")) json.optInt("avatarColor") else null
       UUID.fromString(id)
       val address = gatt.device.address
       val previousId = addressToPeerId[address] ?: address
@@ -947,6 +989,8 @@ class NoredBluetoothModule : Module() {
         lastSeen = System.currentTimeMillis(),
         nored = true,
         confirmedIdentity = true,
+        avatarIcon = avatarIcon ?: existing?.avatarIcon,
+        avatarColor = avatarColor ?: existing?.avatarColor,
       )
       val replacesId = if (previousId != id && peers.containsKey(previousId)) previousId else null
       if (replacesId != null) {
@@ -979,6 +1023,8 @@ class NoredBluetoothModule : Module() {
       val json = JSONObject(String(value, StandardCharsets.UTF_8))
       val id = json.getString("id").lowercase()
       val name = json.optString("name", "Nored device").take(40)
+      val avatarIcon = json.optString("avatarIcon", "").ifEmpty { null }
+      val avatarColor = if (json.has("avatarColor")) json.optInt("avatarColor") else null
       UUID.fromString(id)
       val existing = peers[id] ?: peers[addressToPeerId[device.address] ?: device.address]
       val record = PeerRecord(
@@ -989,6 +1035,8 @@ class NoredBluetoothModule : Module() {
         lastSeen = System.currentTimeMillis(),
         nored = true,
         confirmedIdentity = true,
+        avatarIcon = avatarIcon ?: existing?.avatarIcon,
+        avatarColor = avatarColor ?: existing?.avatarColor,
       )
       val previousId = addressToPeerId[device.address]
       val replacesId = if (previousId != null && previousId != id && peers.containsKey(previousId)) previousId else null
@@ -1309,6 +1357,12 @@ class NoredBluetoothModule : Module() {
       "nored" to peer.nored,
       "identityConfirmed" to peer.confirmedIdentity,
     )
+    if (peer.avatarIcon != null) {
+      map["avatarIcon"] = peer.avatarIcon
+    }
+    if (peer.avatarColor != null) {
+      map["avatarColor"] = peer.avatarColor
+    }
     if (replacesId != null) {
       map["replacesId"] = replacesId
     }

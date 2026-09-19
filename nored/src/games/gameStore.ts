@@ -24,16 +24,21 @@ export type TelephoneRound = {
 };
 
 export type TelephoneEntry =
-  | { kind: 'prompt'; authorId: string; text: string }
-  | { kind: 'drawing'; authorId: string; strokes: DrawingPoint[][] }
-  | { kind: 'guess'; authorId: string; text: string };
+  | { kind: 'prompt'; authorId: string; round: number; text: string }
+  | { kind: 'drawing'; authorId: string; round: number; strokes: DrawingPoint[][] }
+  | { kind: 'guess'; authorId: string; round: number; text: string };
+
+export type TelephoneEntryDraft =
+  | { kind: 'prompt'; text: string }
+  | { kind: 'drawing'; strokes: DrawingPoint[][] }
+  | { kind: 'guess'; text: string };
 
 export type TelephoneChain = {
   id: string;
   playerIds: string[];
-  turnIndex: number;
+  roundIndex: number;
   mode: 'prompt' | 'draw' | 'guess' | 'finished';
-  entries: TelephoneEntry[];
+  chains: Record<string, TelephoneEntry[]>;
 };
 
 export type PongMatch = {
@@ -63,7 +68,7 @@ export type ChessMatch = {
 };
 
 export const GAME_ROOM_ID = 'nored-game-room';
-export const MAX_STROKE_POINTS = 24;
+export const MAX_STROKE_POINTS = 80;
 export const MAX_DRAWING_STROKES = 8;
 
 function createGameId() {
@@ -152,12 +157,79 @@ export function decodeDrawing(payload?: string) {
 }
 
 export function nextTelephoneMode(
-  turnIndex: number,
+  roundIndex: number,
   playerCount: number,
 ): TelephoneChain['mode'] {
-  if (turnIndex >= playerCount) return 'finished';
-  if (turnIndex === 0) return 'prompt';
-  return turnIndex % 2 === 1 ? 'draw' : 'guess';
+  if (roundIndex >= playerCount) return 'finished';
+  if (roundIndex === 0) return 'prompt';
+  return roundIndex % 2 === 1 ? 'draw' : 'guess';
+}
+
+export function createTelephoneGame(id: string, playerIds: string[]): TelephoneChain {
+  return {
+    id,
+    playerIds,
+    roundIndex: 0,
+    mode: 'prompt',
+    chains: Object.fromEntries(playerIds.map((playerId) => [playerId, []])),
+  };
+}
+
+export function assignedTelephoneChain(game: TelephoneChain, playerId: string) {
+  const playerIndex = game.playerIds.indexOf(playerId);
+  if (playerIndex < 0) return undefined;
+  const chainIndex =
+    (playerIndex - game.roundIndex + game.playerIds.length) % game.playerIds.length;
+  return game.playerIds[chainIndex];
+}
+
+export function telephoneRoundSubmissions(game: TelephoneChain) {
+  return Object.values(game.chains).reduce(
+    (count, entries) =>
+      count + (entries.some((entry) => entry.round === game.roundIndex) ? 1 : 0),
+    0,
+  );
+}
+
+export function appendTelephoneEntry(
+  game: TelephoneChain,
+  input: {
+    chainId: string;
+    authorId: string;
+    round: number;
+    entry: TelephoneEntryDraft;
+  },
+): TelephoneChain {
+  if (
+    game.mode === 'finished' ||
+    input.round !== game.roundIndex ||
+    assignedTelephoneChain(game, input.authorId) !== input.chainId ||
+    !game.chains[input.chainId] ||
+    game.chains[input.chainId].some((entry) => entry.round === input.round)
+  ) {
+    return game;
+  }
+  const expectedKind =
+    game.mode === 'prompt' ? 'prompt' : game.mode === 'draw' ? 'drawing' : 'guess';
+  if (input.entry.kind !== expectedKind) return game;
+  const entry = {
+    ...input.entry,
+    authorId: input.authorId,
+    round: input.round,
+  } as TelephoneEntry;
+  const next: TelephoneChain = {
+    ...game,
+    chains: {
+      ...game.chains,
+      [input.chainId]: [...game.chains[input.chainId], entry],
+    },
+  };
+  const submissionCount = telephoneRoundSubmissions(next);
+  if (submissionCount >= game.playerIds.length) {
+    next.roundIndex = game.roundIndex + 1;
+    next.mode = nextTelephoneMode(next.roundIndex, game.playerIds.length);
+  }
+  return next;
 }
 
 export function createPongMatch(hostId: string, guestId: string): PongMatch {
