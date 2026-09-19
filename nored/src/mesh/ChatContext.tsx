@@ -99,6 +99,15 @@ function confirmedPeers(peers: Peer[]) {
   return peers.filter((peer) => peer.identityConfirmed);
 }
 
+/**
+ * Group sends fan the same transfer out to several peers, so the in-flight chunk
+ * list has to be tracked per recipient — keying on the transfer id alone let the
+ * last peer overwrite the rest, and their acks and retries were then ignored.
+ */
+function outgoingKey(transferId: string, recipientId: string) {
+  return `${transferId}|${recipientId}`;
+}
+
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { identity, peers, noredPeers } = useMeshUi();
   const meshRouter = useRouterService();
@@ -201,13 +210,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const sendPacket = useCallback(async (peerId: string, packet: Packet) => {
-    await meshRouter.sendDirect(
-      peerId,
-      packet,
-      packet.type === 'media-chunk' && outgoingTransfers.current.get(packet.transferId)?.manifest.mediaKind === 'audio'
-        ? 4
-        : undefined,
-    );
+    const mediaKind =
+      packet.type === 'media-chunk'
+        ? outgoingTransfers.current.get(outgoingKey(packet.transferId, peerId))?.manifest.mediaKind
+        : undefined;
+    await meshRouter.sendDirect(peerId, packet, mediaKind === 'audio' ? 4 : undefined);
   }, [meshRouter]);
 
   const floodPacket = useCallback(
@@ -293,7 +300,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         width: manifest.width,
         height: manifest.height,
         durationMs: manifest.durationMs,
-        transferProgress: localUri ? 0 : 0,
+        // Media we already hold on disk is complete; only an inbound transfer starts at 0.
+        transferProgress: localUri ? 1 : 0,
         status: mine ? status : undefined,
         timestamp: manifest.timestamp,
         time: formatMessageClock(manifest.timestamp),
@@ -316,12 +324,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       bytes: Uint8Array,
       onlySequences?: number[],
     ) => {
-      if (mediaSending.current.has(manifest.id)) return;
+      const key = outgoingKey(manifest.id, peerId);
+      if (mediaSending.current.has(key)) return;
       const epoch = meshRouter.epoch;
-      mediaSending.current.add(manifest.id);
+      mediaSending.current.add(key);
       try {
         const allChunks = splitMediaBytes({ manifest, bytes });
-        outgoingTransfers.current.set(manifest.id, { manifest, chunks: allChunks });
+        outgoingTransfers.current.set(key, { manifest, chunks: allChunks });
         const chunks = onlySequences
           ? onlySequences.map((sequence) => allChunks[sequence]).filter(Boolean)
           : allChunks;
@@ -330,16 +339,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         for (let index = 0; index < chunks.length; index += 1) {
           if (epoch !== meshRouter.epoch) throw new Error('Transfer cancelled.');
           await sendPacket(peerId, chunks[index]);
-          const completed = onlySequences
-            ? undefined
-            : Math.min(0.98, (index + 1) / Math.max(1, chunks.length));
-          if (completed !== undefined) {
+          if (!onlySequences) {
             setState((current) =>
-              patchMessage(current, threadId, manifest.id, { transferProgress: completed }),
+              patchMessage(current, threadId, manifest.id, {
+                // Every chunk is on the wire once the loop ends; the ack only confirms delivery.
+                transferProgress: (index + 1) / Math.max(1, chunks.length),
+                transferError: undefined,
+              }),
             );
           }
         }
-      } finally { mediaSending.current.delete(manifest.id); }
+      } finally { mediaSending.current.delete(key); }
     },
     [mediaThreadId, meshRouter, sendPacket, setState],
   );
@@ -360,7 +370,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ttlHops: groupId ? GROUP_TTL_HOPS : undefined,
         mediaKind: message.kind === 'image' ? 'image' : 'audio',
         mimeType: message.mimeType,
-        byteLength: message.byteLength,
+        byteLength: bytes.byteLength,
         chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
         hash: message.hash,
         width: message.width,
@@ -569,23 +579,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (packet.type === 'media-chunk') {
-        if (seenIds.current.has(packet.id)) {
-          const existing = incomingTransfers.current.get(packet.transferId);
-          if (existing) acceptMediaChunk(existing, packet);
-          return;
+        // A duplicate still has to fall through to the completion check below: when
+        // the *last* chunk arrived twice, the transfer used to stall at 99% forever.
+        if (!seenIds.current.has(packet.id)) {
+          remember(packet.id);
+          if (groupId) void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
         }
-        remember(packet.id);
-        if (groupId) void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
         const transfer = incomingTransfers.current.get(packet.transferId);
-        if (!transfer || !acceptMediaChunk(transfer, packet)) return;
+        if (!transfer) return;
+        const before = transfer.chunks.size;
+        if (!acceptMediaChunk(transfer, packet)) return;
         const received = transfer.chunks.size;
+        const complete = received === transfer.manifest.chunkCount;
+        // Flooding re-delivers chunks constantly; only write when progress moved.
+        if (received === before && !complete) return;
         const chunkThreadId = mediaThreadId(transfer.manifest, packet.senderId);
         setState((current) =>
           patchMessage(current, chunkThreadId, packet.transferId, {
             transferProgress: received / transfer.manifest.chunkCount,
           }),
         );
-        if (received !== transfer.manifest.chunkCount) return;
+        if (!complete) return;
         try {
           const bytes = assembleMediaBytes(transfer);
           if ((await sha256(bytes)) !== transfer.manifest.hash) {
@@ -627,9 +641,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (packet.type === 'media-ack') {
-        const outgoing = outgoingTransfers.current.get(packet.transferId);
-        if (!outgoing || outgoing.manifest.recipientId !== packet.senderId) return;
-        outgoingTransfers.current.delete(packet.transferId);
+        const key = outgoingKey(packet.transferId, packet.senderId);
+        const outgoing = outgoingTransfers.current.get(key);
+        if (!outgoing) return;
+        outgoingTransfers.current.delete(key);
         setState((current) =>
           patchMessage(current, packet.groupId ?? packet.senderId, packet.transferId, {
             status: 'sent',
@@ -641,8 +656,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (packet.type === 'media-retry') {
-        const outgoing = outgoingTransfers.current.get(packet.transferId);
-        if (!outgoing || outgoing.manifest.recipientId !== packet.senderId) return;
+        const outgoing = outgoingTransfers.current.get(outgoingKey(packet.transferId, packet.senderId));
+        if (!outgoing) return;
         for (const sequence of packet.missing) {
           const chunk = outgoing.chunks[sequence];
           if (chunk) await sendPacket(packet.senderId, chunk);
@@ -896,7 +911,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ttlHops: isGroup ? (isAlertThreadId(threadId) ? ALERT_TTL_HOPS : GROUP_TTL_HOPS) : undefined,
         mediaKind,
         mimeType: prepared.mimeType,
-        byteLength: prepared.byteLength,
+        // Both must describe the same byte run the chunker is about to split.
+        byteLength: bytes.byteLength,
         chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
         hash: prepared.hash,
         width: prepared.width,

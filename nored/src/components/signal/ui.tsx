@@ -59,15 +59,18 @@ export function IconButton({
   disabled,
   tone = 'outline',
   style,
+  accessibilityLabel,
 }: {
   children: ReactNode;
   onPress?: () => void;
   disabled?: boolean;
   tone?: 'outline' | 'ghost' | 'filled';
   style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string;
 }) {
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}

@@ -17,6 +17,15 @@ export type IncomingTransfer = {
 const BASE64_ALPHABET =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
+// Char code -> 6-bit value, so decoding never walks the alphabet with indexOf.
+const BASE64_VALUES = (() => {
+  const table = new Int8Array(256).fill(-1);
+  for (let index = 0; index < BASE64_ALPHABET.length; index += 1) {
+    table[BASE64_ALPHABET.charCodeAt(index)] = index;
+  }
+  return table;
+})();
+
 export function bytesToBase64(bytes: Uint8Array) {
   let output = '';
   for (let index = 0; index < bytes.length; index += 3) {
@@ -32,24 +41,28 @@ export function bytesToBase64(bytes: Uint8Array) {
   return output;
 }
 
+/** Tolerates missing padding and stray whitespace — some platform encoders omit both. */
 export function base64ToBytes(value: string) {
-  const clean = value.replace(/\s/g, '');
-  if (!clean || clean.length % 4 !== 0) throw new Error('Invalid base64 payload.');
-  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
-  const output = new Uint8Array((clean.length / 4) * 3 - padding);
+  const output = new Uint8Array(Math.floor((value.length * 3) / 4));
   let offset = 0;
-  for (let index = 0; index < clean.length; index += 4) {
-    const a = BASE64_ALPHABET.indexOf(clean[index]);
-    const b = BASE64_ALPHABET.indexOf(clean[index + 1]);
-    const c = clean[index + 2] === '=' ? 0 : BASE64_ALPHABET.indexOf(clean[index + 2]);
-    const d = clean[index + 3] === '=' ? 0 : BASE64_ALPHABET.indexOf(clean[index + 3]);
-    if (a < 0 || b < 0 || c < 0 || d < 0) throw new Error('Invalid base64 payload.');
-    const combined = (a << 18) | (b << 12) | (c << 6) | d;
-    if (offset < output.length) output[offset++] = (combined >> 16) & 255;
-    if (offset < output.length) output[offset++] = (combined >> 8) & 255;
-    if (offset < output.length) output[offset++] = combined & 255;
+  let buffer = 0;
+  let bits = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 61) break; // '=' — padding ends the payload.
+    const sextet = code < 256 ? BASE64_VALUES[code] : -1;
+    if (sextet < 0) {
+      if (code === 32 || (code >= 9 && code <= 13)) continue;
+      throw new Error('Invalid base64 payload.');
+    }
+    buffer = (buffer << 6) | sextet;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output[offset++] = (buffer >> bits) & 255;
+    }
   }
-  return output;
+  return offset === output.length ? output : output.subarray(0, offset);
 }
 
 export function splitMediaBytes(input: {
@@ -95,7 +108,13 @@ export function acceptMediaChunk(transfer: IncomingTransfer, packet: MediaChunkP
   ) {
     return false;
   }
-  transfer.chunks.set(packet.sequence, base64ToBytes(packet.payload));
+  let payload: Uint8Array;
+  try {
+    payload = base64ToBytes(packet.payload);
+  } catch {
+    return false;
+  }
+  transfer.chunks.set(packet.sequence, payload);
   transfer.updatedAt = Date.now();
   return true;
 }
@@ -116,6 +135,10 @@ export function assembleMediaBytes(transfer: IncomingTransfer) {
   for (let index = 0; index < transfer.manifest.chunkCount; index += 1) {
     const chunk = transfer.chunks.get(index);
     if (!chunk) throw new Error(`Missing media chunk ${index}.`);
+    // set() would throw a bare RangeError past the end; report it as the size mismatch it is.
+    if (offset + chunk.byteLength > output.length) {
+      throw new Error('Media size did not match manifest.');
+    }
     output.set(chunk, offset);
     offset += chunk.byteLength;
   }

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { describe, it } from 'node:test';
 
 import {
   acceptMediaChunk,
   assembleMediaBytes,
+  base64ToBytes,
+  bytesToBase64,
   createIncomingTransfer,
   isPacket,
   missingMediaChunks,
@@ -89,6 +92,30 @@ describe('media packet validation', () => {
     );
     assert.equal(isPacket({ ...manifest(), chunkCount: 0 }), false);
     assert.equal(isPacket({ ...manifest(), type: 'unknown' }), false);
+  });
+});
+
+describe('media base64 codec', () => {
+  it('round-trips every payload length and matches Node for high bytes', () => {
+    for (let length = 0; length <= 130; length += 1) {
+      const bytes = Uint8Array.from({ length }, (_, index) => (index * 37 + length) % 256);
+      const encoded = bytesToBase64(bytes);
+      assert.equal(encoded, Buffer.from(bytes).toString('base64'), `encode length ${length}`);
+      assert.deepEqual(base64ToBytes(encoded), bytes, `round-trip length ${length}`);
+    }
+  });
+
+  it('decodes payloads whose padding or whitespace was lost in transit', () => {
+    const bytes = Uint8Array.from([1, 2, 3, 4, 5]);
+    const encoded = bytesToBase64(bytes);
+    assert.ok(encoded.endsWith('='));
+    assert.deepEqual(base64ToBytes(encoded.replace(/=+$/, '')), bytes);
+    assert.deepEqual(base64ToBytes(`${encoded.slice(0, 4)}\n ${encoded.slice(4)}`), bytes);
+  });
+
+  it('rejects characters outside the base64 alphabet', () => {
+    assert.throws(() => base64ToBytes('AAA*'), /Invalid base64 payload/);
+    assert.throws(() => base64ToBytes('AA!A'), /Invalid base64 payload/);
   });
 });
 

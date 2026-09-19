@@ -1,14 +1,7 @@
 import { useRouterData, useRouterService } from '@/mesh/RouterContext';
 import { Stack, useLocalSearchParams } from 'expo-router';
-import {
-  useAudioPlayer,
-  useAudioPlayerStatus,
-  useAudioRecorder,
-  requestRecordingPermissionsAsync,
-  setAudioModeAsync,
-} from 'expo-audio';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -27,14 +20,16 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { avatarForPeer } from '@/avatar/profile';
-import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
+import { AlertsIcon, ImageIcon, MicIcon, SendIcon } from '@/components/signal/icons';
 import { Avatar, AvatarStack, Chip, IconButton } from '@/components/signal/ui';
+import { useVoiceRecorder } from '@/hooks/use-voice-recorder';
 import { useAlerts } from '@/mesh/AlertContext';
 import { severityTone } from '@/mesh/alertStore';
 import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { ALERT_THREAD_PREFIX, isAlertThreadId, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
-import { MAX_VOICE_SECONDS, VOICE_RECORDING_OPTIONS } from '@/mesh/mediaFiles';
+import { MAX_VOICE_SECONDS } from '@/mesh/mediaFiles';
+import { pickPhotoAsync } from '@/mesh/photoPicker';
 import { signal } from '@/theme/signal';
 
 // Gesture nav bar on Android sits right on top of the composer, so add a little
@@ -77,18 +72,23 @@ function formatDuration(milliseconds: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function MediaPlaceholder({ label, message }: { label: string; message: ChatMessage }) {
+  const failed = Boolean(message.transferError);
+  return (
+    <View style={styles.mediaPlaceholder}>
+      {failed ? null : <ActivityIndicator color={signal.blue} />}
+      <Text style={[styles.mediaStatus, failed && styles.mediaStatusFailed]}>
+        {message.transferError ??
+          `Receiving ${label} ${Math.round((message.transferProgress ?? 0) * 100)}%`}
+      </Text>
+    </View>
+  );
+}
+
 function ImageBubble({ message }: { message: ChatMessage }) {
   const [open, setOpen] = useState(false);
   if (!message.localUri) {
-    return (
-      <View style={styles.mediaPlaceholder}>
-        <ActivityIndicator color={signal.blue} />
-        <Text style={styles.mediaStatus}>
-          {message.transferError ??
-            `Receiving photo ${Math.round((message.transferProgress ?? 0) * 100)}%`}
-        </Text>
-      </View>
-    );
+    return <MediaPlaceholder label="photo" message={message} />;
   }
   return (
     <>
@@ -123,22 +123,13 @@ function ImageBubble({ message }: { message: ChatMessage }) {
 
 function AudioBubble({ message }: { message: ChatMessage }) {
   if (!message.localUri) {
-    return (
-      <View style={styles.mediaPlaceholder}>
-        <ActivityIndicator color={signal.blue} />
-        <Text style={styles.mediaStatus}>
-          {message.transferError ??
-            `Receiving voice note ${Math.round((message.transferProgress ?? 0) * 100)}%`}
-        </Text>
-      </View>
-    );
+    return <MediaPlaceholder label="voice note" message={message} />;
   }
-
   return <AudioBubblePlayer message={message} />;
 }
 
 function AudioBubblePlayer({ message }: { message: ChatMessage }) {
-  const player = useAudioPlayer({ uri: message.localUri! });
+  const player = useAudioPlayer({ uri: message.localUri! }, { updateInterval: 100 });
   const status = useAudioPlayerStatus(player);
   const progress =
     status.duration > 0 ? Math.min(1, status.currentTime / status.duration) : 0;
@@ -249,17 +240,21 @@ export default function ChatScreen() {
   const [emergency, setEmergency] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const keyboardVisible = keyboardHeight > 0;
-  const [preparingMedia, setPreparingMedia] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [startingRecording, setStartingRecording] = useState(false);
-  const [recordingDurationMs, setRecordingDurationMs] = useState(0);
+  const [preparingPhoto, setPreparingPhoto] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-  const recordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const recordingStartedAt = useRef<number | null>(null);
-  const recorderPrepared = useRef(false);
-  const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
   const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
+
+  const handleRecorded = useCallback(
+    async (uri: string, durationMs: number) => {
+      if (!threadId) return;
+      await sendVoiceNote(threadId, uri, durationMs);
+    },
+    [sendVoiceNote, threadId],
+  );
+  const recorder = useVoiceRecorder(handleRecorded);
+  const recording = recorder.status !== 'idle';
+  const busy = recording || preparingPhoto;
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -282,27 +277,6 @@ export default function ChatScreen() {
     markRead(threadId);
     return () => clearActive();
   }, [clearActive, isGroup, markRead, openDm, threadId, title]);
-
-  useEffect(
-    () => () => {
-      if (recordingTimer.current) clearTimeout(recordingTimer.current);
-      if (recorderPrepared.current) {
-        recorderPrepared.current = false;
-        void audioRecorder.stop().catch(() => undefined);
-      }
-    },
-    [audioRecorder],
-  );
-
-  useEffect(() => {
-    if (!isRecording) return;
-    const interval = setInterval(() => {
-      if (recordingStartedAt.current != null) {
-        setRecordingDurationMs(Date.now() - recordingStartedAt.current);
-      }
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isRecording]);
 
   const subtitle = useMemo(() => {
     if (isAlertThread) {
@@ -349,120 +323,31 @@ export default function ChatScreen() {
       .catch((error) => Alert.alert('Message not queued', error instanceof Error ? error.message : 'Could not save message.'));
   };
 
-  const finishRecording = useCallback(
-    async (sendRecording: boolean) => {
-      if (!threadId) return;
-      const durationMs =
-        recordingStartedAt.current != null
-          ? Date.now() - recordingStartedAt.current
-          : recordingDurationMs;
-      if (recordingTimer.current) {
-        clearTimeout(recordingTimer.current);
-        recordingTimer.current = null;
-      }
-      recordingStartedAt.current = null;
-      setIsRecording(false);
-      setStartingRecording(false);
-      setRecordingDurationMs(0);
-
-      if (recorderPrepared.current) {
-        recorderPrepared.current = false;
-        try {
-          await audioRecorder.stop();
-          await setAudioModeAsync({
-            allowsRecording: false,
-            playsInSilentMode: true,
-            interruptionMode: 'mixWithOthers',
-          });
-          const recordingUri = audioRecorder.uri;
-          if (sendRecording && durationMs >= 300) {
-            if (!recordingUri) {
-              throw new Error('The recording file was not available.');
-            }
-            setPreparingMedia(true);
-            await sendVoiceNote(threadId, recordingUri, durationMs);
-          }
-        } catch (error) {
-          Alert.alert(
-            'Could not send voice note',
-            error instanceof Error ? error.message : 'The voice note could not be prepared.',
-          );
-        } finally {
-          setPreparingMedia(false);
-        }
-      }
-    },
-    [audioRecorder, recordingDurationMs, sendVoiceNote, threadId],
-  );
-
-  const startRecording = async () => {
-    if (!threadId || preparingMedia || isRecording || startingRecording) return;
-    setStartingRecording(true);
-    const permission = await requestRecordingPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Microphone permission needed', 'Allow microphone access to record a voice note.');
-      setStartingRecording(false);
-      return;
-    }
+  const attachPhoto = useCallback(async () => {
+    if (!threadId || busy) return;
+    let picked: Awaited<ReturnType<typeof pickPhotoAsync>>;
     try {
-      await setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-        interruptionMode: 'doNotMix',
-        shouldPlayInBackground: false,
-      });
-      await audioRecorder.prepareToRecordAsync(VOICE_RECORDING_OPTIONS);
-      recorderPrepared.current = true;
-      audioRecorder.record();
-      recordingStartedAt.current = Date.now();
-      setIsRecording(true);
-      setStartingRecording(false);
-      recordingTimer.current = setTimeout(() => {
-        void finishRecording(true);
-      }, MAX_VOICE_SECONDS * 1000);
+      picked = await pickPhotoAsync();
     } catch (error) {
-      recorderPrepared.current = false;
-      setStartingRecording(false);
-      const message = error instanceof Error ? error.message : 'Voice recording could not start.';
       Alert.alert(
-        'Could not record',
-        message.includes('ExpoAudio') || message.includes('native')
-          ? `${message}\n\nRebuild the app so audio support is included:\nnpx expo run:ios --device`
-          : message,
+        'Could not open photos',
+        error instanceof Error ? error.message : 'The photo library could not be opened.',
       );
-    }
-  };
-
-  const chooseImage = async () => {
-    if (!threadId || preparingMedia || isRecording || startingRecording) return;
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Photos permission needed', 'Allow photo access to send an image.');
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: false,
-      quality: 0.4,
-      selectionLimit: 1,
-      exif: false,
-      preferredAssetRepresentationMode:
-        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-    });
-    const image = result.assets?.[0];
-    if (!image || result.canceled) return;
-    setPreparingMedia(true);
+    if (!picked) return;
+    setPreparingPhoto(true);
     try {
-      await sendImage(threadId, image.uri, image.width ?? 0, image.height ?? 0);
+      await sendImage(threadId, picked.uri, picked.width, picked.height);
     } catch (error) {
       Alert.alert(
-        'Could not send image',
-        error instanceof Error ? error.message : 'The image could not be prepared.',
+        'Photo not sent',
+        error instanceof Error ? error.message : 'The photo could not be prepared.',
       );
     } finally {
-      setPreparingMedia(false);
+      setPreparingPhoto(false);
     }
-  };
+  }, [busy, sendImage, threadId]);
 
   return (
     <KeyboardAvoidingView
@@ -589,47 +474,60 @@ export default function ChatScreen() {
           {emergency && !isAlertThread ? (
             <Text style={styles.emergencyHint}>Sends as an EMERGENCY broadcast to every reachable phone</Text>
           ) : null}
-          {isRecording || startingRecording ? (
+          {recording ? (
             <View style={styles.recordingRow}>
               <Pressable
-                onPress={() => void finishRecording(false)}
+                accessibilityLabel="Discard voice note"
+                accessibilityRole="button"
+                disabled={recorder.status === 'saving'}
+                onPress={recorder.cancel}
                 style={({ pressed }) => [styles.recordingCancel, pressed && styles.pressed]}>
                 <Text style={styles.recordingCancelText}>Cancel</Text>
               </Pressable>
               <View style={styles.recordingStatus}>
-                {startingRecording ? (
-                  <ActivityIndicator color={signal.blue} size="small" />
-                ) : (
+                {recorder.status === 'recording' ? (
                   <View style={styles.recordingDot} />
+                ) : (
+                  <ActivityIndicator color={signal.blue} size="small" />
                 )}
                 <Text style={styles.recordingTime}>
-                  {startingRecording
+                  {recorder.status === 'starting'
                     ? 'Starting…'
-                    : `${formatDuration(recordingDurationMs)} / 1:00`}
+                    : recorder.status === 'saving'
+                      ? 'Sending…'
+                      : `${formatDuration(recorder.durationMs)} / ${formatDuration(MAX_VOICE_SECONDS * 1000)}`}
                 </Text>
               </View>
               <IconButton
-                disabled={startingRecording}
-                onPress={() => void finishRecording(true)}
+                disabled={recorder.status !== 'recording'}
+                onPress={recorder.send}
                 tone="outline">
                 <SendIcon color={signal.blue} size={16} />
               </IconButton>
             </View>
           ) : (
             <View style={styles.composerRow}>
-              <IconButton onPress={() => void chooseImage()} tone="outline">
-                <PlusIcon color={signal.blue} size={16} />
+              <IconButton
+                accessibilityLabel="Send a photo"
+                disabled={busy}
+                onPress={() => void attachPhoto()}
+                tone="outline">
+                {preparingPhoto ? (
+                  <ActivityIndicator color={signal.blue} size="small" />
+                ) : (
+                  <ImageIcon color={signal.blue} size={18} />
+                )}
               </IconButton>
               <View style={styles.inputPill}>
                 <TextInput
                   accessibilityLabel="Message"
-                  editable={!preparingMedia}
+                  editable={!busy}
                   maxLength={emergency && !isAlertThread ? 280 : 2000}
                   multiline
                   onChangeText={setDraft}
                   placeholder={
-                    preparingMedia
-                      ? 'Preparing media…'
+                    preparingPhoto
+                      ? 'Preparing photo…'
                       : isAlertThread
                         ? 'Comment'
                         : emergency
@@ -640,27 +538,17 @@ export default function ChatScreen() {
                   style={styles.input}
                   value={draft}
                 />
-                {!draft.trim() ? (
-                  <Pressable
-                    accessibilityLabel="Choose image"
-                    accessibilityRole="button"
-                    disabled={preparingMedia}
-                    onPress={() => void chooseImage()}
-                    style={({ pressed }) => [styles.inlineIcon, pressed && styles.pressed]}>
-                    {preparingMedia ? (
-                      <ActivityIndicator color={signal.slate} size="small" />
-                    ) : (
-                      <ImageIcon color={signal.slate} size={18} />
-                    )}
-                  </Pressable>
-                ) : null}
               </View>
               {draft.trim() ? (
-                <IconButton onPress={send} tone="outline">
+                <IconButton accessibilityLabel="Send" onPress={send} tone="outline">
                   <SendIcon color={signal.blue} size={16} />
                 </IconButton>
               ) : (
-                <IconButton onPress={() => void startRecording()} tone="outline">
+                <IconButton
+                  accessibilityLabel="Record a voice note"
+                  disabled={busy}
+                  onPress={recorder.start}
+                  tone="outline">
                   <MicIcon color={signal.blue} size={18} />
                 </IconButton>
               )}
@@ -777,6 +665,7 @@ const styles = StyleSheet.create({
     width: 220,
   },
   mediaStatus: { color: signal.slate, fontSize: 12, textAlign: 'center' },
+  mediaStatusFailed: { color: '#b42318' },
   chatImage: { borderRadius: 16, height: 170, width: 240 },
   chatImagePortrait: { height: 260, width: 195 },
   mediaOverlay: {
@@ -870,6 +759,5 @@ const styles = StyleSheet.create({
     maxHeight: 100,
     paddingVertical: 0,
   },
-  inlineIcon: { paddingBottom: 2 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
 });

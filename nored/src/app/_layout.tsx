@@ -1,6 +1,8 @@
+import { setAudioModeAsync } from 'expo-audio';
 import { DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { GameProvider } from '@/games/GameContext';
@@ -26,6 +28,16 @@ const lightTheme = {
 };
 
 export default function RootLayout() {
+  // Without this, a received voice note plays silently whenever the iOS ringer
+  // switch is off — the default session category respects the silent switch.
+  useEffect(() => {
+    void setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      interruptionMode: 'mixWithOthers',
+    }).catch(() => undefined);
+  }, []);
+
   return (
     <ThemeProvider value={lightTheme}>
       <StatusBar style="dark" />

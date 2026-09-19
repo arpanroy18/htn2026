@@ -5,21 +5,13 @@ import {
 } from 'expo-audio';
 import * as Crypto from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
-import {
-  copyAsync,
-  cacheDirectory,
-  EncodingType,
-  readAsStringAsync,
-  writeAsStringAsync,
-} from 'expo-file-system/legacy';
-import { Image } from 'expo-image';
-import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
-
-import { base64ToBytes, bytesToBase64 } from './mediaTransfer';
+import { ImageManipulator, SaveFormat, type ImageRef } from 'expo-image-manipulator';
 
 export const MAX_IMAGE_BYTES = 120 * 1024;
 export const MAX_IMAGE_SIDE = 720;
 export const MAX_VOICE_SECONDS = 60;
+/** isPacket() rejects manifests past 512 chunks, and the chunker cuts at MEDIA_CHUNK_BYTES. */
+export const MAX_MEDIA_BYTES = 512 * 2048;
 
 export type PreparedMedia = {
   uri: string;
@@ -38,14 +30,17 @@ export const VOICE_RECORDING_OPTIONS: RecordingOptions = {
   sampleRate: 16_000,
   numberOfChannels: 1,
   bitRate: 32_000,
-  directory: 'document',
+  // Recordings are copied into the media store as soon as they stop, so the
+  // cache is the right home for the raw take.
+  directory: 'cache',
   isMeteringEnabled: false,
   android: {
     extension: '.m4a',
     outputFormat: 'mpeg4',
     audioEncoder: 'aac',
     sampleRate: 16_000,
-    maxFileSize: 180 * 1024,
+    // 60s at 32kbps is ~240KB; a tighter cap silently truncates the tail.
+    maxFileSize: 320 * 1024,
   },
   ios: {
     extension: '.m4a',
@@ -68,86 +63,37 @@ function mediaDirectory() {
   return directory;
 }
 
-function destinationFile(id: string, extension: string) {
-  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const file = new File(mediaDirectory(), `${safeId}.${extension.replace(/^\./, '')}`);
-  if (file.exists) file.delete();
-  return file;
+function mediaFile(id: string, extension: string) {
+  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '_') || 'media';
+  return new File(mediaDirectory(), `${safeId}.${extension.replace(/^\./, '')}`);
 }
 
-function normalizeLocalUri(sourceUri: string) {
-  if (
-    sourceUri.startsWith('file://') ||
-    sourceUri.startsWith('content://') ||
-    sourceUri.startsWith('ph://') ||
-    sourceUri.startsWith('assets-library://') ||
-    sourceUri.startsWith('data:')
-  ) {
-    return sourceUri;
-  }
-  if (sourceUri.startsWith('/')) {
-    return `file://${sourceUri}`;
-  }
-  return sourceUri;
+function normalizeUri(value: string) {
+  if (!value) throw new Error('The media file was missing.');
+  return value.startsWith('/') ? `file://${value}` : value;
 }
 
-/** Photo picker URIs on iOS are often ph:// — copy to cache before File/ImageManipulator touch them. */
-export async function materializeLocalUri(sourceUri: string, fallbackExtension: string) {
-  const uri = normalizeLocalUri(sourceUri);
-  if (uri.startsWith('file://')) {
-    return uri;
-  }
-  if (!cacheDirectory) {
-    throw new Error('Cache directory is unavailable.');
-  }
-  const extension = uri.includes('.')
-    ? uri.split('.').pop()?.split('?')[0] ?? fallbackExtension
-    : fallbackExtension;
-  const destination = `${cacheDirectory}nored-${Date.now()}-${Math.random().toString(16).slice(2)}.${extension}`;
-  try {
-    await copyAsync({ from: uri, to: destination });
-    return destination;
-  } catch {
-    return uri;
-  }
-}
-
-function copyBytes(bytes: Uint8Array) {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy;
-}
-
-export async function sha256(bytes: Uint8Array) {
-  const data = copyBytes(bytes);
-  const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, data.buffer);
+/**
+ * Native `digest` takes `(algorithm, output: TypedArray, data: TypedArray)` on both
+ * platforms — its `BufferSource` type is wider than what it actually accepts. Passing
+ * `bytes.buffer` fails argument conversion ("Calling the 'digest' function has failed"),
+ * so hand it the view itself; `rawPointer` applies `byteOffset` natively.
+ */
+export async function sha256(bytes: Uint8Array<ArrayBuffer>) {
+  const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes);
   return Array.from(new Uint8Array(digest))
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('');
 }
 
-function paddedBase64(value: string) {
-  const clean = value.replace(/\s/g, '');
-  const pad = (4 - (clean.length % 4)) % 4;
-  return clean + '='.repeat(pad);
-}
-
 export async function fileBytes(uri: string) {
-  const localUri = await materializeLocalUri(uri, 'bin');
-  try {
-    const file = new File(localUri);
-    if (file.exists) {
-      return copyBytes(await file.bytes());
-    }
-  } catch {
-    // Some Android content/file URIs throw from the new File API; fall back below.
+  const file = new File(normalizeUri(uri));
+  if (!file.exists) {
+    throw new Error('That attachment is no longer stored on this phone.');
   }
-  try {
-    const base64 = await readAsStringAsync(localUri, { encoding: EncodingType.Base64 });
-    return base64ToBytes(paddedBase64(base64));
-  } catch {
-    throw new Error('The media file could not be read.');
-  }
+  const bytes = await file.bytes();
+  if (!bytes.byteLength) throw new Error('The attachment file was empty.');
+  return bytes;
 }
 
 export async function writeMediaBytes(
@@ -155,28 +101,21 @@ export async function writeMediaBytes(
   extension: string,
   bytes: Uint8Array,
 ) {
-  const payload = copyBytes(bytes);
-  const destination = destinationFile(id, extension);
-  try {
-    destination.create({ intermediates: true, overwrite: true });
-    destination.write(payload);
-    return destination.uri;
-  } catch {
-    await writeAsStringAsync(destination.uri, bytesToBase64(payload), {
-      encoding: EncodingType.Base64,
-    });
-    return destination.uri;
-  }
+  const file = mediaFile(id, extension);
+  file.create({ intermediates: true, overwrite: true });
+  file.write(bytes);
+  return file.uri;
 }
 
-async function persistFile(sourceUri: string, id: string, extension: string): Promise<PreparedMedia> {
-  const localUri = await materializeLocalUri(sourceUri, extension);
-  const destination = destinationFile(id, extension);
-  await copyAsync({ from: localUri, to: destination.uri });
-  const bytes = await fileBytes(destination.uri);
+async function persistBytes(
+  id: string,
+  extension: string,
+  mimeType: string,
+  bytes: Uint8Array<ArrayBuffer>,
+): Promise<PreparedMedia> {
   return {
-    uri: destination.uri,
-    mimeType: extension === 'jpg' ? 'image/jpeg' : 'audio/mp4',
+    uri: await writeMediaBytes(id, extension, bytes),
+    mimeType,
     byteLength: bytes.byteLength,
     hash: await sha256(bytes),
   };
@@ -189,7 +128,11 @@ export async function persistVoiceNote(
   if (!sourceUri) {
     throw new Error('The voice note file was missing after recording.');
   }
-  return persistFile(sourceUri, id, 'm4a');
+  const bytes = await fileBytes(sourceUri);
+  if (bytes.byteLength > MAX_MEDIA_BYTES) {
+    throw new Error('That voice note is too long to send over Bluetooth.');
+  }
+  return persistBytes(id, 'm4a', 'audio/mp4', bytes);
 }
 
 function scaledSize(width: number, height: number, maxSide: number) {
@@ -204,59 +147,67 @@ function scaledSize(width: number, height: number, maxSide: number) {
   };
 }
 
+/** The picker reports dimensions for every asset; decoding is only the fallback. */
+async function sourceSize(uri: string, width?: number, height?: number) {
+  if (width && height && width > 0 && height > 0) return { width, height };
+  const probe = await ImageManipulator.manipulate(uri).renderAsync();
+  try {
+    return { width: probe.width, height: probe.height };
+  } finally {
+    probe.release();
+  }
+}
+
+// Progressively smaller/softer passes; the first one under the byte budget wins.
+const IMAGE_PASSES = [
+  { maxSide: MAX_IMAGE_SIDE, quality: 0.6 },
+  { maxSide: MAX_IMAGE_SIDE, quality: 0.4 },
+  { maxSide: 560, quality: 0.4 },
+  { maxSide: 420, quality: 0.35 },
+  { maxSide: 320, quality: 0.3 },
+  { maxSide: 240, quality: 0.25 },
+];
+
 export async function prepareImage(
   sourceUri: string,
   id: string,
   sourceWidth?: number,
   sourceHeight?: number,
 ): Promise<PreparedImage> {
-  const materializedUri = await materializeLocalUri(sourceUri, 'jpg');
-  let quality = 0.55;
-  let maxSide = MAX_IMAGE_SIDE;
+  const uri = normalizeUri(sourceUri);
+  const original = await sourceSize(uri, sourceWidth, sourceHeight);
   let lastError: Error | undefined;
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (const pass of IMAGE_PASSES) {
+    let rendered: ImageRef | undefined;
     try {
-      const loaded = await Image.loadAsync(materializedUri, {
-        maxWidth: maxSide,
-        maxHeight: maxSide,
+      const target = scaledSize(original.width, original.height, pass.maxSide);
+      const context = ImageManipulator.manipulate(uri);
+      if (target.width < original.width || target.height < original.height) {
+        context.resize(target);
+      }
+      rendered = await context.renderAsync();
+      const saved = await rendered.saveAsync({
+        compress: pass.quality,
+        format: SaveFormat.JPEG,
       });
-      try {
-        const target = scaledSize(
-          loaded.width || sourceWidth || maxSide,
-          loaded.height || sourceHeight || maxSide,
-          maxSide,
-        );
-        const context = ImageManipulator.manipulate(loaded);
-        if (loaded.width > target.width || loaded.height > target.height) {
-          context.resize({ width: target.width, height: target.height });
-        }
-        const rendered = await context.renderAsync();
-        try {
-          const saved = await rendered.saveAsync({
-            compress: quality,
-            format: SaveFormat.JPEG,
-          });
-          const persisted = await persistFile(saved.uri, id, 'jpg');
-          if (persisted.byteLength <= MAX_IMAGE_BYTES) {
-            return {
-              ...persisted,
-              width: saved.width,
-              height: saved.height,
-            };
-          }
-        } finally {
-          rendered.release();
-        }
-      } finally {
-        loaded.release();
+      const bytes = await fileBytes(saved.uri);
+      if (bytes.byteLength <= MAX_IMAGE_BYTES) {
+        return {
+          ...(await persistBytes(id, 'jpg', 'image/jpeg', bytes)),
+          width: saved.width,
+          height: saved.height,
+        };
       }
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error('The image could not be prepared.');
+      lastError = error instanceof Error ? error : new Error('The photo could not be prepared.');
+    } finally {
+      rendered?.release();
     }
-    quality = Math.max(0.2, quality - 0.1);
-    maxSide = Math.max(240, Math.round(maxSide * 0.75));
   }
 
-  throw lastError ?? new Error('This image could not be compressed enough to send over Bluetooth.');
+  throw (
+    lastError ??
+    new Error('This photo could not be compressed small enough to send over Bluetooth.')
+  );
 }
