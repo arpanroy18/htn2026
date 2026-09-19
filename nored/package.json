@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@expo/ui": "~57.0.19",
+    "buffer": "^6.0.3",
     "chess.js": "^1.4.0",
     "expo": "~57.0.24",
     "expo-asset": "~57.0.18",
@@ -30,13 +31,15 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-audio-converter": "^1.0.1",
     "react-native-gesture-handler": "~2.32.0",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
     "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
-    "react-native-worklets": "0.10.1"
+    "react-native-worklets": "0.10.1",
+    "whisper.rn": "^0.7.4"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
@@ -53,7 +56,9 @@
     "ios:offline": "expo run:ios --configuration Release",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --experimental-strip-types src/mesh/*.test.mjs src/games/*.test.mjs"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --experimental-strip-types src/mesh/*.test.mjs src/games/*.test.mjs src/transcription/*.test.mjs",
+    "models:fetch": "mkdir -p assets/models && curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin -o assets/models/ggml-tiny.bin",
+    "ios:device": "expo run:ios --device aadyaphone"
   },
   "private": true
 }

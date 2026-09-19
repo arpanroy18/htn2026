@@ -10,6 +10,8 @@ import type {
 
 export type ChatDelivery = 'queued' | 'sending' | 'carrying' | 'delivered' | 'expired' | 'sent' | 'relayed' | 'failed';
 
+export type TranscriptStatus = 'pending' | 'ready' | 'unavailable';
+
 export const MAX_GROUP_MEMBERS = 8;
 export const MAX_GROUPS = 20;
 export const GROUP_TTL_HOPS = 5;
@@ -51,6 +53,10 @@ export type ChatMessage = {
   width?: number;
   height?: number;
   durationMs?: number;
+  transcript?: string;
+  transcriptLanguage?: string;
+  transcriptStatus?: TranscriptStatus;
+  transcriptError?: string;
   transferProgress?: number;
   transferError?: string;
   status?: ChatDelivery;
@@ -439,6 +445,21 @@ export function migrateDmPeer(
     threads: [thread, ...remainingThreads].sort((left, right) => right.updatedAt - left.updatedAt),
     messages: nextMessages,
   };
+}
+
+
+export function clearStaleTranscriptPending(state: ChatState): ChatState {
+  let changed = false;
+  const messages: ChatState['messages'] = {};
+  for (const [threadId, threadMessages] of Object.entries(state.messages)) {
+    messages[threadId] = threadMessages.map((message) => {
+      if (message.transcriptStatus !== 'pending') return message;
+      changed = true;
+      return { ...message, transcriptStatus: undefined };
+    });
+  }
+  if (!changed) return state;
+  return { ...state, messages };
 }
 
 export function patchMessage(

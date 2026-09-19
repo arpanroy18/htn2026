@@ -40,6 +40,7 @@ import {
   memberDisplayName,
   migrateDmPeer,
   packetThreadId,
+  clearStaleTranscriptPending,
   patchMessage,
   peerName,
   queuedGroupMedia,
@@ -60,6 +61,7 @@ import {
 } from './mediaFiles';
 import { useRouterService, useRouterData } from './RouterContext';
 import { clearLegacyHistory } from './persistence';
+import { transcribeVoiceNote } from '@/transcription/WhisperService';
 import {
   MEDIA_CHUNK_BYTES,
   MEDIA_REASSEMBLY_TIMEOUT_MS,
@@ -92,6 +94,7 @@ type ChatUi = {
   markRead: (threadId: string) => void;
   clearActive: () => void;
   clearLocalData: () => Promise<void>;
+  requestTranscript: (threadId: string, messageId: string) => Promise<void>;
 };
 
 const ChatContext = createContext<ChatUi | null>(null);
@@ -142,6 +145,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    void setState((current) => clearStaleTranscriptPending(current));
+  }, [setState]);
 
   useEffect(() => {
     peersRef.current = peers;
@@ -1051,6 +1058,52 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [threads],
   );
 
+
+  const requestTranscript = useCallback(
+    async (threadId: string, messageId: string) => {
+      const epoch = meshRouter.epoch;
+      const message = (stateRef.current.messages[threadId] ?? []).find(
+        (item) => item.id === messageId,
+      );
+      if (!message || message.kind !== 'audio' || !message.localUri) return;
+      if (message.transcriptStatus === 'pending' || message.transcriptStatus === 'ready') {
+        return;
+      }
+
+      await setState((current) =>
+        patchMessage(current, threadId, messageId, {
+          transcriptStatus: 'pending',
+          transcript: undefined,
+          transcriptLanguage: undefined,
+          transcriptError: undefined,
+        }),
+      );
+
+      const outcome = await transcribeVoiceNote(message.localUri);
+      if (epoch !== meshRouter.epoch) return;
+
+      if (outcome.result) {
+        await setState((current) =>
+          patchMessage(current, threadId, messageId, {
+            transcript: outcome.result!.text,
+            transcriptLanguage: outcome.result!.language,
+            transcriptStatus: 'ready',
+            transcriptError: undefined,
+          }),
+        );
+        return;
+      }
+
+      await setState((current) =>
+        patchMessage(current, threadId, messageId, {
+          transcriptStatus: 'unavailable',
+          transcriptError: outcome.error,
+        }),
+      );
+    },
+    [meshRouter, setState],
+  );
+
   const value = useMemo(
     () => ({
       threads,
@@ -1066,6 +1119,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       markRead,
       clearActive,
       clearLocalData,
+      requestTranscript,
     }),
     [
       clearActive,
@@ -1078,6 +1132,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       sendImage,
       sendText,
       sendVoiceNote,
+      requestTranscript,
       threadFor,
       threads,
       totalUnread,
