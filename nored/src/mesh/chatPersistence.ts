@@ -22,7 +22,7 @@ export async function loadChatState(): Promise<ChatState> {
 
 export async function saveChatState(state: ChatState): Promise<void> {
   const file = chatStateFile();
-  file.create({ idempotent: true, intermediates: true, overwrite: true });
+  file.create({ intermediates: true, overwrite: true });
   file.write(JSON.stringify(state));
 }
 

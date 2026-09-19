@@ -80,6 +80,29 @@ export type AlertPacket = PacketBase & {
   ttlHops?: number;
 };
 
+export type GameId = 'mesh-ping' | 'telephone';
+
+export type GameEvent =
+  | 'invite'
+  | 'join'
+  | 'leave'
+  | 'ping'
+  | 'pong'
+  | 'baton'
+  | 'round-start'
+  | 'stroke'
+  | 'round-finish';
+
+export type GamePacket = PacketBase & {
+  type: 'game';
+  gameId: GameId;
+  event: GameEvent;
+  roundId?: string;
+  targetId?: string;
+  sequence?: number;
+  payload?: string;
+};
+
 export type Packet =
   | TextPacket
   | GroupSyncPacket
@@ -87,7 +110,8 @@ export type Packet =
   | MediaChunkPacket
   | MediaAckPacket
   | MediaRetryPacket
-  | AlertPacket;
+  | AlertPacket
+  | GamePacket;
 
 export type DeviceIdentity = {
   id: string;

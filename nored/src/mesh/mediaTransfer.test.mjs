@@ -59,6 +59,34 @@ describe('media packet validation', () => {
       }),
       true,
     );
+    assert.equal(
+      isPacket({
+        version: 1,
+        id: 'game-1',
+        senderId: 'sender',
+        recipientId: 'recipient',
+        timestamp: 100,
+        type: 'game',
+        gameId: 'mesh-ping',
+        event: 'ping',
+        targetId: 'recipient',
+      }),
+      true,
+    );
+    assert.equal(
+      isPacket({
+        version: 1,
+        id: 'game-2',
+        senderId: 'sender',
+        recipientId: 'recipient',
+        timestamp: 100,
+        type: 'game',
+        gameId: 'telephone',
+        event: 'stroke',
+        payload: 'x'.repeat(2001),
+      }),
+      false,
+    );
     assert.equal(isPacket({ ...manifest(), chunkCount: 0 }), false);
     assert.equal(isPacket({ ...manifest(), type: 'unknown' }), false);
   });

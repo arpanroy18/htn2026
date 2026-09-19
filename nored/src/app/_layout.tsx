@@ -3,6 +3,8 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { GameProvider } from '@/games/GameContext';
+import { GameInvitePrompt } from '@/games/GameInvitePrompt';
 import { AlertProvider } from '@/mesh/AlertContext';
 import { ChatProvider } from '@/mesh/ChatContext';
 import { MeshUiProvider } from '@/mesh/MeshUiContext';
@@ -28,26 +30,29 @@ export default function RootLayout() {
       <StatusBar style="dark" />
       <MeshUiProvider>
         <AlertProvider>
-          <ChatProvider>
-            <AnimatedSplashOverlay />
-            <Stack
-            screenOptions={{
-              contentStyle: { backgroundColor: signal.paper },
-              headerShadowVisible: false,
-              headerTintColor: signal.deep,
-              headerTitleStyle: { color: signal.ink, fontWeight: '600' },
-              headerStyle: { backgroundColor: signal.paper },
-            }}>
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="chat/[id]" options={{ title: 'Chat' }} />
-            <Stack.Screen name="new-group" options={{ title: 'New group', presentation: 'modal' }} />
-            <Stack.Screen name="compose-alert" options={{ title: 'Broadcast', presentation: 'modal' }} />
-            <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-            <Stack.Screen name="onboarding" options={{ title: 'Permissions' }} />
-            <Stack.Screen name="game/[id]" options={{ title: 'Game' }} />
-            <Stack.Screen name="invite" options={{ title: 'Invite to group', presentation: 'modal' }} />
-            </Stack>
-          </ChatProvider>
+          <GameProvider>
+            <ChatProvider>
+              <AnimatedSplashOverlay />
+              <GameInvitePrompt />
+              <Stack
+              screenOptions={{
+                contentStyle: { backgroundColor: signal.paper },
+                headerShadowVisible: false,
+                headerTintColor: signal.deep,
+                headerTitleStyle: { color: signal.ink, fontWeight: '600' },
+                headerStyle: { backgroundColor: signal.paper },
+              }}>
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              <Stack.Screen name="chat/[id]" options={{ title: 'Chat' }} />
+              <Stack.Screen name="new-group" options={{ title: 'New group', presentation: 'modal' }} />
+              <Stack.Screen name="compose-alert" options={{ title: 'Broadcast', presentation: 'modal' }} />
+              <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+              <Stack.Screen name="onboarding" options={{ title: 'Permissions' }} />
+              <Stack.Screen name="game/[id]" options={{ title: 'Game' }} />
+              <Stack.Screen name="invite" options={{ title: 'Invite to group', presentation: 'modal' }} />
+              </Stack>
+            </ChatProvider>
+          </GameProvider>
         </AlertProvider>
       </MeshUiProvider>
     </ThemeProvider>

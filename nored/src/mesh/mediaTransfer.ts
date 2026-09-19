@@ -187,6 +187,25 @@ export function isPacket(value: unknown): value is Packet {
           return typeof entry.id === 'string' && entry.id.length > 0 && typeof entry.name === 'string';
         })
       );
+    case 'game':
+      return (
+        (packet.gameId === 'mesh-ping' || packet.gameId === 'telephone') &&
+        (packet.event === 'invite' ||
+          packet.event === 'join' ||
+          packet.event === 'leave' ||
+          packet.event === 'ping' ||
+          packet.event === 'pong' ||
+          packet.event === 'baton' ||
+          packet.event === 'round-start' ||
+          packet.event === 'stroke' ||
+          packet.event === 'round-finish') &&
+        (packet.roundId === undefined || typeof packet.roundId === 'string') &&
+        (packet.targetId === undefined || typeof packet.targetId === 'string') &&
+        (packet.sequence === undefined ||
+          (Number.isInteger(packet.sequence) && packet.sequence >= 0)) &&
+        (packet.payload === undefined ||
+          (typeof packet.payload === 'string' && packet.payload.length <= 2_000))
+      );
     default:
       return false;
   }
