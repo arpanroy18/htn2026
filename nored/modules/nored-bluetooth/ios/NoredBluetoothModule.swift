@@ -808,9 +808,16 @@ public final class NoredBluetoothModule: Module {
           continue
         }
         let peerId = id.lowercased()
+        let hardwareId = request.central.identifier.uuidString.lowercased()
+        let previousId = hardwareIdToPeerId[hardwareId] ?? hardwareId
         peerIdByCentral[request.central.identifier] = peerId
         centralByPeerId[peerId] = request.central
-        upsertIdentityPeer(id: peerId, name: String(rawName.prefix(40)))
+        hardwareIdToPeerId[hardwareId] = peerId
+        upsertIdentityPeer(
+          id: peerId,
+          name: String(rawName.prefix(40)),
+          replacing: previousId == peerId ? nil : previousId
+        )
         log("info", "[DISCOVERY] nored peer \(String(peerId.prefix(8)))")
         peripheral.respond(to: request, withResult: .success)
       } catch {

@@ -138,9 +138,14 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
 
   const noredPeers = useMemo(() => {
     return peers
-      .filter((peer) => peer.nored)
+      .filter(
+        (peer) =>
+          peer.nored &&
+          peer.identityConfirmed &&
+          peer.id !== identity.id,
+      )
       .sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
-  }, [peers]);
+  }, [identity.id, peers]);
 
   const otherPeers = useMemo(() => {
     const noredNames = new Set(noredPeers.map((peer) => peer.name.trim().toLowerCase()));
