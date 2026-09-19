@@ -19,6 +19,7 @@ import {
   type Peer,
 } from '@/transport';
 
+import { ALERT_TTL_HOPS } from './alertStore';
 import { useMeshUi } from './MeshUiContext';
 import {
   addGroupMember,
@@ -30,6 +31,7 @@ import {
   formatMessageClock,
   GROUP_TTL_HOPS,
   groupCount,
+  isAlertThreadId,
   isGroupSyncPacket,
   isTextPacket,
   makeGroupSyncPacket,
@@ -168,6 +170,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const resolveThreadId = useCallback(
     (threadId: string) => {
+      if (isAlertThreadId(threadId)) return threadId;
       const exact = stateRef.current.threads.find((thread) => thread.id === threadId);
       if (exact?.kind === 'group') return exact.id;
       return resolvePeerId(threadId);
@@ -505,10 +508,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       const groupId = packet.groupId;
+      const alertComment = isAlertThreadId(groupId);
       const groupThread = groupId
         ? stateRef.current.threads.find((thread) => thread.id === groupId)
         : undefined;
-      if (groupId && groupThread && !threadHasMember(groupThread, identity.id)) {
+      if (groupId && !alertComment && groupThread && !threadHasMember(groupThread, identity.id)) {
         if (
           packet.type === 'text' ||
           packet.type === 'media-manifest' ||
@@ -522,13 +526,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       const name = peerName(peersRef.current, packet.senderId, 'Nearby peer');
-      const threadName = groupThread?.name ?? name;
+      const threadName = alertComment ? (groupThread?.name ?? 'Alert') : (groupThread?.name ?? name);
       const threadId = packetThreadId(packet, false);
 
       if (isTextPacket(packet)) {
         if (seenIds.current.has(packet.id)) return;
         if (groupId) {
-          if (threadHasMember(groupThread, identity.id)) {
+          if (alertComment || threadHasMember(groupThread, identity.id)) {
             ingest(packet, threadName, false, undefined, activeThread.current !== threadId);
           } else {
             remember(packet.id);
@@ -556,7 +560,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           await sendPacket(packet.senderId, ack);
           return;
         }
-        if (!groupId || threadHasMember(groupThread, identity.id)) {
+        if (!groupId || alertComment || threadHasMember(groupThread, identity.id)) {
           incomingTransfers.current.set(packet.id, createIncomingTransfer(packet));
           appendMediaMessage(
             packet,
@@ -842,19 +846,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (!text) return;
       const threadId = resolveThreadId(peerId);
       const thread = stateRef.current.threads.find((item) => item.id === threadId);
-      if (thread?.kind === 'group') {
+      const floodAsGroup = isAlertThreadId(threadId) || thread?.kind === 'group';
+      if (floodAsGroup) {
         const packet = makeTextPacket({
           senderId: identity.id,
           recipientId: identity.id,
-          groupId: thread.id,
+          groupId: threadId,
           hops: 0,
-          ttlHops: GROUP_TTL_HOPS,
+          ttlHops: isAlertThreadId(threadId) ? ALERT_TTL_HOPS : GROUP_TTL_HOPS,
           body: text,
         });
-        ingest(packet, thread.name, true, 'queued', false);
+        ingest(packet, thread?.name ?? 'Alert', true, 'queued', false);
         const sent = await floodPacket(packet);
         if (sent > 0) {
-          setState((current) => patchMessage(current, thread.id, packet.id, { status: 'sent' }));
+          setState((current) => patchMessage(current, threadId, packet.id, { status: 'sent' }));
         }
         return;
       }
@@ -893,14 +898,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const threadId = resolveThreadId(peerId);
       const thread = stateRef.current.threads.find((item) => item.id === threadId);
       const bytes = await fileBytes(prepared.uri);
-      const isGroup = thread?.kind === 'group';
+      const isGroup = isAlertThreadId(threadId) || thread?.kind === 'group';
       const manifest = makeMediaManifest({
         id,
         senderId: identity.id,
         recipientId: isGroup ? identity.id : threadId,
-        groupId: isGroup ? thread.id : undefined,
+        groupId: isGroup ? threadId : undefined,
         hops: isGroup ? 0 : undefined,
-        ttlHops: isGroup ? GROUP_TTL_HOPS : undefined,
+        ttlHops: isGroup ? (isAlertThreadId(threadId) ? ALERT_TTL_HOPS : GROUP_TTL_HOPS) : undefined,
         mediaKind,
         mimeType: prepared.mimeType,
         byteLength: prepared.byteLength,
@@ -911,7 +916,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         durationMs: prepared.durationMs,
       });
       const name = isGroup
-        ? thread.name
+        ? thread?.name ?? 'Alert'
         : peerName(noredPeers, threadId, peerName(peers, threadId, 'Nearby peer'));
       appendMediaMessage(manifest, name, true, prepared.uri, 'queued', false);
       if (isGroup) {
@@ -922,11 +927,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             await transmitMedia(peer.id, { ...manifest, recipientId: peer.id }, bytes);
           }
           setState((current) =>
-            patchMessage(current, thread.id, manifest.id, { status: 'sent', transferProgress: 1 }),
+            patchMessage(current, threadId, manifest.id, { status: 'sent', transferProgress: 1 }),
           );
         } catch (error) {
           setState((current) =>
-            patchMessage(current, thread.id, manifest.id, {
+            patchMessage(current, threadId, manifest.id, {
               transferError: error instanceof Error ? error.message : 'Media transfer failed.',
             }),
           );

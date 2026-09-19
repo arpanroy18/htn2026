@@ -13,6 +13,15 @@ export type ChatDelivery = 'queued' | 'sent' | 'relayed' | 'failed';
 export const MAX_GROUP_MEMBERS = 8;
 export const MAX_GROUPS = 20;
 export const GROUP_TTL_HOPS = 5;
+export const ALERT_THREAD_PREFIX = 'alert-';
+
+export function alertThreadId(alertId: string) {
+  return `${ALERT_THREAD_PREFIX}${alertId}`;
+}
+
+export function isAlertThreadId(threadId: string | undefined) {
+  return Boolean(threadId?.startsWith(ALERT_THREAD_PREFIX));
+}
 
 export type ChatThread = {
   id: string;
@@ -364,7 +373,7 @@ export function appendMessage(
   const messages = [...previous, message].slice(-1000);
   const queued = messages.some((item) => item.mine && item.status === 'queued');
   const current = state.threads.find((item) => item.id === message.threadId);
-  const kind = current?.kind ?? 'dm';
+  const kind = isAlertThreadId(message.threadId) ? 'group' : (current?.kind ?? 'dm');
   const thread: ChatThread = {
     id: message.threadId,
     kind,

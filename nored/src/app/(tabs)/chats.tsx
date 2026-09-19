@@ -5,7 +5,7 @@ import { PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress, UnreadBadge } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
-import { formatThreadTime, type ChatThread } from '@/mesh/chatStore';
+import { formatThreadTime, isAlertThreadId, type ChatThread } from '@/mesh/chatStore';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
@@ -52,8 +52,9 @@ export default function ChatsScreen() {
   const inRange = new Set(
     noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
   );
-  const groups = threads.filter((thread) => thread.kind === 'group');
-  const dms = threads.filter((thread) => thread.kind !== 'group');
+  const groups = threads.filter((thread) => thread.kind === 'group' && !isAlertThreadId(thread.id));
+  const dms = threads.filter((thread) => thread.kind !== 'group' && !isAlertThreadId(thread.id));
+  const visible = groups.length + dms.length;
 
   const groupInRange = (thread: ChatThread) =>
     thread.memberIds.some((id) => id !== identity.id && inRange.has(id));
@@ -69,7 +70,7 @@ export default function ChatsScreen() {
         title="Chats"
       />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {threads.length === 0 ? (
+        {visible === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>

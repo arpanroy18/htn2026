@@ -26,12 +26,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
-import { Avatar, IconButton } from '@/components/signal/ui';
+import { Avatar, Chip, IconButton } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
-import { EMERGENCY_BROADCAST_ID, isEmergencyThreadId } from '@/mesh/alertStore';
+import { severityTone } from '@/mesh/alertStore';
 import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
-import { formatMessageClock, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
+import { ALERT_THREAD_PREFIX, isAlertThreadId, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
 import { MAX_VOICE_SECONDS, VOICE_RECORDING_OPTIONS } from '@/mesh/mediaFiles';
 import { signal } from '@/theme/signal';
 
@@ -213,16 +213,18 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const headerHeight = insets.top + 44;
   const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
-  const isEmergencyChannel = isEmergencyThreadId(threadId);
+  const isAlertThread = isAlertThreadId(threadId);
+  const alertId = isAlertThread && threadId ? threadId.slice(ALERT_THREAD_PREFIX.length) : undefined;
+  const alertItem = alerts.find((item) => item.id === alertId);
   const thread = threadFor(threadId ?? '');
-  const title = isEmergencyChannel ? 'EMERGENCY' : (thread?.name ?? params.title ?? 'Chat');
-  const isGroup = isEmergencyChannel || (thread?.kind ?? params.kind) === 'group';
+  const title = isAlertThread ? 'Alert' : (thread?.name ?? params.title ?? 'Chat');
+  const isGroup = isAlertThread || (thread?.kind ?? params.kind) === 'group';
   const memberIds = thread?.memberIds ?? [];
   const inRangeCount = memberIds.filter((id) =>
     id !== identity.id && noredPeers.some((peer) => peer.id === id && peer.identityConfirmed),
   ).length;
   const meshInRange = noredPeers.some((peer) => peer.identityConfirmed);
-  const inRange = isEmergencyChannel
+  const inRange = isAlertThread
     ? meshInRange
     : isGroup
       ? inRangeCount > 0
@@ -231,7 +233,7 @@ export default function ChatScreen() {
         );
 
   const [draft, setDraft] = useState('');
-  const [emergency, setEmergency] = useState(isEmergencyChannel);
+  const [emergency, setEmergency] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [preparingMedia, setPreparingMedia] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -242,25 +244,8 @@ export default function ChatScreen() {
   const recordingStartedAt = useRef<number | null>(null);
   const recorderPrepared = useRef(false);
   const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
-  const chatItems = messagesFor(threadId ?? '');
-  const items = useMemo(() => {
-    if (!isEmergencyChannel) return chatItems;
-    return [...alerts]
-      .sort((left, right) => left.timestamp - right.timestamp)
-      .map((item) => ({
-        id: item.id,
-        threadId: EMERGENCY_BROADCAST_ID,
-        senderId: item.senderId,
-        sender: item.sender,
-        mine: Boolean(item.mine),
-        kind: 'text' as const,
-        body: item.body,
-        time: formatMessageClock(item.timestamp),
-        timestamp: item.timestamp,
-      }));
-  }, [alerts, chatItems, isEmergencyChannel]);
+  const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
-  const sendAsEmergency = isEmergencyChannel || emergency;
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -278,11 +263,11 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (!threadId || isEmergencyChannel) return;
+    if (!threadId) return;
     if (!isGroup) openDm(threadId, title);
     markRead(threadId);
     return () => clearActive();
-  }, [clearActive, isEmergencyChannel, isGroup, markRead, openDm, threadId, title]);
+  }, [clearActive, isGroup, markRead, openDm, threadId, title]);
 
   useEffect(
     () => () => {
@@ -306,10 +291,10 @@ export default function ChatScreen() {
   }, [isRecording]);
 
   const subtitle = useMemo(() => {
-    if (isEmergencyChannel) {
+    if (isAlertThread) {
       return inRange
-        ? 'Broadcasts to every reachable phone on the mesh'
-        : 'No phones in range · follow-ups still go out when someone appears';
+        ? 'Comments stay on this alert · not a new broadcast'
+        : 'No phones in range · comments will queue';
     }
     if (isGroup) {
       const total = Math.max(memberIds.length, 1);
@@ -318,13 +303,13 @@ export default function ChatScreen() {
     }
     if (!inRange) return 'Out of range · will queue until they reappear';
     return '1:1 · Bluetooth';
-  }, [inRange, inRangeCount, isEmergencyChannel, isGroup, memberIds.length]);
+  }, [inRange, inRangeCount, isAlertThread, isGroup, memberIds.length]);
 
   const send = () => {
     const body = draft.trim();
     if (!body || !threadId) return;
     setDraft('');
-    if (sendAsEmergency) {
+    if (!isAlertThread && emergency) {
       void (async () => {
         const result = await broadcastAlert({ body, severity: 'HELP' });
         if (!result.ok) {
@@ -444,7 +429,7 @@ export default function ChatScreen() {
       <Stack.Screen options={{ title }} />
       <View style={styles.threadBar}>
           <Text style={styles.subtitle}>{subtitle}</Text>
-          {isGroup && !isEmergencyChannel ? (
+          {isGroup && !isAlertThread ? (
             <Pressable
               onPress={() => setEmergency((v) => !v)}
               style={({ pressed }) => [styles.emergencyToggle, emergency && styles.emergencyToggleOn, pressed && styles.pressed]}>
@@ -459,10 +444,21 @@ export default function ChatScreen() {
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
           ref={scrollRef}
           showsVerticalScrollIndicator={false}>
+          {isAlertThread && alertItem ? (
+            <View style={styles.alertCard}>
+              <View style={styles.alertCardTop}>
+                <Chip label={alertItem.severity} tone={severityTone(alertItem.severity)} />
+                <Text style={styles.alertCardMeta}>
+                  {alertItem.sender} · {alertItem.time}
+                </Text>
+              </View>
+              <Text style={styles.alertCardBody}>{alertItem.body}</Text>
+            </View>
+          ) : null}
           {rows.length === 0 ? (
             <Text style={styles.empty}>
-              {isEmergencyChannel
-                ? 'Follow-ups here flood to every reachable phone, same as the original alert.'
+              {isAlertThread
+                ? 'Comments on this alert reach nearby phones without sending a new alert.'
                 : isGroup
                 ? inRange
                   ? 'Group is live on the mesh. Send a text.'
@@ -500,10 +496,10 @@ export default function ChatScreen() {
         <View
           style={[
             styles.composer,
-            sendAsEmergency && styles.composerEmergency,
+            emergency && styles.composerEmergency,
             { paddingBottom: keyboardVisible ? 10 : Math.max(insets.bottom, 10) },
           ]}>
-          {sendAsEmergency ? (
+          {emergency && !isAlertThread ? (
             <Text style={styles.emergencyHint}>Sends as an EMERGENCY broadcast to every reachable phone</Text>
           ) : null}
           {isRecording || startingRecording ? (
@@ -534,30 +530,30 @@ export default function ChatScreen() {
             </View>
           ) : (
             <View style={styles.composerRow}>
-              {isEmergencyChannel ? null : (
-                <IconButton onPress={() => void chooseImage()} tone="outline">
-                  <PlusIcon color={signal.blue} size={16} />
-                </IconButton>
-              )}
+              <IconButton onPress={() => void chooseImage()} tone="outline">
+                <PlusIcon color={signal.blue} size={16} />
+              </IconButton>
               <View style={styles.inputPill}>
                 <TextInput
                   accessibilityLabel="Message"
                   editable={!preparingMedia}
-                  maxLength={sendAsEmergency ? 280 : 2000}
+                  maxLength={emergency && !isAlertThread ? 280 : 2000}
                   multiline
                   onChangeText={setDraft}
                   placeholder={
                     preparingMedia
                       ? 'Preparing media…'
-                      : sendAsEmergency
-                        ? 'Emergency broadcast'
-                        : 'Message'
+                      : isAlertThread
+                        ? 'Comment'
+                        : emergency
+                          ? 'Emergency broadcast'
+                          : 'Message'
                   }
                   placeholderTextColor={signal.slate}
                   style={styles.input}
                   value={draft}
                 />
-                {!draft.trim() && !isEmergencyChannel ? (
+                {!draft.trim() ? (
                   <Pressable
                     accessibilityLabel="Choose image"
                     accessibilityRole="button"
@@ -572,7 +568,7 @@ export default function ChatScreen() {
                   </Pressable>
                 ) : null}
               </View>
-              {draft.trim() || isEmergencyChannel ? (
+              {draft.trim() ? (
                 <IconButton onPress={send} tone="outline">
                   <SendIcon color={signal.blue} size={16} />
                 </IconButton>
@@ -617,6 +613,16 @@ const styles = StyleSheet.create({
   emergencyLabel: { color: signal.slate, fontSize: 12, fontWeight: '600' },
   emergencyLabelOn: { color: signal.white },
   messages: { flexGrow: 1, gap: 2, padding: 20, paddingBottom: 12 },
+  alertCard: {
+    backgroundColor: signal.mist,
+    borderRadius: 16,
+    gap: 8,
+    marginBottom: 12,
+    padding: 16,
+  },
+  alertCardTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  alertCardMeta: { color: signal.slate, fontSize: 12 },
+  alertCardBody: { color: signal.ink, fontSize: 16, lineHeight: 22 },
   empty: { color: signal.slate, fontSize: 15, lineHeight: 22, marginTop: 12 },
   rowWrap: { flexDirection: 'row', gap: 8, maxWidth: '100%' },
   rowWrapTheirs: { alignSelf: 'flex-start' },
