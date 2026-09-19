@@ -1,0 +1,159 @@
+import { router } from 'expo-router';
+import { useState } from 'react';
+import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { AlertsIcon } from '@/components/signal/icons';
+import { Chip, OutlinedButton, RowPress } from '@/components/signal/ui';
+import { type Severity } from '@/data/mock';
+import { signal } from '@/theme/signal';
+
+const severities: Severity[] = ['INFO', 'HELP', 'DANGER'];
+
+export default function ComposeAlertScreen() {
+  const [body, setBody] = useState('');
+  const [severity, setSeverity] = useState<Severity>('HELP');
+  const [location, setLocation] = useState(true);
+
+  return (
+    <SafeAreaView edges={['bottom']} style={styles.safe}>
+      <ScrollView contentContainerStyle={styles.body}>
+        <View style={styles.hero}>
+          <View style={styles.heroIcon}>
+            <AlertsIcon color={signal.ink} size={22} />
+          </View>
+          <View style={styles.heroCopy}>
+            <Text style={styles.heroTitle}>Emergency broadcast</Text>
+            <Text style={styles.heroBody}>
+              Reaches every reachable node, including relays. Rate-limited to one send every 5 seconds.
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.label}>SEVERITY</Text>
+        <View style={styles.row}>
+          {severities.map((item) => (
+            <RowPress key={item} onPress={() => setSeverity(item)} style={[styles.seg, severity === item && styles.segOn]}>
+              <Text style={[styles.segText, severity === item && styles.segTextOn]}>{item}</Text>
+            </RowPress>
+          ))}
+        </View>
+
+        <View style={styles.labelRow}>
+          <Text style={styles.label}>MESSAGE</Text>
+          <Text style={styles.label}>{body.length} / 280</Text>
+        </View>
+        <TextInput
+          maxLength={280}
+          multiline
+          onChangeText={setBody}
+          placeholder="What should everyone nearby know?"
+          placeholderTextColor={signal.slate}
+          style={styles.input}
+          value={body}
+        />
+
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.toggleTitle}>Attach approximate location</Text>
+            <Text style={styles.toggleBody}>Shown as a tag on the alert card.</Text>
+          </View>
+          <Switch
+            ios_backgroundColor={signal.fog}
+            onValueChange={setLocation}
+            thumbColor={signal.white}
+            trackColor={{ false: signal.fog, true: signal.blue }}
+            value={location}
+          />
+        </View>
+
+        <Text style={styles.label}>PREVIEW</Text>
+        <View style={styles.preview}>
+          <View style={styles.previewTop}>
+            <Chip label={severity} tone={severity === 'DANGER' ? 'blue' : severity === 'HELP' ? 'mist' : 'sky'} />
+            <Text style={styles.previewMeta}>now · 0 hops</Text>
+          </View>
+          <Text style={styles.previewBody}>{body || 'Your message will preview here.'}</Text>
+          {location ? <Text style={styles.previewLocation}>Location attached</Text> : null}
+        </View>
+
+        <OutlinedButton
+          disabled={!body.trim()}
+          label="Broadcast to mesh"
+          onPress={() => router.back()}
+        />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { backgroundColor: signal.paper, flex: 1 },
+  body: { gap: 12, padding: 24 },
+  hero: {
+    backgroundColor: signal.sky,
+    borderRadius: 16,
+    flexDirection: 'row',
+    gap: 14,
+    padding: 20,
+  },
+  heroIcon: {
+    alignItems: 'center',
+    backgroundColor: signal.white,
+    borderRadius: 12,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  heroCopy: { flex: 1 },
+  heroTitle: { color: signal.ink, fontSize: 20, fontWeight: '800', lineHeight: 24 },
+  heroBody: { color: signal.slate, fontSize: 14, lineHeight: 20, marginTop: 8 },
+  label: { color: signal.slate, fontSize: 11, fontWeight: '600', letterSpacing: 1.4 },
+  labelRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
+  row: { flexDirection: 'row', gap: 8 },
+  seg: {
+    backgroundColor: signal.white,
+    borderColor: signal.fog,
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    paddingVertical: 12,
+  },
+  segOn: { borderColor: signal.blue, borderWidth: 1.5 },
+  segText: { color: signal.slate, fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  segTextOn: { color: signal.blue },
+  input: {
+    backgroundColor: signal.white,
+    borderColor: signal.fog,
+    borderRadius: 16,
+    borderWidth: 1,
+    color: signal.ink,
+    fontSize: 16,
+    lineHeight: 24,
+    minHeight: 120,
+    padding: 16,
+    textAlignVertical: 'top',
+  },
+  toggleRow: {
+    alignItems: 'center',
+    backgroundColor: signal.white,
+    borderColor: signal.fog,
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 16,
+  },
+  toggleTitle: { color: signal.ink, fontSize: 15, fontWeight: '600' },
+  toggleBody: { color: signal.slate, fontSize: 13, lineHeight: 18, marginTop: 4 },
+  preview: {
+    backgroundColor: signal.mist,
+    borderRadius: 16,
+    gap: 10,
+    padding: 20,
+  },
+  previewTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  previewMeta: { color: signal.slate, fontSize: 12 },
+  previewBody: { color: signal.ink, fontSize: 16, lineHeight: 23 },
+  previewLocation: { color: signal.slate, fontSize: 13 },
+});
