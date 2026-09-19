@@ -78,8 +78,8 @@ private data class SendJob(
   val frames: List<ByteArray>,
   var index: Int,
   val promise: Promise,
-  val address: String?,
-  val serverDevice: BluetoothDevice?,
+  var address: String?,
+  var serverDevice: BluetoothDevice?,
 )
 
 private data class FrameAssembler(
@@ -113,6 +113,7 @@ class NoredBluetoothModule : Module() {
   private var ignoredServerNotificationCallbacks = 0
   private val identityNotifyQueue = ArrayDeque<BluetoothDevice>()
   private var identityNotifyInFlight = false
+  private var identityPushPending = false
   private var started = false
   private var receiverRegistered = false
   private var keepAliveTicks = 0
@@ -143,7 +144,9 @@ class NoredBluetoothModule : Module() {
       val name = normalizedDisplayName(rawName)
         ?: throw CodedException("ERR_INVALID_NAME", "Display name must be 1 to 40 UTF-8 bytes", null)
       preferences().edit().putString(DISPLAY_NAME, name).commit()
-      if (started) publishIdentityUpdate()
+      if (started) {
+        if (sending) identityPushPending = true else publishIdentityUpdate()
+      }
       identityMap()
     }
 
@@ -489,6 +492,9 @@ class NoredBluetoothModule : Module() {
       if (keepAliveTicks % 2 == 0) {
         startScannerOnly()
       }
+      if (keepAliveTicks % 6 == 0 && !sending) {
+        publishIdentityUpdate()
+      }
       mainHandler.postDelayed(this, 5_000L)
     }
   }
@@ -716,7 +722,15 @@ class NoredBluetoothModule : Module() {
         queue?.poll()
         writeBusy[address] = false
         if (job?.packet == true) {
-          failCurrentSend("Write failed")
+          val send = sendQueue.peek()
+          if (send?.serverDevice != null) {
+            send.address = null
+            sending = false
+            log("warn", "[MSG] write failed, retrying over notify")
+            pumpSend()
+          } else {
+            failCurrentSend("Write failed")
+          }
         } else {
           log("error", "[ERROR] identity write failed status=$status")
           mainHandler.postDelayed({ enqueueWrite(address, identityJson(), packet = false) }, 400L)
@@ -873,7 +887,15 @@ class NoredBluetoothModule : Module() {
       if (status == BluetoothGatt.GATT_SUCCESS) {
         finishCurrentFrame()
       } else {
-        failCurrentSend("Notify failed")
+        val send = sendQueue.peek()
+        if (send?.address != null) {
+          send.serverDevice = null
+          sending = false
+          log("warn", "[MSG] notify failed, retrying over write")
+          pumpSend()
+        } else {
+          failCurrentSend("Notify failed")
+        }
       }
     }
   }
@@ -988,11 +1010,21 @@ class NoredBluetoothModule : Module() {
     identitySubscribedAddresses.forEach { address ->
       serverDevices[address]?.let(identityNotifyQueue::add)
     }
-    if (identityNotifyQueue.isEmpty()) {
+    gatts.keys.forEach { address ->
+      if (sending) {
+        identityPushPending = true
+      } else {
+        enqueueWrite(address, identityJson(), packet = false)
+      }
+    }
+    if (identityNotifyQueue.isEmpty() && gatts.isEmpty()) {
       log("info", "[DISCOVERY] display name saved; peers will refresh on reconnect")
       return
     }
-    pumpIdentityUpdates()
+    if (identityNotifyQueue.isNotEmpty()) {
+      log("info", "[DISCOVERY] publishing display name to ${identityNotifyQueue.size} subscriber(s)")
+      pumpIdentityUpdates()
+    }
   }
 
   @SuppressLint("MissingPermission")
@@ -1058,7 +1090,7 @@ class NoredBluetoothModule : Module() {
         index = 0,
         promise = promise,
         address = clientAddress,
-        serverDevice = if (clientAddress == null) serverDevice else null,
+        serverDevice = if (canNotify) serverDevice else null,
       ),
     )
     pumpSend()
@@ -1074,33 +1106,35 @@ class NoredBluetoothModule : Module() {
     }
     val frame = job.frames[job.index]
     sending = true
+    if (job.serverDevice != null && txCharacteristic != null) {
+      val device = job.serverDevice
+      val tx = txCharacteristic
+      val notified = try {
+        if (device == null || tx == null) {
+          false
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          gattServer?.notifyCharacteristicChanged(device, tx, false, frame) == true
+        } else {
+          @Suppress("DEPRECATION")
+          tx.value = frame
+          @Suppress("DEPRECATION")
+          gattServer?.notifyCharacteristicChanged(device, tx, false) == true
+        }
+      } catch (_: Exception) {
+        false
+      }
+      if (notified) {
+        armSendTimeout()
+        return
+      }
+      log("warn", "[MSG] notify path failed, retrying over write")
+      job.serverDevice = null
+    }
     if (job.address != null) {
       enqueueWrite(job.address, frame, packet = true)
       return
     }
-    val device = job.serverDevice
-    val tx = txCharacteristic
-    if (device == null || tx == null) {
-      failCurrentSend("Peer is not connected over Bluetooth.")
-      return
-    }
-    val notified = try {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        gattServer?.notifyCharacteristicChanged(device, tx, false, frame) == true
-      } else {
-        @Suppress("DEPRECATION")
-        tx.value = frame
-        @Suppress("DEPRECATION")
-        gattServer?.notifyCharacteristicChanged(device, tx, false) == true
-      }
-    } catch (error: Exception) {
-      false
-    }
-    if (!notified) {
-      failCurrentSend("Notify could not be queued")
-    } else {
-      armSendTimeout()
-    }
+    failCurrentSend("Peer is not connected over Bluetooth.")
   }
 
   private fun armSendTimeout() {
@@ -1108,6 +1142,14 @@ class NoredBluetoothModule : Module() {
     val timeout = Runnable {
       if (!sending) return@Runnable
       val job = sendQueue.peek()
+      if (job?.serverDevice != null && job.address != null) {
+        ignoredServerNotificationCallbacks += 1
+        job.serverDevice = null
+        sending = false
+        log("warn", "[MSG] notify timed out, retrying over write")
+        pumpSend()
+        return@Runnable
+      }
       if (job?.address != null) {
         val address = job.address
         val gatt = gatts.remove(address)
@@ -1163,6 +1205,10 @@ class NoredBluetoothModule : Module() {
     }
     pumpIdentityUpdates()
     pumpSend()
+    if (identityPushPending && !sending) {
+      identityPushPending = false
+      publishIdentityUpdate()
+    }
   }
 
   private fun failQueuedSends(message: String) {

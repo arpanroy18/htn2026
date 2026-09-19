@@ -1,6 +1,7 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,7 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
 import { Avatar, IconButton } from '@/components/signal/ui';
@@ -62,6 +63,8 @@ export default function ChatScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; kind?: string }>();
   const { noredPeers } = useMeshUi();
   const { threadFor, messagesFor, openDm, sendText, markRead, clearActive } = useChat();
+  const insets = useSafeAreaInsets();
+  const headerHeight = insets.top + 44;
   const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
   const thread = threadFor(threadId ?? '');
   const title = thread?.name ?? params.title ?? 'Chat';
@@ -73,9 +76,25 @@ export default function ChatScreen() {
 
   const [draft, setDraft] = useState('');
   const [emergency, setEmergency] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
+
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setKeyboardVisible(true),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardVisible(false),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!threadId || isGroup) return;
@@ -98,10 +117,12 @@ export default function ChatScreen() {
   };
 
   return (
-    <SafeAreaView edges={['bottom']} style={styles.safe}>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={headerHeight}
+      style={styles.safe}>
       <Stack.Screen options={{ title }} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-        <View style={styles.threadBar}>
+      <View style={styles.threadBar}>
           <Text style={styles.subtitle}>{subtitle}</Text>
           {isGroup ? (
             <Pressable
@@ -152,7 +173,12 @@ export default function ChatScreen() {
           )}
         </ScrollView>
 
-        <View style={[styles.composer, emergency && styles.composerEmergency]}>
+        <View
+          style={[
+            styles.composer,
+            emergency && styles.composerEmergency,
+            { paddingBottom: keyboardVisible ? 10 : Math.max(insets.bottom, 10) },
+          ]}>
           {emergency ? (
             <Text style={styles.emergencyHint}>Emergency broadcasts are not sent over the mesh yet</Text>
           ) : null}
@@ -189,8 +215,7 @@ export default function ChatScreen() {
             )}
           </View>
         </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -41,9 +41,9 @@ private struct PendingSend {
   var index: Int
   var retryCount: Int
   let promise: Promise
-  let notifyCentral: CBCentral?
-  let writePeripheral: CBPeripheral?
-  let writeCharacteristic: CBCharacteristic?
+  var notifyCentral: CBCentral?
+  var writePeripheral: CBPeripheral?
+  var writeCharacteristic: CBCharacteristic?
 }
 
 private final class NoredPeripheralDelegate: NSObject, CBPeripheralManagerDelegate {
@@ -185,6 +185,7 @@ public final class NoredBluetoothModule: Module {
   private var sending = false
   private var sendTimeout: DispatchWorkItem?
   private var pendingIdentityWrites: Set<UUID> = []
+  private var identityPushPending = false
 
   public func definition() -> ModuleDefinition {
     Name("NoredBluetooth")
@@ -209,7 +210,12 @@ public final class NoredBluetoothModule: Module {
       }
       UserDefaults.standard.set(name, forKey: displayNameKey)
       if self.started {
-        self.publishIdentityUpdate()
+        if self.sending {
+          self.identityPushPending = true
+        } else {
+          self.publishIdentityUpdate()
+          self.writeIdentityToConnectedPeers()
+        }
       }
       return self.identityMap()
     }.runOnQueue(.main)
@@ -454,6 +460,10 @@ public final class NoredBluetoothModule: Module {
     if keepAliveTicks.isMultiple(of: 2) {
       beginScanningIfReady()
     }
+    if keepAliveTicks.isMultiple(of: 6), !sending {
+      publishIdentityUpdate()
+      writeIdentityToConnectedPeers()
+    }
     adoptConnectedPeripherals()
   }
 
@@ -679,8 +689,11 @@ public final class NoredBluetoothModule: Module {
     }
     guard let value = characteristic.value else { return }
     if characteristic.uuid == identityUUID {
+      let first = clientLinks[peripheral.identifier]?.peerId == nil
       receiveIdentity(from: peripheral, data: value)
-      writeLocalIdentity(to: peripheral)
+      if first {
+        writeLocalIdentity(to: peripheral)
+      }
       return
     }
     if characteristic.uuid == txUUID {
@@ -690,8 +703,11 @@ public final class NoredBluetoothModule: Module {
           ?? peripheral.identifier.uuidString.lowercased()
         ingestFrame(peerId: peerId, data: value)
       } else {
+        let first = clientLinks[peripheral.identifier]?.peerId == nil
         receiveIdentity(from: peripheral, data: value)
-        writeLocalIdentity(to: peripheral)
+        if first {
+          writeLocalIdentity(to: peripheral)
+        }
       }
     }
   }
@@ -703,6 +719,7 @@ public final class NoredBluetoothModule: Module {
         if let error {
           log("error", "[ERROR] identity write failed: \(error.localizedDescription)")
           DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.pendingIdentityWrites.remove(peripheral.identifier)
             self?.writeLocalIdentity(to: peripheral)
           }
         } else {
@@ -716,7 +733,7 @@ public final class NoredBluetoothModule: Module {
         return
       }
       if let error {
-        failCurrentSend(error.localizedDescription)
+        fallbackOrFail(error.localizedDescription)
         return
       }
       finishCurrentFrame()
@@ -820,7 +837,7 @@ public final class NoredBluetoothModule: Module {
     central: CBCentral,
     didUnsubscribeFrom characteristic: CBCharacteristic
   ) {
-    if let peerId = peerIdByCentral.removeValue(forKey: central.identifier) {
+    if characteristic.uuid == txUUID, let peerId = peerIdByCentral.removeValue(forKey: central.identifier) {
       centralByPeerId.removeValue(forKey: peerId)
     }
     log("info", "[CONNECTION] disconnected \(central.identifier.uuidString.prefix(8))")
@@ -901,6 +918,14 @@ public final class NoredBluetoothModule: Module {
     }
   }
 
+  private func writeIdentityToConnectedPeers() {
+    guard !sending else { return }
+    pendingIdentityWrites.removeAll()
+    for link in clientLinks.values {
+      writeLocalIdentity(to: link.peripheral)
+    }
+  }
+
   private func writeLocalIdentity(to peripheral: CBPeripheral) {
     guard let rx = clientLinks[peripheral.identifier]?.rx else { return }
     guard pendingIdentityWrites.insert(peripheral.identifier).inserted else { return }
@@ -939,7 +964,7 @@ public final class NoredBluetoothModule: Module {
           index: 0,
           retryCount: 0,
           promise: promise,
-          notifyCentral: writePeripheral == nil ? notifyCentral : nil,
+          notifyCentral: notifyCentral,
           writePeripheral: writePeripheral,
           writeCharacteristic: writeCharacteristic
         )
@@ -958,29 +983,30 @@ public final class NoredBluetoothModule: Module {
     }
     let frame = current.frames[current.index]
     sending = true
-    if let peripheral = current.writePeripheral, let characteristic = current.writeCharacteristic {
+    if let tx = txCharacteristic, let central = current.notifyCentral {
+      let ok = peripheralManager?.updateValue(frame, for: tx, onSubscribedCentrals: [central]) ?? false
+      if ok {
+        finishCurrentFrame()
+        return
+      }
+      sendQueue[0].retryCount += 1
+      if sendQueue[0].retryCount <= 3 {
+        sending = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+          self?.pumpSend()
+        }
+        return
+      }
+      sendQueue[0].notifyCentral = nil
+      sendQueue[0].retryCount = 0
+      log("warn", "[MSG] notify path failed, retrying over write")
+    }
+    if let peripheral = sendQueue.first?.writePeripheral, let characteristic = sendQueue.first?.writeCharacteristic {
       armSendTimeout(peerId: current.peerId, frameIndex: current.index)
       peripheral.writeValue(frame, for: characteristic, type: .withResponse)
       return
     }
-    guard let tx = txCharacteristic, let central = current.notifyCentral else {
-      failCurrentSend("Peer is not connected over Bluetooth.")
-      return
-    }
-    let ok = peripheralManager?.updateValue(frame, for: tx, onSubscribedCentrals: [central]) ?? false
-    if ok {
-      finishCurrentFrame()
-    } else {
-      sending = false
-      sendQueue[0].retryCount += 1
-      if sendQueue[0].retryCount > 5 {
-        failCurrentSend("Bluetooth notification remained busy")
-      } else {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-          self?.pumpSend()
-        }
-      }
-    }
+    failCurrentSend("Peer is not connected over Bluetooth.")
   }
 
   private func armSendTimeout(peerId: String, frameIndex: Int) {
@@ -996,7 +1022,7 @@ public final class NoredBluetoothModule: Module {
         self.connectingHardware.remove(peripheral.identifier)
         self.connectionManagerByHardware.removeValue(forKey: peripheral.identifier)
       }
-      self.failCurrentSend("Bluetooth write timed out")
+      self.fallbackOrFail("Bluetooth write timed out")
     }
     sendTimeout = timeout
     DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
@@ -1014,6 +1040,21 @@ public final class NoredBluetoothModule: Module {
     } else {
       pumpSend()
     }
+  }
+
+  private func fallbackOrFail(_ message: String) {
+    sendTimeout?.cancel()
+    sendTimeout = nil
+    sending = false
+    guard !sendQueue.isEmpty else { return }
+    if sendQueue[0].writePeripheral != nil, sendQueue[0].notifyCentral != nil {
+      sendQueue[0].writePeripheral = nil
+      sendQueue[0].writeCharacteristic = nil
+      log("warn", "[MSG] write path failed, retrying over notify")
+      pumpSend()
+      return
+    }
+    failCurrentSend(message)
   }
 
   private func failCurrentSend(_ message: String) {
@@ -1034,6 +1075,11 @@ public final class NoredBluetoothModule: Module {
       job.promise.reject("ERR_SEND", message ?? "Send failed")
     }
     pumpSend()
+    if identityPushPending, !sending {
+      identityPushPending = false
+      publishIdentityUpdate()
+      writeIdentityToConnectedPeers()
+    }
   }
 
   private func failQueuedSends(_ message: String) {
