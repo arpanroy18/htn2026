@@ -61,18 +61,24 @@ function groupMessages(items: ChatMessage[]): Row[] {
 
 export default function ChatScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; kind?: string }>();
-  const { noredPeers } = useMeshUi();
+  const { identity, noredPeers } = useMeshUi();
   const { threadFor, messagesFor, openDm, sendText, markRead, clearActive } = useChat();
   const insets = useSafeAreaInsets();
   const headerHeight = insets.top + 44;
   const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
   const thread = threadFor(threadId ?? '');
   const title = thread?.name ?? params.title ?? 'Chat';
-  const kind = params.kind ?? thread?.kind ?? 'dm';
-  const isGroup = kind === 'group';
-  const inRange = noredPeers.some(
-    (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
+  const isAlert = Boolean(threadId?.startsWith('alert-'));
+  const isGroup = thread?.kind === 'group' || (!isAlert && (params.kind ?? 'dm') === 'group');
+  const otherMembers = (thread?.memberIds ?? []).filter((memberId) =>
+    noredPeers.some((peer) => peer.id === memberId && peer.identityConfirmed),
   );
+  const inRange =
+    thread?.kind === 'group'
+      ? otherMembers.length > 0 || thread.memberIds.every((memberId) => memberId === identity.id)
+      : noredPeers.some(
+          (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
+        );
 
   const [draft, setDraft] = useState('');
   const [emergency, setEmergency] = useState(false);
@@ -97,21 +103,28 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (!threadId || isGroup) return;
-    openDm(threadId, title);
+    if (!threadId || isAlert) return;
+    if (thread?.kind !== 'group' && !isGroup) {
+      openDm(threadId, title);
+    }
     markRead(threadId);
     return () => clearActive();
-  }, [clearActive, isGroup, markRead, openDm, threadId, title]);
+  }, [clearActive, isAlert, isGroup, markRead, openDm, thread?.kind, threadId, title]);
 
   const subtitle = useMemo(() => {
-    if (isGroup) return 'Groups are still local — Bluetooth text is 1:1 for now';
+    if (isAlert) return 'Emergency inbox · not a live mesh group';
+    if (thread?.kind === 'group') {
+      const seats = thread.memberIds.length;
+      if (!inRange) return `Group · ${seats} members · out of range, will queue`;
+      return `Group · ${seats} members · ${otherMembers.length} in range`;
+    }
     if (!inRange) return 'Out of range · will queue until they reappear';
     return '1:1 · Bluetooth';
-  }, [inRange, isGroup]);
+  }, [inRange, isAlert, otherMembers.length, thread]);
 
   const send = () => {
     const body = draft.trim();
-    if (!body || !threadId || isGroup) return;
+    if (!body || !threadId || isAlert) return;
     setDraft('');
     void sendText(threadId, body);
   };
@@ -124,7 +137,7 @@ export default function ChatScreen() {
       <Stack.Screen options={{ title }} />
       <View style={styles.threadBar}>
           <Text style={styles.subtitle}>{subtitle}</Text>
-          {isGroup ? (
+          {isAlert ? (
             <Pressable
               onPress={() => setEmergency((v) => !v)}
               style={({ pressed }) => [styles.emergencyToggle, emergency && styles.emergencyToggleOn, pressed && styles.pressed]}>
@@ -141,11 +154,15 @@ export default function ChatScreen() {
           showsVerticalScrollIndicator={false}>
           {rows.length === 0 ? (
             <Text style={styles.empty}>
-              {isGroup
-                ? 'Group mesh send is not wired yet.'
-                : inRange
-                  ? 'Bluetooth is linked. Send a text.'
-                  : 'This phone is out of range. You can still type — it will queue.'}
+              {isAlert
+                ? 'Emergency broadcasts are not sent over the mesh yet.'
+                : isGroup
+                  ? inRange
+                    ? 'Group is live. Messages go to members in Bluetooth range and queue for the rest.'
+                    : 'No members in range. You can still type — it will queue.'
+                  : inRange
+                    ? 'Bluetooth is linked. Send a text.'
+                    : 'This phone is out of range. You can still type — it will queue.'}
             </Text>
           ) : (
             rows.map(({ message, first, last }) => (
@@ -189,11 +206,11 @@ export default function ChatScreen() {
             <View style={styles.inputPill}>
               <TextInput
                 accessibilityLabel="Message"
-                editable={!isGroup}
+                editable={!isAlert}
                 maxLength={2000}
                 multiline
                 onChangeText={setDraft}
-                placeholder={isGroup ? 'Groups coming later' : 'Message'}
+                placeholder={isAlert ? 'Groups coming later' : 'Message'}
                 placeholderTextColor={signal.slate}
                 style={styles.input}
                 value={draft}

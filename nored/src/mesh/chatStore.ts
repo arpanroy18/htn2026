@@ -1,16 +1,22 @@
 import type { Packet, Peer } from '@/transport';
 
-export type ChatDelivery = 'queued' | 'sent' | 'relayed' | 'failed';
+export type ChatDelivery = 'queued' | 'sent' | 'relayed' | 'seen' | 'failed';
+
+export const MAX_GROUP_MEMBERS = 8;
+export const MAX_GROUPS = 20;
+
+export type ChatThreadKind = 'dm' | 'group';
 
 export type ChatThread = {
   id: string;
-  kind: 'dm';
+  kind: ChatThreadKind;
   peerId: string;
   name: string;
   preview: string;
   updatedAt: number;
   unread: number;
   queued: boolean;
+  memberIds: string[];
 };
 
 export type ChatMessage = {
@@ -59,6 +65,9 @@ export function makeTextPacket(input: {
   senderId: string;
   recipientId: string;
   body: string;
+  groupId?: string;
+  groupName?: string;
+  groupMemberIds?: string[];
 }): Packet {
   return {
     version: 1,
@@ -68,7 +77,30 @@ export function makeTextPacket(input: {
     type: 'text',
     timestamp: Date.now(),
     payload: input.body,
+    ...(input.groupId
+      ? {
+          groupId: input.groupId,
+          groupName: input.groupName,
+          groupMemberIds: input.groupMemberIds,
+        }
+      : {}),
   };
+}
+
+function uniqueIds(ids: string[]) {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const id of ids) {
+    const value = id.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    next.push(value);
+  }
+  return next;
+}
+
+export function groupCount(state: ChatState) {
+  return state.threads.filter((thread) => thread.kind === 'group').length;
 }
 
 export function isTextPacket(value: Packet): value is Packet {
@@ -109,6 +141,7 @@ export function ensureDmThread(
       updatedAt: Date.now(),
       unread: 0,
       queued: false,
+      memberIds: [],
     }),
     messages: state.messages[peerId] ? state.messages : { ...state.messages, [peerId]: [] },
   };
@@ -125,15 +158,17 @@ export function appendMessage(
   const messages = [...previous, message].slice(-1000);
   const queued = messages.some((item) => item.mine && item.status === 'queued');
   const current = state.threads.find((item) => item.id === message.threadId);
+  const kind = current?.kind ?? 'dm';
   const thread: ChatThread = {
     id: message.threadId,
-    kind: 'dm',
-    peerId: message.threadId,
-    name: threadName,
+    kind,
+    peerId: kind === 'group' ? (current?.peerId ?? message.threadId) : message.threadId,
+    name: threadName || current?.name || 'Chat',
     preview: message.body,
     updatedAt: message.timestamp,
     unread: unread ? (current?.unread ?? 0) + 1 : (current?.unread ?? 0),
     queued,
+    memberIds: current?.memberIds ?? [],
   };
   return {
     threads: upsertThread(state.threads, thread),
@@ -148,6 +183,9 @@ export function migrateDmPeer(
   name: string,
 ): ChatState {
   if (previousPeerId === peerId) return state;
+  if (state.threads.some((thread) => thread.kind === 'group' && (thread.id === previousPeerId || thread.id === peerId))) {
+    return state;
+  }
   const previousThread = state.threads.find((thread) => thread.id === previousPeerId);
   const currentThread = state.threads.find((thread) => thread.id === peerId);
   const previousMessages = state.messages[previousPeerId] ?? [];
@@ -176,6 +214,7 @@ export function migrateDmPeer(
     updatedAt,
     unread: (currentThread?.unread ?? 0) + (previousThread?.unread ?? 0),
     queued: messages.some((message) => message.mine && message.status === 'queued'),
+    memberIds: [],
   };
   const remainingThreads = state.threads.filter(
     (item) => item.id !== previousPeerId && item.id !== peerId,
@@ -216,6 +255,8 @@ export function markThreadRead(state: ChatState, threadId: string): ChatState {
 }
 
 export function queuedPackets(state: ChatState, peerId: string, senderId: string): Packet[] {
+  const thread = state.threads.find((item) => item.id === peerId);
+  if (thread?.kind === 'group') return [];
   return (state.messages[peerId] ?? [])
     .filter((item) => item.mine && item.status === 'queued')
     .map((item) => ({
@@ -227,6 +268,77 @@ export function queuedPackets(state: ChatState, peerId: string, senderId: string
       timestamp: item.timestamp,
       payload: item.body,
     }));
+}
+
+export function queuedGroupPackets(state: ChatState, groupId: string, senderId: string): Packet[] {
+  const thread = state.threads.find((item) => item.id === groupId);
+  if (thread?.kind !== 'group') return [];
+  return (state.messages[groupId] ?? [])
+    .filter((item) => item.mine && item.status === 'queued')
+    .map((item) => ({
+      version: 1 as const,
+      id: item.id,
+      senderId,
+      recipientId: senderId,
+      type: 'text' as const,
+      timestamp: item.timestamp,
+      payload: item.body,
+      groupId: thread.id,
+      groupName: thread.name,
+      groupMemberIds: thread.memberIds,
+    }));
+}
+
+export function ensureGroupThread(
+  state: ChatState,
+  input: { id: string; name: string; memberIds: string[] },
+): ChatState {
+  const memberIds = uniqueIds(input.memberIds).slice(0, MAX_GROUP_MEMBERS);
+  const existing = state.threads.find((thread) => thread.id === input.id);
+  if (existing?.kind === 'group') {
+    const merged = uniqueIds([...existing.memberIds, ...memberIds]).slice(0, MAX_GROUP_MEMBERS);
+    const name = input.name.trim() || existing.name;
+    const sameName = name === existing.name;
+    const sameMembers =
+      merged.length === existing.memberIds.length && merged.every((id) => existing.memberIds.includes(id));
+    if (sameName && sameMembers) return state;
+    return {
+      ...state,
+      threads: state.threads.map((thread) =>
+        thread.id === input.id ? { ...thread, name, memberIds: merged } : thread,
+      ),
+    };
+  }
+  if (existing) return state;
+  if (groupCount(state) >= MAX_GROUPS) return state;
+  return {
+    ...state,
+    threads: upsertThread(state.threads, {
+      id: input.id,
+      kind: 'group',
+      peerId: input.id,
+      name: input.name.trim() || 'Group',
+      preview: 'No messages yet',
+      updatedAt: Date.now(),
+      unread: 0,
+      queued: false,
+      memberIds,
+    }),
+    messages: state.messages[input.id] ? state.messages : { ...state.messages, [input.id]: [] },
+  };
+}
+
+export function addGroupMember(state: ChatState, groupId: string, memberId: string): ChatState {
+  const thread = state.threads.find((item) => item.id === groupId);
+  if (thread?.kind !== 'group') return state;
+  if (thread.memberIds.includes(memberId)) return state;
+  if (thread.memberIds.length >= MAX_GROUP_MEMBERS) return state;
+  return {
+    ...state,
+    threads: state.threads.map((item) =>
+      item.id === groupId ? { ...item, memberIds: [...item.memberIds, memberId] } : item,
+    ),
+  };
 }
 
 export function peerName(peers: Peer[], peerId: string, fallback: string) {

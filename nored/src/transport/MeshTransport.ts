@@ -16,6 +16,9 @@ export type Packet = {
   type: 'text';
   timestamp: number;
   payload: string;
+  groupId?: string;
+  groupName?: string;
+  groupMemberIds?: string[];
 };
 
 export type DeviceIdentity = {

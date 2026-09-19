@@ -13,16 +13,23 @@ import { meshTransport, type Packet } from '@/transport';
 
 import { useMeshUi } from './MeshUiContext';
 import {
+  addGroupMember,
   appendMessage,
+  createId,
   emptyChatState,
   ensureDmThread,
+  ensureGroupThread,
   formatMessageClock,
+  groupCount,
   isTextPacket,
   makeTextPacket,
   markThreadRead,
+  MAX_GROUP_MEMBERS,
+  MAX_GROUPS,
   migrateDmPeer,
   patchMessage,
   peerName,
+  queuedGroupPackets,
   queuedPackets,
   type ChatMessage,
   type ChatState,
@@ -34,7 +41,9 @@ type ChatUi = {
   threadFor: (threadId: string) => ChatThread | undefined;
   messagesFor: (threadId: string) => ChatMessage[];
   openDm: (peerId: string, name: string) => void;
-  sendText: (peerId: string, body: string) => Promise<void>;
+  createGroup: (name: string, memberIds: string[]) => ChatThread | null;
+  inviteToGroup: (groupId: string, peerId: string) => Promise<boolean>;
+  sendText: (threadId: string, body: string) => Promise<void>;
   markRead: (threadId: string) => void;
   clearActive: () => void;
 };
@@ -101,12 +110,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     (packet: Packet, threadName: string, mine: boolean, status: ChatMessage['status'], unread: boolean) => {
       if (!isTextPacket(packet) || !packet.payload.trim()) return;
       remember(packet.id);
-      const threadId = mine ? packet.recipientId : packet.senderId;
+      const groupId = packet.groupId?.trim();
+      const threadId = groupId || (mine ? packet.recipientId : packet.senderId);
+      const sender = mine
+        ? 'You'
+        : peerName(peersRef.current, packet.senderId, threadName);
       const message: ChatMessage = {
         id: packet.id,
         threadId,
         senderId: packet.senderId,
-        sender: mine ? 'You' : threadName,
+        sender,
         mine,
         kind: 'text',
         body: packet.payload,
@@ -114,7 +127,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         timestamp: packet.timestamp || Date.now(),
         time: formatMessageClock(packet.timestamp || Date.now()),
       };
-      setState((current) => appendMessage(current, message, threadName, unread));
+      setState((current) => {
+        const withGroup = groupId
+          ? ensureGroupThread(current, {
+              id: groupId,
+              name: packet.groupName || threadName,
+              memberIds: [
+                packet.senderId,
+                packet.recipientId,
+                ...(packet.groupMemberIds ?? []),
+              ],
+            })
+          : current;
+        return appendMessage(withGroup, message, packet.groupName || threadName, unread);
+      });
     },
     [remember],
   );
@@ -122,6 +148,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const sendPacket = useCallback(async (peerId: string, packet: Packet) => {
     await meshTransport.sendPacket(peerId, packet);
   }, []);
+
+  const sendableIds = useCallback(() => {
+    return new Set(
+      noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
+    );
+  }, [noredPeers]);
+
+  const fanoutGroup = useCallback(
+    async (thread: ChatThread, packet: Packet) => {
+      const reachable = sendableIds();
+      const targets = thread.memberIds.filter(
+        (memberId) => memberId !== identity.id && reachable.has(memberId),
+      );
+      if (!targets.length) return false;
+      let allSent = true;
+      for (const target of targets) {
+        try {
+          await sendPacket(target, { ...packet, recipientId: target });
+        } catch {
+          allSent = false;
+          break;
+        }
+      }
+      return allSent;
+    },
+    [identity.id, sendPacket, sendableIds],
+  );
 
   const flushPeer = useCallback(
     async (peerId: string) => {
@@ -149,14 +202,39 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [identity.id, resolvePeerId, sendPacket],
   );
 
+  const flushGroup = useCallback(
+    async (groupId: string) => {
+      if (flushing.current.has(groupId)) return;
+      const thread = stateRef.current.threads.find((item) => item.id === groupId);
+      if (thread?.kind !== 'group') return;
+      const pending = queuedGroupPackets(stateRef.current, groupId, identity.id);
+      if (!pending.length) return;
+      const last = lastFlushAt.current.get(groupId) ?? 0;
+      if (Date.now() - last < 2000) return;
+      flushing.current.add(groupId);
+      lastFlushAt.current.set(groupId, Date.now());
+      try {
+        for (const packet of pending) {
+          const sent = await fanoutGroup(thread, packet);
+          if (!sent) break;
+          setState((current) => patchMessage(current, groupId, packet.id, { status: 'sent' }));
+        }
+      } finally {
+        flushing.current.delete(groupId);
+      }
+    },
+    [fanoutGroup, identity.id],
+  );
+
   useEffect(() => {
     const subscription = meshTransport.onPacketReceived((_peerId, packet) => {
       if (!isTextPacket(packet)) return;
       if (packet.senderId === identity.id) return;
       if (packet.recipientId && packet.recipientId !== identity.id) return;
       if (seenIds.current.has(packet.id)) return;
-      const name = peerName(peersRef.current, packet.senderId, 'Nearby peer');
-      const unread = activeThread.current !== packet.senderId;
+      const groupId = packet.groupId?.trim();
+      const name = peerName(peersRef.current, packet.senderId, packet.groupName || 'Nearby peer');
+      const unread = activeThread.current !== (groupId || packet.senderId);
       ingest(packet, name, false, undefined, unread);
     });
     return () => subscription.remove();
@@ -175,11 +253,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const peerIds = sendablePeerKey.split('\n').filter(Boolean);
     if (!peerIds.length) return;
-    const flush = () => peerIds.forEach((peerId) => void flushPeer(peerId));
+    const flush = () => {
+      peerIds.forEach((peerId) => void flushPeer(peerId));
+      stateRef.current.threads
+        .filter((thread) => thread.kind === 'group')
+        .forEach((thread) => void flushGroup(thread.id));
+    };
     flush();
     const timer = setInterval(flush, 3000);
     return () => clearInterval(timer);
-  }, [flushPeer, sendablePeerKey]);
+  }, [flushGroup, flushPeer, sendablePeerKey]);
 
   const openDm = useCallback((peerId: string, name: string) => {
     const resolvedId = resolvePeerId(peerId);
@@ -187,7 +270,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [resolvePeerId]);
 
   const markRead = useCallback((threadId: string) => {
-    const resolvedId = resolvePeerId(threadId);
+    const thread = stateRef.current.threads.find((item) => item.id === threadId);
+    const resolvedId = thread?.kind === 'group' ? thread.id : resolvePeerId(threadId);
     activeThread.current = resolvedId;
     setState((current) => markThreadRead(current, resolvedId));
   }, [resolvePeerId]);
@@ -196,11 +280,92 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     activeThread.current = null;
   }, []);
 
+  const announceMembership = useCallback(
+    async (thread: ChatThread, body: string, extraMemberIds: string[] = []) => {
+      const packet = makeTextPacket({
+        senderId: identity.id,
+        recipientId: identity.id,
+        body,
+        groupId: thread.id,
+        groupName: thread.name,
+        groupMemberIds: [...thread.memberIds, ...extraMemberIds],
+      });
+      await fanoutGroup(thread, packet);
+    },
+    [fanoutGroup, identity.id],
+  );
+
+  const createGroup = useCallback(
+    (name: string, memberIds: string[]) => {
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const current = stateRef.current;
+      if (groupCount(current) >= MAX_GROUPS) return null;
+      const id = createId();
+      const next = ensureGroupThread(current, {
+        id,
+        name: trimmed,
+        memberIds: [identity.id, ...memberIds].map((memberId) => resolvePeerId(memberId)).filter(Boolean),
+      });
+      const created = next.threads.find((thread) => thread.id === id) ?? null;
+      if (!created) return null;
+      stateRef.current = next;
+      setState(next);
+      void announceMembership(created, `${identity.name} added you to ${trimmed}`);
+      return created;
+    },
+    [announceMembership, identity.id, identity.name, resolvePeerId],
+  );
+
+  const inviteToGroup = useCallback(
+    async (groupId: string, peerId: string) => {
+      const memberId = resolvePeerId(peerId);
+      const thread = stateRef.current.threads.find((item) => item.id === groupId);
+      if (thread?.kind !== 'group') return false;
+      if (thread.memberIds.includes(memberId)) return true;
+      if (thread.memberIds.length >= MAX_GROUP_MEMBERS) return false;
+      setState((current) => addGroupMember(current, groupId, memberId));
+      const nextThread = {
+        ...thread,
+        memberIds: [...thread.memberIds, memberId],
+      };
+      stateRef.current = {
+        ...stateRef.current,
+        threads: stateRef.current.threads.map((item) =>
+          item.id === groupId ? nextThread : item,
+        ),
+      };
+      await announceMembership(nextThread, `${identity.name} added you to ${thread.name}`);
+      return true;
+    },
+    [announceMembership, identity.name, resolvePeerId],
+  );
+
   const sendText = useCallback(
-    async (peerId: string, body: string) => {
-      peerId = resolvePeerId(peerId);
+    async (threadId: string, body: string) => {
       const text = body.trim();
       if (!text) return;
+      const existing = stateRef.current.threads.find(
+        (item) => item.id === threadId || item.id === resolvePeerId(threadId),
+      );
+      if (existing?.kind === 'group') {
+        const packet = makeTextPacket({
+          senderId: identity.id,
+          recipientId: identity.id,
+          body: text,
+          groupId: existing.id,
+          groupName: existing.name,
+          groupMemberIds: existing.memberIds,
+        });
+        ingest(packet, existing.name, true, 'queued', false);
+        const sent = await fanoutGroup(existing, packet);
+        if (sent) {
+          setState((current) => patchMessage(current, existing.id, packet.id, { status: 'sent' }));
+        }
+        return;
+      }
+
+      const peerId = resolvePeerId(threadId);
       const name = peerName(noredPeers, peerId, peerName(peers, peerId, 'Nearby peer'));
       const packet = makeTextPacket({ senderId: identity.id, recipientId: peerId, body: text });
       const canSend = noredPeers.some(
@@ -215,17 +380,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         // It remains queued and will retry after the peer reconnects.
       }
     },
-    [identity.id, ingest, noredPeers, peers, resolvePeerId, sendPacket],
+    [identity.id, ingest, noredPeers, peers, resolvePeerId, sendPacket, fanoutGroup],
   );
 
   const messagesFor = useCallback(
-    (threadId: string) => state.messages[resolvePeerId(threadId)] ?? [],
-    [resolvePeerId, state.messages],
+    (threadId: string) => {
+      const thread = state.threads.find((item) => item.id === threadId);
+      const id = thread?.kind === 'group' ? thread.id : resolvePeerId(threadId);
+      return state.messages[id] ?? [];
+    },
+    [resolvePeerId, state.messages, state.threads],
   );
 
   const threads = useMemo(
     () =>
       state.threads.map((thread) => {
+        if (thread.kind === 'group') return thread;
         const name = peerName(noredPeers, thread.peerId, peerName(peers, thread.peerId, thread.name));
         return name === thread.name ? thread : { ...thread, name };
       }),
@@ -234,6 +404,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const threadFor = useCallback(
     (threadId: string) =>
+      threads.find((thread) => thread.id === threadId) ??
       threads.find((thread) => thread.id === resolvePeerId(threadId)),
     [resolvePeerId, threads],
   );
@@ -244,11 +415,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       threadFor,
       messagesFor,
       openDm,
+      createGroup,
+      inviteToGroup,
       sendText,
       markRead,
       clearActive,
     }),
-    [clearActive, markRead, messagesFor, openDm, sendText, threadFor, threads],
+    [clearActive, createGroup, inviteToGroup, markRead, messagesFor, openDm, sendText, threadFor, threads],
   );
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

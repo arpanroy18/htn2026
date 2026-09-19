@@ -104,6 +104,13 @@ class NoredBleTransport implements MeshTransport {
           ...packet,
           senderId: normalizePeerId(packet.senderId),
           recipientId: normalizePeerId(packet.recipientId),
+          groupId: typeof packet.groupId === 'string' ? packet.groupId.trim() : undefined,
+          groupName: typeof packet.groupName === 'string' ? packet.groupName.trim() : undefined,
+          groupMemberIds: Array.isArray(packet.groupMemberIds)
+            ? packet.groupMemberIds
+                .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+                .map((id) => normalizePeerId(id))
+            : undefined,
         });
       } catch {
         // Drop malformed frames; native logs already recorded the parse failure.

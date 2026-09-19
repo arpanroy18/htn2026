@@ -5,6 +5,7 @@ import {
   appendMessage,
   emptyChatState,
   ensureDmThread,
+  ensureGroupThread,
   migrateDmPeer,
   patchMessage,
   queuedPackets,
@@ -72,6 +73,46 @@ describe('chatStore identity migration', () => {
 
     assert.equal(migrated.messages[peerId].length, 1);
     assert.equal(migrated.threads.length, 1);
+  });
+});
+
+describe('chatStore groups', () => {
+  it('creates a group thread without turning it into a DM on the first message', () => {
+    const groupId = 'group-1';
+    const opened = ensureGroupThread(emptyChatState, {
+      id: groupId,
+      name: 'Hallway Ops',
+      memberIds: ['local-device', peerId],
+    });
+    const sent = appendMessage(
+      opened,
+      message({ id: 'g1', threadId: groupId }),
+      'Hallway Ops',
+      false,
+    );
+
+    assert.equal(sent.threads[0].kind, 'group');
+    assert.equal(sent.threads[0].id, groupId);
+    assert.deepEqual(sent.threads[0].memberIds, ['local-device', peerId]);
+    assert.equal(sent.messages[groupId][0].body, 'hello');
+  });
+
+  it('refuses a 21st group', () => {
+    let state = emptyChatState;
+    for (let index = 0; index < 20; index += 1) {
+      state = ensureGroupThread(state, {
+        id: `group-${index}`,
+        name: `Group ${index}`,
+        memberIds: ['local-device'],
+      });
+    }
+    const overflow = ensureGroupThread(state, {
+      id: 'group-overflow',
+      name: 'Too many',
+      memberIds: ['local-device'],
+    });
+    assert.equal(overflow.threads.length, 20);
+    assert.equal(overflow.threads.some((thread) => thread.id === 'group-overflow'), false);
   });
 });
 

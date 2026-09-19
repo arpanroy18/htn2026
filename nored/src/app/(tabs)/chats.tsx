@@ -16,11 +16,11 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
       onPress={() =>
         router.push({
           pathname: '/chat/[id]',
-          params: { id: thread.id, title: thread.name, kind: 'dm' },
+          params: { id: thread.id, title: thread.name, kind: thread.kind },
         })
       }
       style={styles.row}>
-      <Avatar kind="dm" name={thread.name} size={52} />
+      <Avatar kind={thread.kind} name={thread.name} size={52} />
       <View style={styles.main}>
         <View style={styles.titleRow}>
           <Text numberOfLines={1} style={[styles.name, unread && styles.nameUnread]}>
@@ -45,12 +45,23 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
   );
 }
 
+function threadInRange(thread: ChatThread, inRange: Set<string>, selfId: string) {
+  if (thread.kind === 'group') {
+    const others = thread.memberIds.filter((memberId) => memberId !== selfId);
+    if (others.length === 0) return true;
+    return others.some((memberId) => inRange.has(memberId));
+  }
+  return inRange.has(thread.peerId);
+}
+
 export default function ChatsScreen() {
   const { threads } = useChat();
-  const { noredPeers } = useMeshUi();
+  const { identity, noredPeers } = useMeshUi();
   const inRange = new Set(
     noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
   );
+  const directs = threads.filter((thread) => thread.kind === 'dm');
+  const groups = threads.filter((thread) => thread.kind === 'group');
 
   return (
     <Screen>
@@ -67,17 +78,39 @@ export default function ChatsScreen() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>
-              Tap a Nored phone on Nearby to start a 1:1 text thread. Messages travel over Bluetooth and queue if the other phone drops out of range.
+              Tap a Nored phone on Nearby to start a 1:1 text thread, or use + to create a group. Groups show up in this list next to direct chats.
             </Text>
           </View>
         ) : (
           <>
-            <Text style={styles.groupLabel}>DIRECT</Text>
-            <GroupedList>
-              {threads.map((thread) => (
-                <ThreadRow inRange={inRange.has(thread.peerId)} key={thread.id} thread={thread} />
-              ))}
-            </GroupedList>
+            {directs.length > 0 ? (
+              <>
+                <Text style={styles.groupLabel}>DIRECT</Text>
+                <GroupedList>
+                  {directs.map((thread) => (
+                    <ThreadRow
+                      inRange={threadInRange(thread, inRange, identity.id)}
+                      key={thread.id}
+                      thread={thread}
+                    />
+                  ))}
+                </GroupedList>
+              </>
+            ) : null}
+            {groups.length > 0 ? (
+              <>
+                <Text style={[styles.groupLabel, directs.length > 0 && styles.sectionGap]}>GROUPS</Text>
+                <GroupedList>
+                  {groups.map((thread) => (
+                    <ThreadRow
+                      inRange={threadInRange(thread, inRange, identity.id)}
+                      key={thread.id}
+                      thread={thread}
+                    />
+                  ))}
+                </GroupedList>
+              </>
+            ) : null}
           </>
         )}
       </ScrollView>
@@ -94,6 +127,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     marginBottom: 6,
   },
+  sectionGap: { marginTop: 18 },
   row: {
     alignItems: 'center',
     flexDirection: 'row',
