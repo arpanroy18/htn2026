@@ -76,6 +76,21 @@ function normalizeUri(value: string) {
 }
 
 /**
+ * Photo and voice bytes live on disk, not in SQLite, so wiping the store alone
+ * orphans every attachment the phone has ever handled.
+ */
+export async function clearMediaFiles() {
+  const directory = mediaDirectory();
+  for (const entry of directory.list()) {
+    try {
+      entry.delete();
+    } catch {
+      // One locked file should not abort the rest of the sweep.
+    }
+  }
+}
+
+/**
  * Native `digest` takes `(algorithm, output: TypedArray, data: TypedArray)` on both
  * platforms — its `BufferSource` type is wider than what it actually accepts. Passing
  * `bytes.buffer` fails argument conversion ("Calling the 'digest' function has failed"),

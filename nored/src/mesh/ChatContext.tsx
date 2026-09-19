@@ -51,6 +51,7 @@ import {
   type ChatThread,
 } from './chatStore';
 import {
+  clearMediaFiles,
   fileBytes,
   prepareImage,
   persistVoiceNote,
@@ -776,9 +777,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     seenIds.current.clear();
     incomingTransfers.current.clear();
     outgoingTransfers.current.clear();
+    mediaSending.current.clear();
+    flushing.current.clear();
+    lastFlushAt.current.clear();
     activeThread.current = null;
     await meshRouter.clear();
     await clearLegacyHistory();
+    await clearMediaFiles();
   }, [meshRouter]);
 
   const publishGroup = useCallback(
