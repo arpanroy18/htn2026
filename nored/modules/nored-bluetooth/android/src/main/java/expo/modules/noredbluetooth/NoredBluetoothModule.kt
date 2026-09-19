@@ -23,6 +23,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
