@@ -101,7 +101,14 @@ export function Hairline() {
   return <View style={styles.hairline} />;
 }
 
-export function Chip({ label, tone = 'fog' }: { label: string; tone?: 'fog' | 'sky' | 'mist' | 'blue' }) {
+export function Chip({
+  label,
+  tone = 'fog',
+}: {
+  label: string;
+  tone?: 'fog' | 'sky' | 'mist' | 'blue' | 'yellow' | 'orange' | 'red';
+}) {
+  const lightText = tone === 'blue' || tone === 'orange' || tone === 'red';
   return (
     <View
       style={[
@@ -109,8 +116,11 @@ export function Chip({ label, tone = 'fog' }: { label: string; tone?: 'fog' | 's
         tone === 'sky' && { backgroundColor: signal.sky },
         tone === 'mist' && { backgroundColor: signal.mist },
         tone === 'blue' && { backgroundColor: signal.blue },
+        tone === 'yellow' && { backgroundColor: signal.yellow },
+        tone === 'orange' && { backgroundColor: signal.orange },
+        tone === 'red' && { backgroundColor: signal.red },
       ]}>
-      <Text style={[styles.chipText, tone === 'blue' && { color: signal.white }]}>{label}</Text>
+      <Text style={[styles.chipText, lightText && { color: signal.white }]}>{label}</Text>
     </View>
   );
 }

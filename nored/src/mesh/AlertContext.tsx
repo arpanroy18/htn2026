@@ -28,7 +28,9 @@ type BroadcastResult = { ok: true } | { ok: false; error: string };
 type AlertUi = {
   alerts: AlertItem[];
   listening: boolean;
+  unreadCount: number;
   setListening: (value: boolean) => void;
+  setAlertsFocused: (focused: boolean) => void;
   broadcastAlert: (input: {
     body: string;
     severity: Severity;
@@ -42,9 +44,11 @@ export function AlertProvider({ children }: { children: ReactNode }) {
   const { identity, noredPeers, peers } = useMeshUi();
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [listening, setListening] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
   const seenIds = useRef(new Set<string>());
   const lastBroadcastAt = useRef(0);
   const listeningRef = useRef(listening);
+  const alertsFocusedRef = useRef(false);
   const peersRef = useRef(peers);
   const noredPeersRef = useRef(noredPeers);
 
@@ -100,9 +104,17 @@ export function AlertProvider({ children }: { children: ReactNode }) {
       const name = peerName(peersRef.current, packet.senderId, 'Nearby peer');
       const item = alertFromPacket(packet, name, mine);
       setAlerts((current) => appendAlert(current, item));
+      if (!mine && !alertsFocusedRef.current) {
+        setUnreadCount((count) => count + 1);
+      }
     },
     [remember],
   );
+
+  const setAlertsFocused = useCallback((focused: boolean) => {
+    alertsFocusedRef.current = focused;
+    if (focused) setUnreadCount(0);
+  }, []);
 
   useEffect(() => {
     const subscription = meshTransport.onPacketReceived((fromPeerId, packet: Packet) => {
@@ -157,10 +169,12 @@ export function AlertProvider({ children }: { children: ReactNode }) {
     () => ({
       alerts,
       listening,
+      unreadCount,
       setListening,
+      setAlertsFocused,
       broadcastAlert,
     }),
-    [alerts, broadcastAlert, listening],
+    [alerts, broadcastAlert, listening, unreadCount, setAlertsFocused],
   );
 
   return <AlertContext.Provider value={value}>{children}</AlertContext.Provider>;

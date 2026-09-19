@@ -1,18 +1,13 @@
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback } from 'react';
 import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { AlertsIcon, PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
-import { type AlertItem, type Severity } from '@/mesh/alertStore';
+import { type AlertItem, severityTone } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
-
-function toneFor(severity: Severity) {
-  if (severity === 'DANGER') return 'blue' as const;
-  if (severity === 'HELP') return 'mist' as const;
-  return 'sky' as const;
-}
 
 function AlertRow({ item }: { item: AlertItem }) {
   return (
@@ -27,7 +22,7 @@ function AlertRow({ item }: { item: AlertItem }) {
       <Avatar name={item.sender} size={44} />
       <View style={styles.rowMain}>
         <View style={styles.rowTop}>
-          <Chip label={item.severity} tone={toneFor(item.severity)} />
+          <Chip label={item.severity} tone={severityTone(item.severity)} />
           <Text style={styles.time}>{item.time}</Text>
         </View>
         <Text style={styles.bodyText}>{item.body}</Text>
@@ -41,9 +36,16 @@ function AlertRow({ item }: { item: AlertItem }) {
 }
 
 export default function AlertsScreen() {
-  const { alerts, listening, setListening } = useAlerts();
+  const { alerts, listening, setListening, setAlertsFocused } = useAlerts();
   const pinned = alerts.filter((item) => item.pinned);
   const inbox = alerts.filter((item) => !item.pinned);
+
+  useFocusEffect(
+    useCallback(() => {
+      setAlertsFocused(true);
+      return () => setAlertsFocused(false);
+    }, [setAlertsFocused]),
+  );
 
   return (
     <Screen>
