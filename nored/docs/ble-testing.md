@@ -39,6 +39,5 @@ Capture the on-screen `DEVICE LOG` if either peer does not appear. More native d
 ## Foreground and topology limits
 
 - This checkpoint is foreground-only. It does not configure either phone as a background router.
-- Android-to-Android and iPhone-to-iPhone discovery are unavailable in the fixed-role checkpoint.
-- Android advertises no service yet, so `BLUETOOTH_ADVERTISE` is deliberately absent. It will be added with Android peripheral support.
+- Android now advertises the Nored BLE service so iPhone and Android peers can both appear under Nored users.
 - No message content is logged. Device UUIDs are shortened in logs; Android system addresses are visible only in native connection diagnostics.

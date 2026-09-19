@@ -10,6 +10,9 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -20,7 +23,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
-import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.exception.CodedException
@@ -49,6 +52,7 @@ private data class PeerRecord(
   val address: String,
   var rssi: Int?,
   var lastSeen: Long,
+  var nored: Boolean = false,
 )
 
 class NoredBluetoothModule : Module() {
@@ -59,6 +63,8 @@ class NoredBluetoothModule : Module() {
   private val connecting = ConcurrentHashMap.newKeySet<String>()
   private var started = false
   private var receiverRegistered = false
+  private var originalAdapterName: String? = null
+  private var advertiseWithoutName = false
 
   private val context: Context
     get() = appContext.reactContext ?: throw CodedException("ERR_NO_CONTEXT", "React context is unavailable", null)
@@ -88,6 +94,7 @@ class NoredBluetoothModule : Module() {
         throw CodedException("ERR_INVALID_NAME", "Display name must be 1 to 40 characters", null)
       }
       preferences().edit().putString(DISPLAY_NAME, name).apply()
+      if (started) startAdvertiser()
       identityMap()
     }
 
@@ -95,7 +102,10 @@ class NoredBluetoothModule : Module() {
     AsyncFunction("stop") { stopScanning() }
 
     OnActivityEntersForeground {
-      if (started) startScannerOnly()
+      if (started) {
+        startScannerOnly()
+        startAdvertiser()
+      }
     }
 
     OnDestroy { stopScanning() }
@@ -134,7 +144,11 @@ class NoredBluetoothModule : Module() {
 
   private fun requiredPermissionNames(): List<String> =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+      listOf(
+        Manifest.permission.BLUETOOTH_SCAN,
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.BLUETOOTH_ADVERTISE,
+      )
     } else {
       listOf(Manifest.permission.ACCESS_FINE_LOCATION)
     }
@@ -157,6 +171,7 @@ class NoredBluetoothModule : Module() {
     }
     emitState("starting")
     startScannerOnly()
+    startAdvertiser()
     mainHandler.removeCallbacks(cleanupPeers)
     mainHandler.postDelayed(cleanupPeers, 5_000L)
   }
@@ -186,6 +201,80 @@ class NoredBluetoothModule : Module() {
   }
 
   @SuppressLint("MissingPermission")
+  private fun startAdvertiser() {
+    if (!started || !hasPermissions() || adapter?.isEnabled != true) return
+    if (adapter?.isMultipleAdvertisementSupported != true) {
+      log("warn", "[BLE] this phone cannot advertise to other devices")
+      return
+    }
+    val advertiser = adapter?.bluetoothLeAdvertiser ?: run {
+      log("warn", "[BLE] advertiser unavailable")
+      return
+    }
+    stopAdvertiser(restoreName = false)
+    val displayName = (identityMap()["name"] as String).take(11)
+    try {
+      if (originalAdapterName == null) originalAdapterName = adapter?.name
+      adapter?.name = displayName
+    } catch (_: Exception) {}
+    val settings = AdvertiseSettings.Builder()
+      .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+      .setConnectable(true)
+      .setTimeout(0)
+      .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+      .build()
+    val data = AdvertiseData.Builder()
+      .addServiceUuid(ParcelUuid(SERVICE_UUID))
+      .setIncludeDeviceName(false)
+      .setIncludeTxPowerLevel(false)
+      .build()
+    val scanResponse = AdvertiseData.Builder()
+      .setIncludeDeviceName(!advertiseWithoutName)
+      .build()
+    try {
+      advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
+    } catch (error: SecurityException) {
+      log("error", "[ERROR] advertiser permission denied")
+    } catch (error: Exception) {
+      if (!advertiseWithoutName) {
+        advertiseWithoutName = true
+        startAdvertiser()
+      } else {
+        log("error", "[ERROR] advertiser failed: ${error.javaClass.simpleName}")
+      }
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun stopAdvertiser(restoreName: Boolean = true) {
+    try {
+      adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
+    } catch (_: Exception) {}
+    if (restoreName) {
+      advertiseWithoutName = false
+      try {
+        originalAdapterName?.let { adapter?.name = it }
+      } catch (_: Exception) {}
+      originalAdapterName = null
+    }
+  }
+
+  private val advertiseCallback = object : AdvertiseCallback() {
+    override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+      log("info", "[BLE] advertiser started")
+    }
+
+    override fun onStartFailure(errorCode: Int) {
+      if (errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE && !advertiseWithoutName) {
+        advertiseWithoutName = true
+        mainHandler.post { startAdvertiser() }
+        return
+      }
+      log("error", "[ERROR] advertiser failed code=$errorCode")
+    }
+  }
+
+  @SuppressLint("MissingPermission")
   private fun stopScanning() {
     started = false
     unregisterBluetoothReceiver()
@@ -193,6 +282,7 @@ class NoredBluetoothModule : Module() {
     try {
       if (hasPermissions()) adapter?.bluetoothLeScanner?.stopScan(scanCallback)
     } catch (_: Exception) {}
+    stopAdvertiser()
     closeConnections()
     lastEmitAt.clear()
     emitState("stopped")
@@ -205,9 +295,11 @@ class NoredBluetoothModule : Module() {
         BluetoothAdapter.STATE_ON -> {
           log("info", "[BLE] Bluetooth powered on")
           startScannerOnly()
+          startAdvertiser()
         }
         BluetoothAdapter.STATE_OFF -> {
           log("warn", "[BLE] Bluetooth powered off")
+          stopAdvertiser()
           closeConnections()
           emitState("poweredOff")
         }
@@ -272,15 +364,17 @@ class NoredBluetoothModule : Module() {
         .firstOrNull()
         ?: "Unknown device"
       val now = System.currentTimeMillis()
-      val record = PeerRecord(address, name.take(40), address, result.rssi, now)
+      val alreadyNored = peers[address]?.nored == true
+      val isNored = alreadyNored || result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
+      val displayName = name.take(40).let { if (isNored && it == "Unknown device") "Nored user" else it }
+      val record = PeerRecord(address, displayName, address, result.rssi, now, isNored)
       peers[address] = record
       addressToPeerId[address] = address
       val last = lastEmitAt[address] ?: 0L
-      if (now - last >= 1_000L) {
+      if (!alreadyNored && isNored || now - last >= 1_000L) {
         lastEmitAt[address] = now
         emitPeer(record)
       }
-      val isNored = result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
       if (isNored && !gatts.containsKey(address) && connecting.add(address)) {
         log("info", "[DISCOVERY] Nored advertisement RSSI ${result.rssi}")
         connect(result.device)
@@ -422,7 +516,7 @@ class NoredBluetoothModule : Module() {
       val id = json.getString("id")
       val name = json.optString("name", "Nored device").take(40)
       UUID.fromString(id)
-      val record = PeerRecord(id, name, gatt.device.address, null, System.currentTimeMillis())
+      val record = PeerRecord(id, name, gatt.device.address, null, System.currentTimeMillis(), true)
       peers[id] = record
       addressToPeerId[gatt.device.address] = id
       emitPeer(record)
@@ -450,6 +544,7 @@ class NoredBluetoothModule : Module() {
     "name" to peer.name,
     "rssi" to peer.rssi,
     "lastSeen" to peer.lastSeen,
+    "nored" to peer.nored,
   )
 
   private fun emitPeer(peer: PeerRecord) = mainHandler.post {

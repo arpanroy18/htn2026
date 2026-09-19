@@ -222,6 +222,7 @@ public final class NoredBluetoothModule: Module {
     staleTimer?.invalidate()
     staleTimer = nil
     centralManager?.stopScan()
+    noredCentralManager?.stopScan()
     peripheralManager?.stopAdvertising()
     peripheralManager?.removeAllServices()
     identityCharacteristic = nil
@@ -341,12 +342,14 @@ public final class NoredBluetoothModule: Module {
   ) {
     guard started else { return }
     let id = peripheral.identifier.uuidString.lowercased()
+    let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
     let advertisedUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
     let overflowUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? []
-    let isNored = central === noredCentralManager
+    let alreadyNored = peers[id]?.nored == true
+    let isNored = alreadyNored
+      || central === noredCentralManager
       || advertisedUUIDs.contains(serviceUUID)
       || overflowUUIDs.contains(serviceUUID)
-      || peers[id]?.nored == true
     let resolvedName = [peripheral.name, advertisedName]
       .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
       .first { !$0.isEmpty }
@@ -361,7 +364,7 @@ public final class NoredBluetoothModule: Module {
       nored: isNored
     )
     peers[id] = record
-    if let last = lastEmitAt[id], now - last < 1000 {
+    if !isNored || alreadyNored, let last = lastEmitAt[id], now - last < 1000 {
       return
     }
     lastEmitAt[id] = now
@@ -432,7 +435,8 @@ public final class NoredBluetoothModule: Module {
           id: id,
           name: String(rawName.prefix(40)),
           rssi: nil,
-          lastSeen: Date().timeIntervalSince1970 * 1000
+          lastSeen: Date().timeIntervalSince1970 * 1000,
+          nored: true
         )
         peers[id] = record
         sendEvent("onPeerDiscovered", peerMap(record))
@@ -466,6 +470,7 @@ public final class NoredBluetoothModule: Module {
       "id": peer.id,
       "name": peer.name,
       "lastSeen": peer.lastSeen,
+      "nored": peer.nored,
     ]
     if let rssi = peer.rssi {
       map["rssi"] = rssi

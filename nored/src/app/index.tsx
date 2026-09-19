@@ -1,10 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -38,7 +38,12 @@ function hasDisplayName(peer: Peer) {
 }
 
 function peersEqual(a: Peer, b: Peer) {
-  return a.id === b.id && a.name === b.name && signalLabel(a.rssi) === signalLabel(b.rssi);
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.nored === b.nored &&
+    signalLabel(a.rssi) === signalLabel(b.rssi)
+  );
 }
 
 function statusCopy(state: TransportState) {
@@ -63,10 +68,10 @@ function statusCopy(state: TransportState) {
 const PeerRow = memo(function PeerRow({ peer }: { peer: Peer }) {
   return (
     <View style={styles.peerCard}>
-      <View style={styles.peerIndicator} />
+      <View style={[styles.peerIndicator, peer.nored && styles.peerIndicatorNored]} />
       <View style={styles.peerMain}>
         <Text style={styles.peerName}>{peer.name}</Text>
-        <Text style={styles.peerId}>ID {peer.id.slice(0, 8)}</Text>
+        <Text style={styles.peerId}>{peer.nored ? 'NORED' : 'ID'} {peer.id.slice(0, 8)}</Text>
       </View>
       <View style={styles.peerMeta}>
         <Text style={styles.signal}>{signalLabel(peer.rssi)}</Text>
@@ -87,13 +92,20 @@ export default function NearbyScreen() {
   const lastLogAt = useRef(0);
 
   const upsertPeer = useCallback((peer: Peer) => {
-    if (!hasDisplayName(peer)) return;
+    if (!peer.nored && !hasDisplayName(peer)) return;
     setPeers((current) => {
       const index = current.findIndex((item) => item.id === peer.id);
       if (index === -1) return [...current, peer];
-      if (peersEqual(current[index], peer)) return current;
+      const merged = {
+        ...current[index],
+        name: peer.name,
+        rssi: peer.rssi,
+        lastSeen: peer.lastSeen,
+        nored: current[index].nored || peer.nored,
+      };
+      if (peersEqual(current[index], merged)) return current;
       const next = current.slice();
-      next[index] = { ...current[index], name: peer.name, rssi: peer.rssi, lastSeen: peer.lastSeen };
+      next[index] = merged;
       return next;
     });
   }, []);
@@ -116,7 +128,7 @@ export default function NearbyScreen() {
     meshTransport
       .start()
       .then(() => meshTransport.getPeers())
-      .then((items) => setPeers(items.filter(hasDisplayName)))
+      .then((items) => setPeers(items.filter((peer) => peer.nored || hasDisplayName(peer))))
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : 'Bluetooth failed to start.');
       });
@@ -142,6 +154,8 @@ export default function NearbyScreen() {
   };
 
   const shortId = useMemo(() => identity.id.slice(0, 8), [identity.id]);
+  const noredPeers = useMemo(() => peers.filter((peer) => peer.nored), [peers]);
+  const otherPeers = useMemo(() => peers.filter((peer) => !peer.nored), [peers]);
 
   return (
     <KeyboardAvoidingView
@@ -190,24 +204,21 @@ export default function NearbyScreen() {
 
         {error && <Text style={styles.error}>{error}</Text>}
 
-        <FlatList
-          contentContainerStyle={peers.length === 0 ? styles.emptyList : styles.peerList}
-          data={peers}
-          extraData={peers.length}
-          keyExtractor={(peer) => peer.id}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <View style={styles.radar}>
-                <View style={styles.radarInner} />
-              </View>
-              <Text style={styles.emptyTitle}>No Bluetooth devices yet</Text>
-              <Text style={styles.emptyBody}>
-                Keep this screen open with Bluetooth on. Nearby BLE devices should appear as they advertise.
-              </Text>
-            </View>
-          }
-          renderItem={({ item }) => <PeerRow peer={item} />}
-        />
+        <ScrollView contentContainerStyle={styles.lists} showsVerticalScrollIndicator={false}>
+          <Text style={styles.groupLabel}>NORED USERS · {noredPeers.length}</Text>
+          {noredPeers.length === 0 ? (
+            <Text style={styles.groupEmpty}>No other Nored phones in range yet. Keep this app open so you stay visible.</Text>
+          ) : (
+            noredPeers.map((peer) => <PeerRow key={peer.id} peer={peer} />)
+          )}
+
+          <Text style={[styles.groupLabel, styles.groupLabelSpaced]}>BLUETOOTH · {otherPeers.length}</Text>
+          {otherPeers.length === 0 ? (
+            <Text style={styles.groupEmpty}>No named Bluetooth devices right now.</Text>
+          ) : (
+            otherPeers.map((peer) => <PeerRow key={peer.id} peer={peer} />)
+          )}
+        </ScrollView>
 
         <View style={styles.logPanel}>
           <Text style={styles.logTitle}>DEVICE LOG</Text>
@@ -267,7 +278,10 @@ const styles = StyleSheet.create({
   scanning: { alignItems: 'center', flexDirection: 'row', gap: 6, paddingBottom: 3 },
   scanningText: { color: colors.muted, fontSize: 12 },
   error: { color: '#A92D20', fontSize: 13, marginBottom: 10 },
-  peerList: { gap: 10, paddingBottom: 12 },
+  lists: { gap: 10, paddingBottom: 12 },
+  groupLabel: { color: colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 1.6, marginBottom: 2, marginTop: 4 },
+  groupLabelSpaced: { marginTop: 18 },
+  groupEmpty: { color: colors.muted, fontSize: 13, lineHeight: 19, paddingBottom: 4 },
   emptyList: { flexGrow: 1 },
   peerCard: {
     alignItems: 'center',
@@ -279,6 +293,7 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   peerIndicator: { backgroundColor: colors.green, borderRadius: 5, height: 10, marginRight: 12, width: 10 },
+  peerIndicatorNored: { backgroundColor: colors.red },
   peerMain: { flex: 1 },
   peerName: { color: colors.ink, fontSize: 16, fontWeight: '700' },
   peerId: { color: colors.muted, fontSize: 11, marginTop: 3 },

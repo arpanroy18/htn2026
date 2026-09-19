@@ -42,6 +42,7 @@ const withNoredBluetooth = (config) => {
       }),
     );
     upsertPermission(manifest, permission('android.permission.BLUETOOTH_CONNECT'));
+    upsertPermission(manifest, permission('android.permission.BLUETOOTH_ADVERTISE'));
 
     const features = manifest['uses-feature'] ?? [];
     manifest['uses-feature'] = [
