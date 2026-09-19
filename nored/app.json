@@ -9,7 +9,11 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.aadyakhanna.nored"
+      "bundleIdentifier": "com.aadyakhanna.nored",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Allow Nored to record voice notes.",
+        "NSPhotoLibraryUsageDescription": "Allow Nored to choose photos to send over Bluetooth."
+      }
     },
     "android": {
       "adaptiveIcon": {
