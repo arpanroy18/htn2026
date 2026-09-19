@@ -14,7 +14,8 @@ function peersEqual(a: Peer, b: Peer) {
     a.name === b.name &&
     a.nored === b.nored &&
     a.identityConfirmed === b.identityConfirmed &&
-    a.rssi === b.rssi
+    a.rssi === b.rssi &&
+    a.lastSeen === b.lastSeen
   );
 }
 
@@ -87,7 +88,10 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       meshTransport.onPeerLost((peerId) =>
         setPeers((current) => current.filter((peer) => peer.id !== peerId)),
       ),
-      meshTransport.onStateChanged(setState),
+      meshTransport.onStateChanged((next) => {
+        setState(next);
+        if (next === 'poweredOff' || next === 'stopped' || next === 'unauthorized') setPeers([]);
+      }),
       meshTransport.onLog((message) => {
         const now = Date.now();
         if (now - lastLogAt.current < 1500) return;

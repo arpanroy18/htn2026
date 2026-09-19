@@ -1,6 +1,7 @@
 import { File, Paths } from 'expo-file-system';
 
 import { emptyChatState, type ChatState } from './chatStore';
+import { validateLegacyHistory } from './migration';
 
 function chatStateFile() {
   return new File(Paths.document, 'nored-chat-state.json');
@@ -10,23 +11,13 @@ export async function loadChatState(): Promise<ChatState> {
   const file = chatStateFile();
   if (!file.exists) return emptyChatState;
   try {
-    const parsed = (await file.json()) as ChatState;
-    if (!parsed || !Array.isArray(parsed.threads) || !parsed.messages) {
-      return emptyChatState;
-    }
-    return parsed;
+    return validateLegacyHistory(await file.json());
   } catch {
-    return emptyChatState;
+    throw new Error('Existing chat history could not be imported. The original file has been preserved.');
   }
 }
 
-export async function saveChatState(state: ChatState): Promise<void> {
-  const file = chatStateFile();
-  file.create({ idempotent: true, intermediates: true, overwrite: true });
-  file.write(JSON.stringify(state));
-}
-
-export async function clearChatState(): Promise<void> {
+export async function clearLegacyHistory(): Promise<void> {
   const file = chatStateFile();
   if (file.exists) file.delete();
 }

@@ -1,6 +1,6 @@
 import type { AlertPacket } from '@/transport';
 
-import { createId, formatThreadTime } from './chatStore';
+import { createId, formatThreadTime } from './chatStore.ts';
 
 export type Severity = 'INFO' | 'HELP' | 'DANGER';
 

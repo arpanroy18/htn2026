@@ -84,6 +84,8 @@ export function createIncomingTransfer(manifest: MediaManifestPacket): IncomingT
 export function acceptMediaChunk(transfer: IncomingTransfer, packet: MediaChunkPacket) {
   if (
     packet.transferId !== transfer.manifest.id ||
+    packet.senderId !== transfer.manifest.senderId ||
+    packet.recipientId !== transfer.manifest.recipientId ||
     packet.total !== transfer.manifest.chunkCount ||
     packet.sequence < 0 ||
     packet.sequence >= packet.total
@@ -125,7 +127,7 @@ function packetBaseIsValid(value: Partial<Packet>) {
     value.id.length > 0 &&
     typeof value.senderId === 'string' &&
     typeof value.recipientId === 'string' &&
-    typeof value.timestamp === 'number'
+    typeof value.timestamp === 'number' && Number.isFinite(value.timestamp)
   );
 }
 
@@ -141,26 +143,28 @@ export function isPacket(value: unknown): value is Packet {
         (packet.mediaKind === 'image' || packet.mediaKind === 'audio') &&
         typeof packet.mimeType === 'string' &&
         typeof packet.byteLength === 'number' &&
-        packet.byteLength > 0 &&
+        Number.isInteger(packet.byteLength) && packet.byteLength > 0 && packet.byteLength <= 1024 * 1024 &&
         typeof packet.chunkCount === 'number' &&
         Number.isInteger(packet.chunkCount) &&
-        packet.chunkCount > 0 &&
+        packet.chunkCount > 0 && packet.chunkCount <= 512 &&
         typeof packet.hash === 'string'
       );
     case 'media-chunk':
       return (
         typeof packet.transferId === 'string' &&
-        typeof packet.sequence === 'number' &&
-        typeof packet.total === 'number' &&
-        typeof packet.payload === 'string'
+        typeof packet.sequence === 'number' && Number.isInteger(packet.sequence) &&
+        typeof packet.total === 'number' && Number.isInteger(packet.total) &&
+        packet.total > 0 && packet.total <= 512 && packet.sequence >= 0 && packet.sequence < packet.total &&
+        typeof packet.payload === 'string' && packet.payload.length <= 2732 &&
+        /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(packet.payload)
       );
     case 'media-ack':
       return typeof packet.transferId === 'string';
     case 'media-retry':
       return (
         typeof packet.transferId === 'string' &&
-        Array.isArray(packet.missing) &&
-        packet.missing.every((item) => Number.isInteger(item) && item >= 0)
+        Array.isArray(packet.missing) && packet.missing.length <= 512 &&
+        packet.missing.every((item) => Number.isInteger(item) && item >= 0 && item < 512)
       );
     case 'alert':
       return (

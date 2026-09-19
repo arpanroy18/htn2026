@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AlertProvider } from '@/mesh/AlertContext';
+import { RouterProvider } from '@/mesh/RouterContext';
 import { ChatProvider } from '@/mesh/ChatContext';
 import { MeshUiProvider } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
@@ -27,6 +28,7 @@ export default function RootLayout() {
     <ThemeProvider value={lightTheme}>
       <StatusBar style="dark" />
       <MeshUiProvider>
+        <RouterProvider>
         <AlertProvider>
           <ChatProvider>
             <AnimatedSplashOverlay />
@@ -49,6 +51,7 @@ export default function RootLayout() {
             </Stack>
           </ChatProvider>
         </AlertProvider>
+        </RouterProvider>
       </MeshUiProvider>
     </ThemeProvider>
   );

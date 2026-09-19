@@ -1,3 +1,7 @@
+# Current mesh implementation
+
+See [store-and-forward.md](store-and-forward.md) for the current architecture, contacts workflow, rebuild requirements, and delayed-delivery demo. See [mesh-acceptance.md](mesh-acceptance.md) for honest physical verification status. The checkpoint below is historical; alerts and direct media are now implemented, and chat persistence uses SQLite.
+
 # Nored BLE physical test
 
 ## Current checkpoint

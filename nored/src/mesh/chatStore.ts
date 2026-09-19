@@ -1,6 +1,6 @@
 import type { MediaKind, MediaManifestPacket, Packet, Peer, TextPacket } from '@/transport';
 
-export type ChatDelivery = 'queued' | 'sent' | 'relayed' | 'failed';
+export type ChatDelivery = 'queued' | 'sending' | 'carrying' | 'delivered' | 'expired' | 'sent' | 'relayed' | 'failed';
 
 export type ChatThread = {
   id: string;
@@ -169,7 +169,7 @@ export function appendMessage(
 ): ChatState {
   const previous = state.messages[message.threadId] ?? [];
   if (previous.some((item) => item.id === message.id)) return state;
-  const messages = [...previous, message].slice(-1000);
+  const messages = [...previous, message].sort((a, b) => a.timestamp - b.timestamp);
   const queued = messages.some((item) => item.mine && item.status === 'queued');
   const current = state.threads.find((item) => item.id === message.threadId);
   const thread: ChatThread = {
@@ -177,8 +177,8 @@ export function appendMessage(
     kind: 'dm',
     peerId: message.threadId,
     name: threadName,
-    preview: messagePreview(message),
-    updatedAt: message.timestamp,
+    preview: messagePreview(messages.at(-1)!),
+    updatedAt: messages.at(-1)!.timestamp,
     unread: unread ? (current?.unread ?? 0) + 1 : (current?.unread ?? 0),
     queued,
   };

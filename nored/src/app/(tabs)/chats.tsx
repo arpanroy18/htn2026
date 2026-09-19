@@ -1,3 +1,4 @@
+import { useRouterData } from '@/mesh/RouterContext';
 import { router } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
@@ -47,6 +48,7 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
 
 export default function ChatsScreen() {
   const { threads } = useChat();
+  const { contacts } = useRouterData();
   const { noredPeers } = useMeshUi();
   const inRange = new Set(
     noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
@@ -63,11 +65,25 @@ export default function ChatsScreen() {
         title="Chats"
       />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
+        {Object.values(contacts).length ? (
+          <>
+            <Text style={styles.groupLabel}>SAVED CONTACTS</Text>
+            <GroupedList>
+              {Object.values(contacts).map((contact) => (
+                <RowPress key={contact.id} style={styles.row} onPress={() => router.push({ pathname: '/chat/[id]', params: { id: contact.id, title: contact.name } })}>
+                  <Avatar name={contact.name} size={38} />
+                  <Text style={styles.name}>{contact.name}</Text>
+                  <Text style={styles.time}>{inRange.has(contact.id) ? 'Nearby' : 'Via mesh'}</Text>
+                </RowPress>
+              ))}
+            </GroupedList>
+          </>
+        ) : null}
         {threads.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>
-              Tap a Nored phone on Nearby to start a chat. Text, photos, and voice notes travel over Bluetooth and queue if the other phone drops out of range.
+              Tap a Nored phone on Nearby to start a chat. Save them as a contact while nearby to send text through other phones later. Photos and voice notes wait for a direct connection.
             </Text>
           </View>
         ) : (

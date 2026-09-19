@@ -1,3 +1,4 @@
+import { useRouterData, useRouterService } from '@/mesh/RouterContext';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import {
   useAudioPlayer,
@@ -32,6 +33,10 @@ import { useMeshUi } from '@/mesh/MeshUiContext';
 import type { ChatDelivery, ChatMessage } from '@/mesh/chatStore';
 import { MAX_VOICE_SECONDS, VOICE_RECORDING_OPTIONS } from '@/mesh/mediaFiles';
 import { signal } from '@/theme/signal';
+
+// Gesture nav bar on Android sits right on top of the composer, so add a little
+// breathing room below the safe-area inset.
+const ANDROID_NAV_BAR_GAP = Platform.OS === 'android' ? 12 : 0;
 
 function statusLabel(status?: ChatDelivery) {
   if (!status) return '';
@@ -197,6 +202,8 @@ function groupMessages(items: ChatMessage[]): Row[] {
 export default function ChatScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; kind?: string }>();
   const { noredPeers } = useMeshUi();
+  const meshRouter = useRouterService();
+  const { contacts } = useRouterData();
   const {
     threadFor,
     messagesFor,
@@ -218,9 +225,15 @@ export default function ChatScreen() {
     (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
   );
 
+  const savedContact = !!contacts[thread?.peerId ?? threadId];
+  const addContact = () => {
+    void meshRouter.addContact(thread?.peerId ?? threadId).catch((error) => Alert.alert('Contact not saved', error.message));
+  };
+
   const [draft, setDraft] = useState('');
   const [emergency, setEmergency] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const keyboardVisible = keyboardHeight > 0;
   const [preparingMedia, setPreparingMedia] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [startingRecording, setStartingRecording] = useState(false);
@@ -236,11 +249,11 @@ export default function ChatScreen() {
   useEffect(() => {
     const show = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-      () => setKeyboardVisible(true),
+      (event) => setKeyboardHeight(event.endCoordinates.height),
     );
     const hide = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      () => setKeyboardVisible(false),
+      () => setKeyboardHeight(0),
     );
     return () => {
       show.remove();
@@ -278,15 +291,14 @@ export default function ChatScreen() {
 
   const subtitle = useMemo(() => {
     if (isGroup) return 'Groups are still local — Bluetooth text is 1:1 for now';
-    if (!inRange) return 'Out of range · will queue until they reappear';
+    if (!inRange) return contacts[thread?.peerId ?? threadId] ? 'Text relays through nearby phones · media waits for a direct connection' : 'Add as a contact while nearby to send from afar';
     return '1:1 · Bluetooth';
-  }, [inRange, isGroup]);
+  }, [inRange, isGroup, contacts, thread, threadId]);
 
   const send = () => {
     const body = draft.trim();
     if (!body || !threadId || isGroup) return;
-    setDraft('');
-    void sendText(threadId, body);
+    void sendText(threadId, body).then(() => setDraft('')).catch((error) => Alert.alert('Message not queued', error instanceof Error ? error.message : 'Could not save message.'));
   };
 
   const finishRecording = useCallback(
@@ -392,7 +404,12 @@ export default function ChatScreen() {
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={headerHeight}
-      style={styles.safe}>
+      style={[
+        styles.safe,
+        // Android is edge-to-edge, so adjustResize never shrinks the window and
+        // KeyboardAvoidingView has nothing to react to. Lift the content manually.
+        Platform.OS === 'android' && { paddingBottom: keyboardHeight },
+      ]}>
       <Stack.Screen options={{ title }} />
       <View style={styles.threadBar}>
           <Text style={styles.subtitle}>{subtitle}</Text>
@@ -406,6 +423,9 @@ export default function ChatScreen() {
           ) : null}
         </View>
 
+        {!isGroup && inRange && !savedContact ? (
+          <Pressable onPress={addContact} style={{ padding: 12 }}><Text style={{ color: signal.blue, textAlign: 'center' }}>Add contact for remote messaging</Text></Pressable>
+        ) : null}
         <ScrollView
           contentContainerStyle={styles.messages}
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
@@ -449,10 +469,14 @@ export default function ChatScreen() {
           style={[
             styles.composer,
             emergency && styles.composerEmergency,
-            { paddingBottom: keyboardVisible ? 10 : Math.max(insets.bottom, 10) },
+            {
+              paddingBottom: keyboardVisible
+                ? 10
+                : Math.max(insets.bottom + ANDROID_NAV_BAR_GAP, 10),
+            },
           ]}>
           {emergency ? (
-            <Text style={styles.emergencyHint}>Emergency broadcasts are not sent over the mesh yet</Text>
+            <Text style={styles.emergencyHint}>Send emergency alerts from the Alerts tab</Text>
           ) : null}
           {isRecording || startingRecording ? (
             <View style={styles.recordingRow}>

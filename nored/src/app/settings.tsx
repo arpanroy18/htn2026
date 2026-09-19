@@ -52,7 +52,7 @@ export default function SettingsScreen() {
                 {
                   text: 'Clear',
                   style: 'destructive',
-                  onPress: () => void clearLocalData(),
+                  onPress: () => void clearLocalData().catch((error) => Alert.alert('Could not clear all data', error instanceof Error ? error.message : 'Storage operation failed.')),
                 },
               ],
             )

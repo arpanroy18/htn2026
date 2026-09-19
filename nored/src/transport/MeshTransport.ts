@@ -1,3 +1,4 @@
+import type { WirePacket } from '../mesh/protocol';
 export type Peer = {
   id: string;
   name: string;
@@ -95,10 +96,10 @@ export interface MeshTransport {
   getIdentity(): DeviceIdentity;
   setDisplayName(name: string): Promise<DeviceIdentity>;
   getPeers(): Promise<Peer[]>;
-  sendPacket(peerId: string, packet: Packet): Promise<void>;
+  sendPacket(peerId: string, packet: WirePacket): Promise<void>;
   onPeerDiscovered(callback: (peer: Peer) => void): Subscription;
   onPeerLost(callback: (peerId: string) => void): Subscription;
-  onPacketReceived(callback: (peerId: string, packet: Packet) => void): Subscription;
+  onPacketReceived(callback: (peerId: string, packet: WirePacket) => void): Subscription;
   onStateChanged(callback: (state: TransportState) => void): Subscription;
   onLog(callback: (message: string) => void): Subscription;
 }
