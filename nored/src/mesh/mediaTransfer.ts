@@ -216,7 +216,7 @@ export function isPacket(value: unknown): value is Packet {
         (packet.sequence === undefined ||
           (Number.isInteger(packet.sequence) && packet.sequence >= 0)) &&
         (packet.payload === undefined ||
-          (typeof packet.payload === 'string' && packet.payload.length <= 2_000))
+          (typeof packet.payload === 'string' && packet.payload.length <= 8_000))
       );
     default:
       return false;

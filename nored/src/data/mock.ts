@@ -17,7 +17,7 @@ export const mockGames: GameCard[] = [
   {
     id: 'telephone',
     name: 'Drawing Telephone',
-    blurb: 'Each peer alters a tiny doodle. Compressed deltas only — one BLE frame per turn.',
+    blurb: 'Start a secret phrase, then rotate every chain through drawings and guesses.',
     players: '3–8',
   },
   {

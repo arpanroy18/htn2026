@@ -20,14 +20,16 @@ import {
 
 import {
   advancePong,
+  appendTelephoneEntry,
   appendStroke,
+  assignedTelephoneChain,
+  createTelephoneGame,
   createPongMatch,
   decodeDrawing,
   encodeDrawing,
   encodeStroke,
   isGamePacket,
   makeGamePacket,
-  nextTelephoneMode,
   participantPayload,
   type ChessMatch,
   type DrawingPoint,
@@ -320,13 +322,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
               playerIds.every((id) => typeof id === 'string') &&
               playerIds.includes(identity.id)
             ) {
-              const next: TelephoneChain = {
-                id: packet.roundId,
-                playerIds,
-                turnIndex: 0,
-                mode: 'prompt',
-                entries: [],
-              };
+              const next = createTelephoneGame(packet.roundId, playerIds);
               telephoneChainRef.current = next;
               setTelephoneChain(next);
             }
@@ -336,42 +332,37 @@ export function GameProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        const currentChain = telephoneChainRef.current;
-        if (
-          !currentChain ||
-          packet.roundId !== currentChain.id ||
-          currentChain.playerIds[currentChain.turnIndex] !== packet.senderId
-        ) {
-          return;
-        }
-
         setTelephoneChain((current) => {
-          if (!current || current.id !== packet.roundId) return current;
-          const expected = current.playerIds[current.turnIndex];
-          if (expected !== packet.senderId) return current;
+          if (
+            !current ||
+            current.id !== packet.roundId ||
+            typeof packet.sequence !== 'number' ||
+            !packet.targetId
+          ) {
+            return current;
+          }
           let entry;
           if (packet.event === 'telephone-prompt' && current.mode === 'prompt') {
             const text = packet.payload?.trim().slice(0, 80);
             if (!text) return current;
-            entry = { kind: 'prompt' as const, authorId: packet.senderId, text };
+            entry = { kind: 'prompt' as const, text };
           } else if (packet.event === 'telephone-drawing' && current.mode === 'draw') {
             const strokes = decodeDrawing(packet.payload);
             if (!strokes.length) return current;
-            entry = { kind: 'drawing' as const, authorId: packet.senderId, strokes };
+            entry = { kind: 'drawing' as const, strokes };
           } else if (packet.event === 'telephone-guess' && current.mode === 'guess') {
             const text = packet.payload?.trim().slice(0, 80);
             if (!text) return current;
-            entry = { kind: 'guess' as const, authorId: packet.senderId, text };
+            entry = { kind: 'guess' as const, text };
           } else {
             return current;
           }
-          const turnIndex = current.turnIndex + 1;
-          const next = {
-            ...current,
-            turnIndex,
-            mode: nextTelephoneMode(turnIndex, current.playerIds.length),
-            entries: [...current.entries, entry],
-          };
+          const next = appendTelephoneEntry(current, {
+            authorId: packet.senderId,
+            chainId: packet.targetId,
+            round: packet.sequence,
+            entry,
+          });
           telephoneChainRef.current = next;
           return next;
         });
@@ -631,13 +622,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
     if (playerIds.length < 3) {
       return { ok: false, error: 'Drawing Telephone needs at least three joined players.' };
     }
-    const chain: TelephoneChain = {
-      id: `${Date.now().toString(36)}-${identity.id.slice(0, 6)}`,
+    const chain = createTelephoneGame(
+      `${Date.now().toString(36)}-${identity.id.slice(0, 6)}`,
       playerIds,
-      turnIndex: 0,
-      mode: 'prompt',
-      entries: [],
-    };
+    );
     const packet = makeGamePacket({
       senderId: identity.id,
       gameId: 'telephone',
@@ -662,41 +650,42 @@ export function GameProvider({ children }: { children: ReactNode }) {
       if (!current || current.mode !== expectedMode) {
         return { ok: false, error: 'That turn is no longer active.' };
       }
-      if (current.playerIds[current.turnIndex] !== identity.id) {
-        return { ok: false, error: 'Wait for your turn.' };
+      const chainId = assignedTelephoneChain(current, identity.id);
+      if (!chainId) return { ok: false, error: 'You are not part of this round.' };
+      if (current.chains[chainId]?.some((entry) => entry.round === current.roundIndex)) {
+        return { ok: false, error: 'Your response for this round was already sent.' };
+      }
+      let entry;
+      if (event === 'telephone-drawing') {
+        const strokes = decodeDrawing(payload);
+        if (!strokes.length) return { ok: false, error: 'Draw something first.' };
+        entry = { kind: 'drawing' as const, strokes };
+      } else {
+        const text = payload.trim().slice(0, 80);
+        if (!text) return { ok: false, error: 'Enter something first.' };
+        entry = {
+          kind: event === 'telephone-prompt' ? ('prompt' as const) : ('guess' as const),
+          text,
+        };
       }
       const packet = makeGamePacket({
         senderId: identity.id,
         gameId: 'telephone',
         event,
         roundId: current.id,
-        sequence: current.turnIndex,
+        targetId: chainId,
+        sequence: current.roundIndex,
         payload,
       });
       const targets = current.playerIds.filter((id) => id !== identity.id);
       const sent = await sendToPeers(packet, targets);
       if (!sent) return { ok: false, error: 'Your turn could not be sent.' };
-      let entry;
-      if (event === 'telephone-drawing') {
-        const strokes = decodeDrawing(payload);
-        if (!strokes.length) return { ok: false, error: 'Draw something first.' };
-        entry = { kind: 'drawing' as const, authorId: identity.id, strokes };
-      } else {
-        const text = payload.trim().slice(0, 80);
-        if (!text) return { ok: false, error: 'Enter something first.' };
-        entry = {
-          kind: event === 'telephone-prompt' ? ('prompt' as const) : ('guess' as const),
-          authorId: identity.id,
-          text,
-        };
-      }
-      const turnIndex = current.turnIndex + 1;
-      const next: TelephoneChain = {
-        ...current,
-        turnIndex,
-        mode: nextTelephoneMode(turnIndex, current.playerIds.length),
-        entries: [...current.entries, entry],
-      };
+      const next = appendTelephoneEntry(current, {
+        authorId: identity.id,
+        chainId,
+        round: current.roundIndex,
+        entry,
+      });
       telephoneChainRef.current = next;
       setTelephoneChain(next);
       return { ok: true };

@@ -419,7 +419,7 @@ export default function GameScreen() {
             <View style={styles.statusDot} />
             <Text style={styles.boardTitle}>Not joined</Text>
             <Text style={styles.boardBody}>
-              Joining is opt-in. Every phone that wants to play must open this game and join.
+              Tap join when you are ready to play with nearby friends.
             </Text>
             <View style={styles.placeholder} />
           </View>
