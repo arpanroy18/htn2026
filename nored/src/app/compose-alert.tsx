@@ -1,19 +1,39 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AlertsIcon } from '@/components/signal/icons';
 import { Chip, OutlinedButton, RowPress } from '@/components/signal/ui';
-import { type Severity } from '@/data/mock';
+import { useAlerts } from '@/mesh/AlertContext';
+import { type Severity } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
 
 const severities: Severity[] = ['INFO', 'HELP', 'DANGER'];
 
 export default function ComposeAlertScreen() {
+  const { broadcastAlert } = useAlerts();
   const [body, setBody] = useState('');
   const [severity, setSeverity] = useState<Severity>('HELP');
   const [location, setLocation] = useState(true);
+  const [sending, setSending] = useState(false);
+
+  const broadcast = async () => {
+    const text = body.trim();
+    if (!text || sending) return;
+    setSending(true);
+    const result = await broadcastAlert({
+      body: text,
+      severity,
+      hasLocation: location,
+    });
+    setSending(false);
+    if (result.ok) {
+      router.back();
+      return;
+    }
+    Alert.alert('Could not broadcast', result.error);
+  };
 
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
@@ -78,9 +98,9 @@ export default function ComposeAlertScreen() {
         </View>
 
         <OutlinedButton
-          disabled={!body.trim()}
-          label="Broadcast to mesh"
-          onPress={() => router.back()}
+          disabled={!body.trim() || sending}
+          label={sending ? 'Broadcasting…' : 'Broadcast to mesh'}
+          onPress={() => void broadcast()}
         />
       </ScrollView>
     </SafeAreaView>

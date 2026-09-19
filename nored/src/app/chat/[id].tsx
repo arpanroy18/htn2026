@@ -3,7 +3,6 @@ import {
   useAudioPlayer,
   useAudioPlayerStatus,
   useAudioRecorder,
-  useAudioRecorderState,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
 } from 'expo-audio';
@@ -115,11 +114,6 @@ function ImageBubble({ message }: { message: ChatMessage }) {
 }
 
 function AudioBubble({ message }: { message: ChatMessage }) {
-  const player = useAudioPlayer(message.localUri ? { uri: message.localUri } : null);
-  const status = useAudioPlayerStatus(player);
-  const progress =
-    status.duration > 0 ? Math.min(1, status.currentTime / status.duration) : 0;
-
   if (!message.localUri) {
     return (
       <View style={styles.mediaPlaceholder}>
@@ -131,6 +125,15 @@ function AudioBubble({ message }: { message: ChatMessage }) {
       </View>
     );
   }
+
+  return <AudioBubblePlayer message={message} />;
+}
+
+function AudioBubblePlayer({ message }: { message: ChatMessage }) {
+  const player = useAudioPlayer({ uri: message.localUri! });
+  const status = useAudioPlayerStatus(player);
+  const progress =
+    status.duration > 0 ? Math.min(1, status.currentTime / status.duration) : 0;
 
   const toggle = () => {
     if (status.playing) {
@@ -221,15 +224,12 @@ export default function ChatScreen() {
   const [preparingMedia, setPreparingMedia] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const recordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordingStartedAt = useRef<number | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDurationMs, setRecordingDurationMs] = useState(0);
   const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
-  const recorderState = useAudioRecorderState(audioRecorder, 100);
-  const recorderStateRef = useRef(recorderState);
   const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
-
-  useEffect(() => {
-    recorderStateRef.current = recorderState;
-  }, [recorderState]);
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -252,8 +252,11 @@ export default function ChatScreen() {
         clearTimeout(recordingTimer.current);
         recordingTimer.current = null;
       }
+      if (isRecording) {
+        void audioRecorder.stop().catch(() => undefined);
+      }
     },
-    [],
+    [audioRecorder, isRecording],
   );
 
   useEffect(() => {
@@ -277,7 +280,7 @@ export default function ChatScreen() {
   };
 
   const chooseImage = async () => {
-    if (!threadId || isGroup || preparingMedia || recorderState.isRecording) return;
+    if (!threadId || isGroup || preparingMedia || isRecording) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Photos permission needed', 'Allow photo access to send an image.');
@@ -315,6 +318,9 @@ export default function ChatScreen() {
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record({ forDuration: MAX_VOICE_SECONDS });
+      recordingStartedAt.current = Date.now();
+      setIsRecording(true);
+      setRecordingDurationMs(0);
       recordingTimer.current = setTimeout(() => {
         void finishRecording(true);
       }, MAX_VOICE_SECONDS * 1000);
@@ -328,12 +334,17 @@ export default function ChatScreen() {
 
   const finishRecording = useCallback(
     async (sendRecording: boolean) => {
-      if (!threadId) return;
-      const durationMs = recorderStateRef.current.durationMillis;
+      if (!threadId || !isRecording) return;
+      const durationMs =
+        recordingStartedAt.current != null
+          ? Date.now() - recordingStartedAt.current
+          : recordingDurationMs;
       if (recordingTimer.current) {
         clearTimeout(recordingTimer.current);
         recordingTimer.current = null;
       }
+      recordingStartedAt.current = null;
+      setIsRecording(false);
       try {
         await audioRecorder.stop();
         await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
@@ -348,10 +359,21 @@ export default function ChatScreen() {
         );
       } finally {
         setPreparingMedia(false);
+        setRecordingDurationMs(0);
       }
     },
-    [audioRecorder, sendVoiceNote, threadId],
+    [audioRecorder, isRecording, recordingDurationMs, sendVoiceNote, threadId],
   );
+
+  useEffect(() => {
+    if (!isRecording) return;
+    const interval = setInterval(() => {
+      if (recordingStartedAt.current != null) {
+        setRecordingDurationMs(Date.now() - recordingStartedAt.current);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isRecording]);
 
   return (
     <KeyboardAvoidingView
@@ -419,7 +441,7 @@ export default function ChatScreen() {
           {emergency ? (
             <Text style={styles.emergencyHint}>Emergency broadcasts are not sent over the mesh yet</Text>
           ) : null}
-          {recorderState.isRecording ? (
+          {isRecording ? (
             <View style={styles.recordingRow}>
               <Pressable
                 onPress={() => void finishRecording(false)}
@@ -429,7 +451,7 @@ export default function ChatScreen() {
               <View style={styles.recordingStatus}>
                 <View style={styles.recordingDot} />
                 <Text style={styles.recordingTime}>
-                  {formatDuration(recorderState.durationMillis)} / 1:00
+                  {formatDuration(recordingDurationMs)} / 1:00
                 </Text>
               </View>
               <IconButton onPress={() => void finishRecording(true)} tone="outline">

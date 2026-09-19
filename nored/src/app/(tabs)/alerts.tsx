@@ -1,11 +1,11 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
 import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { AlertsIcon, PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
-import { mockAlerts, type AlertItem, type Severity } from '@/data/mock';
+import { useAlerts } from '@/mesh/AlertContext';
+import { type AlertItem, type Severity } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
 
 function toneFor(severity: Severity) {
@@ -41,9 +41,9 @@ function AlertRow({ item }: { item: AlertItem }) {
 }
 
 export default function AlertsScreen() {
-  const [listening, setListening] = useState(true);
-  const pinned = mockAlerts.filter((item) => item.pinned);
-  const inbox = mockAlerts.filter((item) => !item.pinned);
+  const { alerts, listening, setListening } = useAlerts();
+  const pinned = alerts.filter((item) => item.pinned);
+  const inbox = alerts.filter((item) => !item.pinned);
 
   return (
     <Screen>
@@ -90,11 +90,17 @@ export default function AlertsScreen() {
         ) : null}
 
         <Text style={[styles.section, styles.spaced]}>Inbox</Text>
-        <GroupedList>
-          {inbox.map((item) => (
-            <AlertRow item={item} key={item.id} />
-          ))}
-        </GroupedList>
+        {alerts.length === 0 ? (
+          <Text style={styles.empty}>
+            No alerts yet. Tap + to broadcast to every reachable phone on the mesh.
+          </Text>
+        ) : (
+          <GroupedList>
+            {inbox.map((item) => (
+              <AlertRow item={item} key={item.id} />
+            ))}
+          </GroupedList>
+        )}
       </ScrollView>
     </Screen>
   );
@@ -140,4 +146,5 @@ const styles = StyleSheet.create({
   time: { color: signal.slate, fontSize: 12 },
   bodyText: { color: signal.ink, fontSize: 15, lineHeight: 21, marginTop: 8 },
   meta: { color: signal.slate, fontSize: 12, marginTop: 8 },
+  empty: { color: signal.slate, fontSize: 15, lineHeight: 22, marginTop: 4 },
 });

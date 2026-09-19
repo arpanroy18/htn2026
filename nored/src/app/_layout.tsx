@@ -3,6 +3,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { AlertProvider } from '@/mesh/AlertContext';
 import { ChatProvider } from '@/mesh/ChatContext';
 import { MeshUiProvider } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
@@ -26,9 +27,10 @@ export default function RootLayout() {
     <ThemeProvider value={lightTheme}>
       <StatusBar style="dark" />
       <MeshUiProvider>
-        <ChatProvider>
-          <AnimatedSplashOverlay />
-          <Stack
+        <AlertProvider>
+          <ChatProvider>
+            <AnimatedSplashOverlay />
+            <Stack
             screenOptions={{
               contentStyle: { backgroundColor: signal.paper },
               headerShadowVisible: false,
@@ -44,8 +46,9 @@ export default function RootLayout() {
             <Stack.Screen name="onboarding" options={{ title: 'Permissions' }} />
             <Stack.Screen name="game/[id]" options={{ title: 'Game' }} />
             <Stack.Screen name="invite" options={{ title: 'Invite to group', presentation: 'modal' }} />
-          </Stack>
-        </ChatProvider>
+            </Stack>
+          </ChatProvider>
+        </AlertProvider>
       </MeshUiProvider>
     </ThemeProvider>
   );

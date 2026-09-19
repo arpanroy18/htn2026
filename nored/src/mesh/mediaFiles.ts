@@ -29,7 +29,7 @@ export const VOICE_RECORDING_OPTIONS: RecordingOptions = {
   numberOfChannels: 1,
   bitRate: 16_000,
   directory: 'cache',
-  isMeteringEnabled: true,
+  isMeteringEnabled: false,
   android: {
     extension: '.m4a',
     outputFormat: 'mpeg4',

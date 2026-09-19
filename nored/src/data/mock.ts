@@ -1,15 +1,4 @@
-export type Severity = 'INFO' | 'HELP' | 'DANGER';
-
-export type AlertItem = {
-  id: string;
-  sender: string;
-  body: string;
-  severity: Severity;
-  time: string;
-  hops: number;
-  pinned?: boolean;
-  hasLocation?: boolean;
-};
+export type { AlertItem, Severity } from '@/mesh/alertStore';
 
 export type GameCard = {
   id: string;
@@ -17,36 +6,6 @@ export type GameCard = {
   blurb: string;
   players: string;
 };
-
-export const mockAlerts: AlertItem[] = [
-  {
-    id: 'a1',
-    sender: 'Riley',
-    body: 'Lost child, red jacket, last seen at Gate C. Relay if you have eyes.',
-    severity: 'HELP',
-    time: '1m',
-    hops: 3,
-    pinned: true,
-    hasLocation: true,
-  },
-  {
-    id: 'a2',
-    sender: 'You',
-    body: 'Power strip tripped in med tent. Using battery lanterns.',
-    severity: 'INFO',
-    time: '16m',
-    hops: 1,
-  },
-  {
-    id: 'a3',
-    sender: 'Devon',
-    body: 'Unstable crowd near the west stairs. Avoid until cleared.',
-    severity: 'DANGER',
-    time: '41m',
-    hops: 4,
-    hasLocation: true,
-  },
-];
 
 export const mockGames: GameCard[] = [
   {

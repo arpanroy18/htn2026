@@ -54,12 +54,24 @@ export type MediaRetryPacket = PacketBase & {
   missing: number[];
 };
 
+export type AlertSeverity = 'INFO' | 'HELP' | 'DANGER';
+
+export type AlertPacket = PacketBase & {
+  type: 'alert';
+  body: string;
+  severity: AlertSeverity;
+  hasLocation?: boolean;
+  hops?: number;
+  ttlHops?: number;
+};
+
 export type Packet =
   | TextPacket
   | MediaManifestPacket
   | MediaChunkPacket
   | MediaAckPacket
-  | MediaRetryPacket;
+  | MediaRetryPacket
+  | AlertPacket;
 
 export type DeviceIdentity = {
   id: string;

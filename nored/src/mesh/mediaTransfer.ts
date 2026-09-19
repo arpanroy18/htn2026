@@ -162,6 +162,14 @@ export function isPacket(value: unknown): value is Packet {
         Array.isArray(packet.missing) &&
         packet.missing.every((item) => Number.isInteger(item) && item >= 0)
       );
+    case 'alert':
+      return (
+        typeof packet.body === 'string' &&
+        packet.body.length > 0 &&
+        (packet.severity === 'INFO' ||
+          packet.severity === 'HELP' ||
+          packet.severity === 'DANGER')
+      );
     default:
       return false;
   }
