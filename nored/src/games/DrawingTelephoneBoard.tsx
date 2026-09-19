@@ -8,6 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
@@ -24,6 +25,16 @@ import {
 
 const CANVAS_HEIGHT = 250;
 
+function strokePath(stroke: DrawingPoint[], width: number, height: number) {
+  return stroke
+    .map((point, index) => {
+      const x = (point.x / 100) * width;
+      const y = (point.y / 100) * height;
+      return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join(' ');
+}
+
 const Drawing = memo(function Drawing({
   strokes,
   width,
@@ -33,34 +44,23 @@ const Drawing = memo(function Drawing({
   width: number;
   height: number;
 }) {
+  if (width < 2) return null;
   return (
-    <>
-      {strokes.flatMap((stroke, strokeIndex) =>
-        stroke.slice(1).map((point, index) => {
-          const previous = stroke[index];
-          const x1 = (previous.x / 100) * width;
-          const y1 = (previous.y / 100) * height;
-          const x2 = (point.x / 100) * width;
-          const y2 = (point.y / 100) * height;
-          const length = Math.hypot(x2 - x1, y2 - y1);
-          return (
-            <View
-              key={`${strokeIndex}-${index}`}
-              style={[
-                styles.line,
-                {
-                  backgroundColor: signal.ink,
-                  left: (x1 + x2 - length) / 2,
-                  top: (y1 + y2) / 2 - 2,
-                  transform: [{ rotate: `${Math.atan2(y2 - y1, x2 - x1)}rad` }],
-                  width: length,
-                },
-              ]}
-            />
-          );
-        }),
+    <Svg height={height} pointerEvents="none" style={StyleSheet.absoluteFill} width={width}>
+      {strokes.map((stroke, index) =>
+        stroke.length < 2 ? null : (
+          <Path
+            d={strokePath(stroke, width, height)}
+            fill="none"
+            key={index}
+            stroke={signal.ink}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={5}
+          />
+        ),
       )}
-    </>
+    </Svg>
   );
 });
 
@@ -138,15 +138,12 @@ export function DrawingTelephoneBoard({
             const previous = current[current.length - 1];
             if (
               previous &&
-              Math.hypot(point.x - previous.x, point.y - previous.y) < 2
+              Math.hypot(point.x - previous.x, point.y - previous.y) < 2.6
             ) {
               return current;
             }
             if (current.length >= MAX_STROKE_POINTS) {
-              return [
-                ...current.filter((_, index) => index % 2 === 0),
-                point,
-              ];
+              return [...current.filter((_, index) => index % 2 === 0), point];
             }
             return [...current, point];
           });
@@ -362,7 +359,10 @@ export function DrawingTelephoneBoard({
       {game.mode === 'draw' ? (
         <>
           <View
-            onLayout={(event) => setCanvasWidth(event.nativeEvent.layout.width)}
+            onLayout={(event) => {
+              const width = event.nativeEvent.layout.width;
+              setCanvasWidth((current) => (Math.abs(current - width) < 1 ? current : width));
+            }}
             onTouchCancel={() => setScrollEnabled(true)}
             onTouchEnd={() => setScrollEnabled(true)}
             onTouchStart={() => setScrollEnabled(false)}
@@ -538,7 +538,6 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   canvasHint: { color: '#9da2ae', fontSize: 14 },
-  line: { borderRadius: 2.5, height: 5, position: 'absolute' },
   actions: { flexDirection: 'row', gap: 10 },
   secondary: {
     alignItems: 'center',

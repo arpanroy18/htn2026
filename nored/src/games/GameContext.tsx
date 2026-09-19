@@ -22,15 +22,18 @@ import {
   advancePong,
   appendTelephoneEntry,
   appendStroke,
+  applyPongState,
   assignedTelephoneChain,
   createTelephoneGame,
   createPongMatch,
   decodeDrawing,
   encodeDrawing,
+  encodePongState,
   encodeStroke,
   isGamePacket,
   makeGamePacket,
   participantPayload,
+  pongScoreChanged,
   type ChessMatch,
   type DrawingPoint,
   type GameParticipant,
@@ -38,6 +41,7 @@ import {
   type TelephoneChain,
   type TelephoneRound,
 } from './gameStore';
+import { clearPongFrame, emitPongFrame } from './pongRuntime';
 import {
   applyChessMove,
   chessColorForPlayer,
@@ -129,6 +133,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const chessMatchRef = useRef(chessMatch);
   const pendingPings = useRef(new Map<string, { peerId: string; startedAt: number }>());
   const lastPongInputAt = useRef(0);
+  const lastSentPaddleY = useRef(-1);
 
   useEffect(() => {
     joinedRef.current = joinedGames;
@@ -196,27 +201,38 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, [meshRouter]);
 
   useEffect(() => {
-    let ticks = 0;
-    const timer = setInterval(() => {
+    let frame = 0;
+    let lastTime = 0;
+    let lastSend = 0;
+    const tick = (now: number) => {
+      frame = requestAnimationFrame(tick);
       const current = pongMatchRef.current;
-      if (!current?.running || current.hostId !== identity.id) return;
-      const next = advancePong(current, 0.05);
+      if (!current?.running) {
+        lastTime = 0;
+        return;
+      }
+      if (!lastTime) lastTime = now;
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+      const next = advancePong(current, dt);
       pongMatchRef.current = next;
-      setPongMatch(next);
-      ticks += 1;
-      if (ticks % 2 === 0) {
+      emitPongFrame(next);
+      if (pongScoreChanged(current, next)) setPongMatch(next);
+      if (current.hostId === identity.id && now - lastSend >= 180) {
+        lastSend = now;
         const packet = makeGamePacket({
           senderId: identity.id,
           recipientId: next.guestId,
           gameId: 'pong',
           event: 'pong-state',
           roundId: next.id,
-          payload: JSON.stringify(next),
+          payload: encodePongState(next),
         });
         void sendToPeers(packet, [next.guestId]);
       }
-    }, 50);
-    return () => clearInterval(timer);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, [identity.id, sendToPeers]);
 
   useEffect(() => {
@@ -262,7 +278,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }
 
       if (!joinedRef.current[packet.gameId]) return;
-      upsertParticipant(packet.gameId, packet.senderId);
+      if (packet.event !== 'pong-state' && packet.event !== 'pong-input') {
+        upsertParticipant(packet.gameId, packet.senderId);
+      }
 
       if (packet.gameId === 'pong') {
         if (packet.event === 'pong-start' && packet.payload) {
@@ -274,7 +292,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
               next.id === packet.roundId
             ) {
               pongMatchRef.current = next;
+              lastSentPaddleY.current = next.rightY;
               setPongMatch(next);
+              emitPongFrame(next);
             }
           } catch {
             // Ignore malformed match data.
@@ -286,12 +306,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
         ) {
           const position = Number(packet.payload);
           if (Number.isFinite(position)) {
-            setPongMatch((current) => {
-              if (!current) return current;
-              const next = { ...current, rightY: Math.max(0.14, Math.min(0.86, position)) };
-              pongMatchRef.current = next;
-              return next;
-            });
+            const current = pongMatchRef.current;
+            const next = {
+              ...current,
+              rightY: Math.max(0.14, Math.min(0.86, position)),
+            };
+            pongMatchRef.current = next;
+            emitPongFrame(next);
           }
         } else if (
           packet.event === 'pong-state' &&
@@ -299,14 +320,21 @@ export function GameProvider({ children }: { children: ReactNode }) {
           packet.senderId === pongMatchRef.current.hostId &&
           packet.payload
         ) {
-          try {
-            const next = JSON.parse(packet.payload) as PongMatch;
-            if (next.id === pongMatchRef.current.id) {
-              pongMatchRef.current = next;
-              setPongMatch(next);
-            }
-          } catch {
-            // Ignore malformed host state.
+          const local = pongMatchRef.current;
+          const remote = applyPongState(local, packet.payload);
+          if (remote && remote.id === local.id) {
+            const dx = remote.ballX - local.ballX;
+            const dy = remote.ballY - local.ballY;
+            const close = dx * dx + dy * dy < 0.012;
+            const next: PongMatch = {
+              ...remote,
+              rightY: local.rightY,
+              ballX: close ? local.ballX + dx * 0.45 : remote.ballX,
+              ballY: close ? local.ballY + dy * 0.45 : remote.ballY,
+            };
+            pongMatchRef.current = next;
+            emitPongFrame(next);
+            if (pongScoreChanged(local, next)) setPongMatch(next);
           }
         }
         return;
@@ -524,7 +552,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setJoinedGames((current) => ({ ...current, [gameId]: false }));
       setParticipants((current) => ({ ...current, [gameId]: [] }));
       if (gameId === 'mesh-ping') setBatonHolderId(undefined);
-      else if (gameId === 'pong') setPongMatch(undefined);
+      else if (gameId === 'pong') {
+        pongMatchRef.current = undefined;
+        clearPongFrame();
+        setPongMatch(undefined);
+      }
       else if (gameId === 'telephone') {
         setTelephoneRound(undefined);
         setTelephoneChain(undefined);
@@ -581,7 +613,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const sent = await sendToPeers(packet, [guest.id]);
     if (!sent) return { ok: false, error: 'The match could not reach the other player.' };
     pongMatchRef.current = match;
+    lastSentPaddleY.current = match.leftY;
     setPongMatch(match);
+    emitPongFrame(match);
     return { ok: true };
   }, [identity.id, sendToPeers]);
 
@@ -593,14 +627,16 @@ export function GameProvider({ children }: { children: ReactNode }) {
       if (current.hostId === identity.id) {
         const next = { ...current, leftY: clamped };
         pongMatchRef.current = next;
-        setPongMatch(next);
+        emitPongFrame(next);
       } else if (current.guestId === identity.id) {
         const next = { ...current, rightY: clamped };
         pongMatchRef.current = next;
-        setPongMatch(next);
+        emitPongFrame(next);
         const now = Date.now();
-        if (now - lastPongInputAt.current < 50) return;
+        if (now - lastPongInputAt.current < 90) return;
+        if (Math.abs(clamped - lastSentPaddleY.current) < 0.008) return;
         lastPongInputAt.current = now;
+        lastSentPaddleY.current = clamped;
         const packet = makeGamePacket({
           senderId: identity.id,
           recipientId: current.hostId,

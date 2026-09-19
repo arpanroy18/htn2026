@@ -163,6 +163,10 @@ private final class NoredPeripheralClientDelegate: NSObject, CBPeripheralDelegat
   func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
     owner?.peripheral(peripheral, didModifyServices: invalidatedServices)
   }
+
+  func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+    owner?.peripheral(peripheral, didReadRSSI: RSSI, error: error)
+  }
 }
 
 public final class NoredBluetoothModule: Module {
@@ -505,6 +509,7 @@ public final class NoredBluetoothModule: Module {
       publishIdentityUpdate()
       writeIdentityToConnectedPeers()
     }
+    pollRemoteRssi()
     adoptConnectedPeripherals()
   }
 
@@ -604,7 +609,7 @@ public final class NoredBluetoothModule: Module {
       return isNored ? "Nored user" : "Unknown device"
     }()
     let now = Date().timeIntervalSince1970 * 1000
-    let rssi = RSSI.intValue == 127 ? existing?.rssi : RSSI.intValue
+    let rssi = sanitizedRssi(RSSI.intValue) ?? existing?.rssi
     let displayName: String = {
       if let advertisedName, !advertisedName.isEmpty {
         return String(advertisedName.prefix(40))
@@ -651,6 +656,7 @@ public final class NoredBluetoothModule: Module {
     clientLinks[peripheral.identifier] = link
     log("info", "[CONNECTION] connected \(peripheral.identifier.uuidString.prefix(8))")
     restartAdvertising()
+    peripheral.readRSSI()
     peripheral.discoverServices([serviceUUID])
   }
 
@@ -1218,7 +1224,7 @@ public final class NoredBluetoothModule: Module {
       peers[id] = PeerRecord(
         id: id,
         name: name,
-        rssi: previous?.rssi,
+        rssi: sanitizedRssi(previous?.rssi) ?? sanitizedRssi(peers[id]?.rssi),
         lastSeen: now,
         nored: true,
         confirmedIdentity: true,
@@ -1227,10 +1233,11 @@ public final class NoredBluetoothModule: Module {
       )
     } else {
       let existing = peers[id]
+      let fallback = requestedReplacement.flatMap { peers[$0]?.rssi }
       peers[id] = PeerRecord(
         id: id,
         name: name,
-        rssi: existing?.rssi,
+        rssi: sanitizedRssi(existing?.rssi) ?? sanitizedRssi(fallback),
         lastSeen: now,
         nored: true,
         confirmedIdentity: true,
@@ -1242,6 +1249,45 @@ public final class NoredBluetoothModule: Module {
     sendEvent("onPeerDiscovered", peerMap(peers[id]!, replacesId: replacesId == id ? nil : replacesId))
   }
 
+  private func sanitizedRssi(_ raw: Int?) -> Int? {
+    guard let raw, raw != 127, raw >= -127, raw <= 20 else { return nil }
+    return raw
+  }
+
+  private func signalBucket(_ rssi: Int) -> Int {
+    if rssi >= -60 { return 3 }
+    if rssi >= -75 { return 2 }
+    return 1
+  }
+
+  private func pollRemoteRssi() {
+    for link in clientLinks.values {
+      link.peripheral.readRSSI()
+    }
+  }
+
+  public func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+    guard error == nil else { return }
+    applyRssi(hardwareId: peripheral.identifier.uuidString.lowercased(), raw: RSSI.intValue)
+  }
+
+  private func applyRssi(hardwareId: String, raw: Int) {
+    guard let rssi = sanitizedRssi(raw) else { return }
+    let peerId = hardwareIdToPeerId[hardwareId] ?? hardwareId
+    guard var peer = peers[peerId] ?? peers[hardwareId] else { return }
+    let previous = peer.rssi
+    if previous == rssi { return }
+    let bucketChanged = previous == nil || signalBucket(previous!) != signalBucket(rssi)
+    peer.rssi = rssi
+    peers[peer.id] = peer
+    let now = Date().timeIntervalSince1970 * 1000
+    let last = lastEmitAt[peer.id] ?? 0
+    if bucketChanged || now - last >= 1000 {
+      lastEmitAt[peer.id] = now
+      sendEvent("onPeerDiscovered", peerMap(peer))
+    }
+  }
+
   private func peerMap(_ peer: PeerRecord, replacesId: String? = nil) -> [String: Any] {
     var map: [String: Any] = [
       "id": peer.id,
@@ -1250,7 +1296,7 @@ public final class NoredBluetoothModule: Module {
       "nored": peer.nored,
       "identityConfirmed": peer.confirmedIdentity,
     ]
-    if let rssi = peer.rssi {
+    if let rssi = sanitizedRssi(peer.rssi) {
       map["rssi"] = rssi
     }
     if let avatarIcon = peer.avatarIcon {

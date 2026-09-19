@@ -15,12 +15,12 @@ import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { GearIcon, SignalBars } from '@/components/signal/icons';
 import { Avatar, GroupedList, IconButton, OutlinedButton, RowPress } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
-import { hopLabel, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
+import { hopLabel, isValidRssi, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 import type { Peer } from '@/transport';
 
 function levelFor(rssi?: number): 0 | 1 | 2 | 3 {
-  if (rssi === undefined) return 0;
+  if (!isValidRssi(rssi)) return 0;
   if (rssi >= -60) return 3;
   if (rssi >= -75) return 2;
   return 1;

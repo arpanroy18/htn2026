@@ -249,8 +249,26 @@ export function createPongMatch(hostId: string, guestId: string): PongMatch {
   };
 }
 
-export function advancePong(match: PongMatch, seconds: number): PongMatch {
-  if (!match.running) return match;
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampBallSpeed(velocityX: number, velocityY: number) {
+  const maxSpeed = 0.92;
+  const speed = Math.hypot(velocityX, velocityY);
+  let nextX = velocityX;
+  let nextY = velocityY;
+  if (speed > maxSpeed && speed > 0) {
+    nextX *= maxSpeed / speed;
+    nextY *= maxSpeed / speed;
+  }
+  if (Math.abs(nextX) < 0.28) {
+    nextX = (nextX < 0 ? -1 : 1) * 0.28;
+  }
+  return { velocityX: nextX, velocityY: clamp(nextY, -0.72, 0.72) };
+}
+
+function stepPong(match: PongMatch, seconds: number): PongMatch {
   let ballX = match.ballX + match.velocityX * seconds;
   let ballY = match.ballY + match.velocityY * seconds;
   let velocityX = match.velocityX;
@@ -259,7 +277,7 @@ export function advancePong(match: PongMatch, seconds: number): PongMatch {
   let rightScore = match.rightScore;
 
   if (ballY <= 0.03 || ballY >= 0.97) {
-    ballY = Math.max(0.03, Math.min(0.97, ballY));
+    ballY = clamp(ballY, 0.03, 0.97);
     velocityY *= -1;
   }
 
@@ -267,7 +285,7 @@ export function advancePong(match: PongMatch, seconds: number): PongMatch {
   if (
     velocityX < 0 &&
     ballX <= 0.08 &&
-    ballX >= 0.035 &&
+    ballX >= 0.02 &&
     Math.abs(ballY - match.leftY) <= paddleHalf
   ) {
     ballX = 0.08;
@@ -276,7 +294,7 @@ export function advancePong(match: PongMatch, seconds: number): PongMatch {
   } else if (
     velocityX > 0 &&
     ballX >= 0.92 &&
-    ballX <= 0.965 &&
+    ballX <= 0.98 &&
     Math.abs(ballY - match.rightY) <= paddleHalf
   ) {
     ballX = 0.92;
@@ -298,19 +316,99 @@ export function advancePong(match: PongMatch, seconds: number): PongMatch {
     velocityY = -0.22;
   }
 
+  const speed = clampBallSpeed(velocityX, velocityY);
   const winnerId =
     leftScore >= 5 ? match.hostId : rightScore >= 5 ? match.guestId : undefined;
   return {
     ...match,
     ballX,
     ballY,
-    velocityX,
-    velocityY,
+    velocityX: speed.velocityX,
+    velocityY: speed.velocityY,
     leftScore,
     rightScore,
     running: !winnerId,
     winnerId,
   };
+}
+
+export function advancePong(match: PongMatch, seconds: number): PongMatch {
+  if (!match.running) return match;
+  const dt = clamp(seconds, 0, 0.05);
+  const steps = dt > 0.018 ? 2 : 1;
+  const step = dt / steps;
+  let current = match;
+  for (let index = 0; index < steps; index += 1) {
+    current = stepPong(current, step);
+    if (!current.running) break;
+  }
+  return current;
+}
+
+export function encodePongState(match: PongMatch) {
+  return [
+    match.ballX.toFixed(3),
+    match.ballY.toFixed(3),
+    match.velocityX.toFixed(3),
+    match.velocityY.toFixed(3),
+    match.leftY.toFixed(3),
+    match.rightY.toFixed(3),
+    String(match.leftScore),
+    String(match.rightScore),
+    match.running ? '1' : '0',
+  ].join(',');
+}
+
+export function applyPongState(match: PongMatch, payload?: string): PongMatch | undefined {
+  if (!payload) return undefined;
+  if (payload.startsWith('{')) {
+    try {
+      const next = JSON.parse(payload) as PongMatch;
+      return next.id === match.id ? next : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const parts = payload.split(',');
+  if (parts.length !== 9) return undefined;
+  const values = parts.map(Number);
+  if (values.some((value) => !Number.isFinite(value))) return undefined;
+  const [
+    ballX,
+    ballY,
+    velocityX,
+    velocityY,
+    leftY,
+    rightY,
+    leftScore,
+    rightScore,
+    runningFlag,
+  ] = values;
+  const winnerId =
+    leftScore >= 5 ? match.hostId : rightScore >= 5 ? match.guestId : undefined;
+  return {
+    ...match,
+    ballX: clamp(ballX, -0.05, 1.05),
+    ballY: clamp(ballY, 0, 1),
+    velocityX,
+    velocityY,
+    leftY: clamp(leftY, 0.14, 0.86),
+    rightY: clamp(rightY, 0.14, 0.86),
+    leftScore,
+    rightScore,
+    running: runningFlag === 1 && !winnerId,
+    winnerId,
+  };
+}
+
+export function pongScoreChanged(previous: PongMatch | undefined, next: PongMatch) {
+  return (
+    previous?.id !== next.id ||
+    previous.leftScore !== next.leftScore ||
+    previous.rightScore !== next.rightScore ||
+    previous.running !== next.running ||
+    previous.winnerId !== next.winnerId
+  );
 }
 
 export function appendStroke(

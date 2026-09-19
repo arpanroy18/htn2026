@@ -21,8 +21,12 @@ function peersEqual(a: Peer, b: Peer) {
   );
 }
 
-export function signalLabel(rssi?: number) {
-  if (rssi === undefined) return 'Unknown';
+export function isValidRssi(rssi?: number | null): rssi is number {
+  return typeof rssi === 'number' && Number.isFinite(rssi) && rssi !== 127 && rssi >= -127 && rssi <= 20;
+}
+
+export function signalLabel(rssi?: number | null) {
+  if (!isValidRssi(rssi)) return 'Unknown';
   if (rssi >= -60) return 'Strong';
   if (rssi >= -75) return 'Medium';
   return 'Weak';
@@ -62,15 +66,19 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
   const upsertPeer = useCallback((peer: Peer) => {
     if (!peer.nored && !hasDisplayName(peer)) return;
     setPeers((current) => {
+      const replaced = peer.replacesId
+        ? current.find((item) => item.id === peer.replacesId)
+        : undefined;
       const withoutReplaced = peer.replacesId
         ? current.filter((item) => item.id !== peer.replacesId && item.id !== peer.id)
         : current;
       const index = withoutReplaced.findIndex((item) => item.id === peer.id);
-      if (index === -1) return [...withoutReplaced, peer];
+      const rssi = isValidRssi(peer.rssi) ? peer.rssi : (index === -1 ? replaced?.rssi : withoutReplaced[index].rssi);
+      if (index === -1) return [...withoutReplaced, { ...peer, rssi }];
       const merged = {
         ...withoutReplaced[index],
         name: peer.name,
-        rssi: peer.rssi,
+        rssi,
         lastSeen: peer.lastSeen,
         nored: withoutReplaced[index].nored || peer.nored,
         identityConfirmed:

@@ -536,6 +536,7 @@ class NoredBluetoothModule : Module() {
       if (keepAliveTicks % 6 == 0 && !sending) {
         publishIdentityUpdate()
       }
+      pollRemoteRssi()
       mainHandler.postDelayed(this, 5_000L)
     }
   }
@@ -567,7 +568,7 @@ class NoredBluetoothModule : Module() {
       id = peerId,
       name = displayName,
       address = address,
-      rssi = result.rssi,
+      rssi = sanitizeRssi(result.rssi) ?: existing?.rssi,
       lastSeen = now,
       nored = isNored,
       confirmedIdentity = existing?.confirmedIdentity == true,
@@ -687,6 +688,12 @@ class NoredBluetoothModule : Module() {
       gatt.discoverServices()
     }
 
+    override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+      if (status == BluetoothGatt.GATT_SUCCESS) {
+        applyRssi(gatt.device.address, rssi)
+      }
+    }
+
     @SuppressLint("MissingPermission")
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
       if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -786,6 +793,7 @@ class NoredBluetoothModule : Module() {
       } else {
         log("info", "[DISCOVERY] local identity exchanged")
         subscribeIdentityNotifications(gatt)
+        requestRssi(gatt)
       }
       drainWrite(address)
     }
@@ -826,6 +834,7 @@ class NoredBluetoothModule : Module() {
         serverDevices[device.address] = device
         log("info", "[CONNECTION] central connected ${device.address}")
         startAdvertiser()
+        mainHandler.post { connectForRssiIfNeeded(device) }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         serverDevices.remove(device.address)
         subscribedAddresses.remove(device.address)
@@ -985,7 +994,7 @@ class NoredBluetoothModule : Module() {
         id = id,
         name = name,
         address = address,
-        rssi = existing?.rssi,
+        rssi = firstRssi(existing, peers[previousId], peers[address]),
         lastSeen = System.currentTimeMillis(),
         nored = true,
         confirmedIdentity = true,
@@ -1026,12 +1035,13 @@ class NoredBluetoothModule : Module() {
       val avatarIcon = json.optString("avatarIcon", "").ifEmpty { null }
       val avatarColor = if (json.has("avatarColor")) json.optInt("avatarColor") else null
       UUID.fromString(id)
-      val existing = peers[id] ?: peers[addressToPeerId[device.address] ?: device.address]
+      val mappedId = addressToPeerId[device.address] ?: device.address
+      val existing = peers[id] ?: peers[mappedId] ?: peers[device.address]
       val record = PeerRecord(
         id = id,
         name = name,
         address = device.address,
-        rssi = existing?.rssi,
+        rssi = firstRssi(existing, peers[mappedId], peers[device.address]),
         lastSeen = System.currentTimeMillis(),
         nored = true,
         confirmedIdentity = true,
@@ -1049,6 +1059,7 @@ class NoredBluetoothModule : Module() {
       serverDevices[device.address] = device
       emitPeer(record, replacesId)
       log("info", "[DISCOVERY] nored peer ${id.take(8)}")
+      gatts[device.address]?.let { requestRssi(it) }
     } catch (error: Exception) {
       log("error", "[ERROR] invalid incoming frame: ${error.javaClass.simpleName}")
     }
@@ -1348,15 +1359,72 @@ class NoredBluetoothModule : Module() {
     }
   }
 
+  private fun sanitizeRssi(raw: Int?): Int? {
+    if (raw == null || raw == 127 || raw > 20 || raw < -127) return null
+    return raw
+  }
+
+  private fun firstRssi(vararg records: PeerRecord?): Int? {
+    return records.mapNotNull { sanitizeRssi(it?.rssi) }.firstOrNull()
+  }
+
+  private fun signalBucket(rssi: Int): Int {
+    return when {
+      rssi >= -60 -> 3
+      rssi >= -75 -> 2
+      else -> 1
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun requestRssi(gatt: BluetoothGatt) {
+    if (sending || writeBusy[gatt.device.address] == true) return
+    try {
+      gatt.readRemoteRssi()
+    } catch (_: Exception) {}
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun pollRemoteRssi() {
+    gatts.values.forEach { gatt ->
+      requestRssi(gatt)
+    }
+  }
+
+  private fun connectForRssiIfNeeded(device: BluetoothDevice) {
+    val address = device.address
+    if (!started) return
+    if (gatts.containsKey(address) || connecting.contains(address)) return
+    if (gatts.size >= MAX_CONNECTIONS) return
+    if (!connecting.add(address)) return
+    connect(device)
+  }
+
+  private fun applyRssi(address: String, raw: Int) {
+    val rssi = sanitizeRssi(raw) ?: return
+    val peerId = addressToPeerId[address] ?: address
+    val peer = peers[peerId] ?: peers[address] ?: return
+    val previous = peer.rssi
+    if (previous == rssi) return
+    val bucketChanged = previous == null || signalBucket(previous) != signalBucket(rssi)
+    peer.rssi = rssi
+    val now = System.currentTimeMillis()
+    val last = lastEmitAt[peer.id] ?: 0L
+    if (bucketChanged || now - last >= 1_000L) {
+      lastEmitAt[peer.id] = now
+      emitPeer(peer)
+    }
+  }
+
   private fun peerMap(peer: PeerRecord, replacesId: String? = null): Map<String, Any?> {
     val map = mutableMapOf<String, Any?>(
       "id" to peer.id,
       "name" to peer.name,
-      "rssi" to peer.rssi,
       "lastSeen" to peer.lastSeen,
       "nored" to peer.nored,
       "identityConfirmed" to peer.confirmedIdentity,
     )
+    sanitizeRssi(peer.rssi)?.let { map["rssi"] = it }
     if (peer.avatarIcon != null) {
       map["avatarIcon"] = peer.avatarIcon
     }
