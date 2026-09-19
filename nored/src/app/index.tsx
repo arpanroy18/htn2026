@@ -1,98 +1,298 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { meshTransport, type DeviceIdentity, type Peer, type TransportState } from '@/transport';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
+const colors = {
+  ink: '#171A1F',
+  muted: '#737984',
+  paper: '#F4F1EA',
+  card: '#FFFFFF',
+  red: '#E4472F',
+  green: '#35A56B',
+  line: '#E1DDD4',
+};
+
+function signalLabel(rssi?: number) {
+  if (rssi === undefined) return 'Signal unknown';
+  if (rssi >= -60) return 'Strong signal';
+  if (rssi >= -75) return 'Medium signal';
+  return 'Weak signal';
 }
 
-export default function HomeScreen() {
+function seenLabel(lastSeen: number, now: number) {
+  const seconds = Math.max(0, Math.floor((now - lastSeen) / 1000));
+  return seconds < 2 ? 'Seen now' : `Seen ${seconds}s ago`;
+}
+
+function statusCopy(state: TransportState) {
+  switch (state) {
+    case 'running':
+      return 'Looking nearby';
+    case 'starting':
+      return 'Starting Bluetooth';
+    case 'poweredOff':
+      return 'Turn Bluetooth on';
+    case 'unauthorized':
+      return 'Bluetooth permission needed';
+    case 'unsupported':
+      return 'BLE unavailable';
+    case 'stopped':
+      return 'Stopped';
+    default:
+      return 'Checking Bluetooth';
+  }
+}
+
+export default function NearbyScreen() {
+  const [identity, setIdentity] = useState<DeviceIdentity>(() => meshTransport.getIdentity());
+  const [draftName, setDraftName] = useState(identity.name);
+  const [peers, setPeers] = useState<Peer[]>([]);
+  const [state, setState] = useState<TransportState>('starting');
+  const [error, setError] = useState<string>();
+  const [logs, setLogs] = useState<string[]>([]);
+  const [now, setNow] = useState(0);
+  const [saving, setSaving] = useState(false);
+
+  const upsertPeer = useCallback((peer: Peer) => {
+    setPeers((current) =>
+      [...current.filter((item) => item.id !== peer.id), peer].sort(
+        (a, b) => b.lastSeen - a.lastSeen,
+      ),
+    );
+  }, []);
+
+  useEffect(() => {
+    const subscriptions = [
+      meshTransport.onPeerDiscovered(upsertPeer),
+      meshTransport.onPeerLost((peerId) =>
+        setPeers((current) => current.filter((peer) => peer.id !== peerId)),
+      ),
+      meshTransport.onStateChanged(setState),
+      meshTransport.onLog((message) => {
+        console.info(message);
+        setLogs((current) => [message, ...current].slice(0, 8));
+      }),
+    ];
+
+    meshTransport
+      .start()
+      .then(() => meshTransport.getPeers())
+      .then(setPeers)
+      .catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : 'Bluetooth failed to start.');
+      });
+
+    const clock = setInterval(() => setNow(Date.now()), 1_000);
+    return () => {
+      clearInterval(clock);
+      subscriptions.forEach((subscription) => subscription.remove());
+      void meshTransport.stop();
+    };
+  }, [upsertPeer]);
+
+  const saveName = async () => {
+    setSaving(true);
+    setError(undefined);
+    try {
+      const nextIdentity = await meshTransport.setDisplayName(draftName);
+      setIdentity(nextIdentity);
+      setDraftName(nextIdentity.name);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not save the name.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const shortId = useMemo(() => identity.id.slice(0, 8), [identity.id]);
+
   return (
-    <ThemedView style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.page}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.wordmark}>NORED</Text>
+            <Text style={styles.eyebrow}>OFFLINE MESH</Text>
+          </View>
+          <View style={[styles.statusDot, state !== 'running' && styles.statusDotWaiting]} />
+        </View>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+        <View style={styles.identityCard}>
+          <Text style={styles.label}>THIS PHONE</Text>
+          <View style={styles.nameRow}>
+            <TextInput
+              accessibilityLabel="Your nearby display name"
+              autoCapitalize="words"
+              maxLength={40}
+              onChangeText={setDraftName}
+              onSubmitEditing={saveName}
+              returnKeyType="done"
+              style={styles.nameInput}
+              value={draftName}
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={saving || !draftName.trim() || draftName.trim() === identity.name}
+              onPress={saveName}
+              style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}>
+              <Text style={styles.saveButtonText}>{saving ? '…' : 'SAVE'}</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.deviceId}>ID {shortId}</Text>
+        </View>
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Nearby</Text>
+          <View style={styles.scanning}>
+            {state === 'running' && <ActivityIndicator color={colors.red} size="small" />}
+            <Text style={styles.scanningText}>{statusCopy(state)}</Text>
+          </View>
+        </View>
 
-        {Platform.OS === 'web' && <WebBadge />}
+        {error && <Text style={styles.error}>{error}</Text>}
+
+        <FlatList
+          contentContainerStyle={peers.length === 0 ? styles.emptyList : styles.peerList}
+          data={peers}
+          keyExtractor={(peer) => peer.id}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <View style={styles.radar}>
+                <View style={styles.radarInner} />
+              </View>
+              <Text style={styles.emptyTitle}>No Nored phones yet</Text>
+              <Text style={styles.emptyBody}>
+                Keep this screen open. On both phones, enable Bluetooth after turning airplane mode on.
+              </Text>
+            </View>
+          }
+          renderItem={({ item }) => (
+            <View style={styles.peerCard}>
+              <View style={styles.peerIndicator} />
+              <View style={styles.peerMain}>
+                <Text style={styles.peerName}>{item.name}</Text>
+                <Text style={styles.peerId}>ID {item.id.slice(0, 8)}</Text>
+              </View>
+              <View style={styles.peerMeta}>
+                <Text style={styles.signal}>{signalLabel(item.rssi)}</Text>
+                <Text style={styles.seen}>{seenLabel(item.lastSeen, now)}</Text>
+              </View>
+            </View>
+          )}
+        />
+
+        <View style={styles.logPanel}>
+          <Text style={styles.logTitle}>DEVICE LOG</Text>
+          <Text numberOfLines={3} style={styles.logText}>
+            {logs.length ? logs.slice(0, 3).join('\n') : '[BLE] waiting for native transport'}
+          </Text>
+        </View>
       </SafeAreaView>
-    </ThemedView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
+  page: { backgroundColor: colors.paper, flex: 1 },
+  safeArea: { flex: 1, paddingHorizontal: 20 },
+  header: {
+    alignItems: 'center',
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingBottom: 24,
+    paddingTop: 16,
   },
-  safeArea: {
+  wordmark: { color: colors.ink, fontSize: 31, fontWeight: '900', letterSpacing: -1.6 },
+  eyebrow: { color: colors.red, fontSize: 11, fontWeight: '800', letterSpacing: 2.6, marginTop: 1 },
+  statusDot: { backgroundColor: colors.green, borderRadius: 7, height: 14, width: 14 },
+  statusDotWaiting: { backgroundColor: '#D49B35' },
+  identityCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+  },
+  label: { color: colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 1.7 },
+  nameRow: { alignItems: 'center', flexDirection: 'row', gap: 10, marginTop: 6 },
+  nameInput: {
+    borderBottomColor: colors.line,
+    borderBottomWidth: 1,
+    color: colors.ink,
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
+    fontSize: 19,
+    fontWeight: '700',
+    paddingVertical: 8,
   },
-  heroSection: {
+  saveButton: { backgroundColor: colors.ink, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 },
+  saveButtonText: { color: '#FFF', fontSize: 11, fontWeight: '800', letterSpacing: 0.7 },
+  pressed: { opacity: 0.7 },
+  deviceId: { color: colors.muted, fontSize: 11, marginTop: 8 },
+  sectionHeader: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingBottom: 12,
+    paddingTop: 28,
+  },
+  sectionTitle: { color: colors.ink, fontSize: 28, fontWeight: '800', letterSpacing: -0.8 },
+  scanning: { alignItems: 'center', flexDirection: 'row', gap: 6, paddingBottom: 3 },
+  scanningText: { color: colors.muted, fontSize: 12 },
+  error: { color: '#A92D20', fontSize: 13, marginBottom: 10 },
+  peerList: { gap: 10, paddingBottom: 12 },
+  emptyList: { flexGrow: 1 },
+  peerCard: {
     alignItems: 'center',
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    padding: 16,
+  },
+  peerIndicator: { backgroundColor: colors.green, borderRadius: 5, height: 10, marginRight: 12, width: 10 },
+  peerMain: { flex: 1 },
+  peerName: { color: colors.ink, fontSize: 16, fontWeight: '700' },
+  peerId: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  peerMeta: { alignItems: 'flex-end' },
+  signal: { color: colors.ink, fontSize: 12, fontWeight: '600' },
+  seen: { color: colors.muted, fontSize: 11, marginTop: 4 },
+  emptyState: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingHorizontal: 38 },
+  radar: {
+    alignItems: 'center',
+    borderColor: '#E7B9B1',
+    borderRadius: 38,
+    borderWidth: 1,
+    height: 76,
     justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
+    marginBottom: 18,
+    width: 76,
   },
-  title: {
-    textAlign: 'center',
+  radarInner: { backgroundColor: colors.red, borderRadius: 9, height: 18, width: 18 },
+  emptyTitle: { color: colors.ink, fontSize: 17, fontWeight: '700' },
+  emptyBody: { color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 7, textAlign: 'center' },
+  logPanel: {
+    backgroundColor: '#22262C',
+    borderRadius: 13,
+    marginBottom: 10,
+    minHeight: 68,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
+  logTitle: { color: '#999FA8', fontSize: 9, fontWeight: '800', letterSpacing: 1.4 },
+  logText: { color: '#D9DDE2', fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }), fontSize: 10, lineHeight: 14, marginTop: 5 },
 });

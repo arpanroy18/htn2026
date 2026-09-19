@@ -8,7 +8,8 @@
     "scheme": "nored",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.junieldjossou.nored"
     },
     "android": {
       "adaptiveIcon": {
@@ -33,7 +34,8 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "./modules/nored-bluetooth/app.plugin.js"
     ],
     "experiments": {
       "typedRoutes": true,

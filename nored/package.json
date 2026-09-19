@@ -30,13 +30,17 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~57.0.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
+    "android:offline": "expo run:android --variant release",
     "ios": "expo run:ios",
+    "ios:offline": "expo run:ios --configuration Release",
     "web": "expo start --web",
     "lint": "expo lint"
   },
