@@ -1,30 +1,51 @@
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Avatar, GroupedList, OutlinedButton, RowPress } from '@/components/signal/ui';
+import { useChat } from '@/mesh/ChatContext';
+import { MAX_GROUP_MEMBERS, MAX_GROUPS } from '@/mesh/chatStore';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
 export default function NewGroupScreen() {
   const { noredPeers } = useMeshUi();
+  const { createGroup, threads } = useChat();
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<string[]>([]);
 
-  const remaining = 8 - picked.length;
+  const remaining = MAX_GROUP_MEMBERS - 1 - picked.length;
   const canCreate = name.trim().length > 0 && picked.length > 0;
+  const atGroupCap = threads.filter((thread) => thread.kind === 'group').length >= MAX_GROUPS;
 
   const toggle = (person: string) => {
     setPicked((current) =>
-      current.includes(person) ? current.filter((item) => item !== person) : current.length < 8 ? [...current, person] : current,
+      current.includes(person)
+        ? current.filter((item) => item !== person)
+        : current.length < MAX_GROUP_MEMBERS - 1
+          ? [...current, person]
+          : current,
     );
   };
 
   const helper = useMemo(() => {
-    if (noredPeers.length === 0) return 'No Nored phones in range. Groups stay local until mesh membership is implemented.';
-    return 'Invite in-range Nored phones. Membership is not sent over Bluetooth yet.';
-  }, [noredPeers.length]);
+    if (atGroupCap) return `This phone already has ${MAX_GROUPS} groups, the MVP cap.`;
+    if (noredPeers.length === 0) return 'No Nored phones in range. Invite people after they appear on Nearby.';
+    return 'Name the group and pick in-range phones. Membership is sent over Bluetooth.';
+  }, [atGroupCap, noredPeers.length]);
+
+  const onCreate = () => {
+    const result = createGroup(name, picked);
+    if (!result.ok) {
+      Alert.alert('Could not create group', result.error);
+      return;
+    }
+    router.replace({
+      pathname: '/chat/[id]',
+      params: { id: result.id, title: name.trim(), kind: 'group' },
+    });
+  };
 
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
@@ -39,7 +60,7 @@ export default function NewGroupScreen() {
           style={styles.input}
           value={name}
         />
-        <Text style={styles.label}>IN RANGE · {remaining} seats left</Text>
+        <Text style={styles.label}>IN RANGE · {Math.max(0, remaining)} seats left</Text>
         {noredPeers.length === 0 ? (
           <Text style={styles.empty}>Nearby Nored users will show up here.</Text>
         ) : (
@@ -56,16 +77,7 @@ export default function NewGroupScreen() {
             })}
           </GroupedList>
         )}
-        <OutlinedButton
-          disabled={!canCreate}
-          label="Create group"
-          onPress={() =>
-            router.replace({
-              pathname: '/chat/[id]',
-              params: { id: `g-${Date.now()}`, title: name.trim(), kind: 'group' },
-            })
-          }
-        />
+        <OutlinedButton disabled={!canCreate || atGroupCap} label="Create group" onPress={onCreate} />
       </ScrollView>
     </SafeAreaView>
   );

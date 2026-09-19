@@ -26,6 +26,14 @@ export function isAlertPinned(severity: Severity) {
   return severity === 'DANGER' || severity === 'HELP';
 }
 
+export type SeverityTone = 'yellow' | 'orange' | 'red';
+
+export function severityTone(severity: Severity): SeverityTone {
+  if (severity === 'DANGER') return 'red';
+  if (severity === 'HELP') return 'orange';
+  return 'yellow';
+}
+
 export function makeAlertPacket(input: {
   id?: string;
   senderId: string;

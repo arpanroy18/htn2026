@@ -9,6 +9,9 @@ export const signal = {
   fog: '#e9e9e9',
   paper: '#f6f6f6',
   white: '#ffffff',
+  yellow: '#f5c518',
+  orange: '#f57c00',
+  red: '#e53935',
   shadow: 'rgba(0, 0, 0, 0.12) 0px 4px 12px 0px, rgba(0, 0, 0, 0.08) 0px 0px 2px 0px',
 } as const;
 

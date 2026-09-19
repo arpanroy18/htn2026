@@ -15,27 +15,9 @@ export const mockGames: GameCard[] = [
     players: '2–8 nearby',
   },
   {
-    id: 'trivia',
-    name: 'Trivia Relay',
-    blurb: 'Multiple-choice questions acknowledged hop by hop. Results catch up when peers rejoin.',
-    players: 'Group or 1:1',
-  },
-  {
     id: 'telephone',
     name: 'Drawing Telephone',
     blurb: 'Each peer alters a tiny doodle. Compressed deltas only — one BLE frame per turn.',
     players: '3–8',
-  },
-  {
-    id: 'word-chain',
-    name: 'Word Chain',
-    blurb: 'Add a word to a shared story. The mesh reconstructs the chain in order.',
-    players: '2–8',
-  },
-  {
-    id: 'beacon',
-    name: 'Find the Beacon',
-    blurb: 'One phone is “it.” Others hunt by RSSI hot/cold. Game and proximity test in one.',
-    players: '3–6',
   },
 ];

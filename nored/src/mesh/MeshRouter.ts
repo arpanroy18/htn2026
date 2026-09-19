@@ -19,7 +19,7 @@ export class MeshRouter {
   private timer?: ReturnType<typeof setInterval>;
   private pending = new Map<string, { at: number; attempts: number }>();
   private busy = new Set<string>();
-  private mediaListeners = new Set<(packet: Packet) => void>();
+  private mediaListeners = new Set<(packet: Packet, peerId: string) => void>();
   private generation = 0;
   private inventoryCounter = 0;
   private inventoryBusy = new Set<string>();
@@ -82,7 +82,7 @@ export class MeshRouter {
     await this.store.transaction((d) => Object.assign(d, { ...emptyData(), imported: true }));
     for (const session of this.sessions.values()) { session.inventoryAt = 0; session.inventoryComplete = false; }
   }
-  onApplicationPacket(callback: (packet: Packet) => void) {
+  onApplicationPacket(callback: (packet: Packet, peerId: string) => void) {
     this.mediaListeners.add(callback);
     return { remove: () => { this.mediaListeners.delete(callback); } };
   }
@@ -273,11 +273,14 @@ export class MeshRouter {
     }
     if (wire.type !== 'mesh-data') {
       // Legacy application packets are direct-only, except the existing alert broadcast.
-      if (wire.type !== 'alert' && (wire.senderId !== peer || wire.recipientId !== this.identity.id)) return;
-      if (wire.type === 'text' || wire.type === 'alert') {
+      if (wire.recipientId !== this.identity.id) return;
+      if (wire.type !== 'alert' && !wire.groupId && wire.senderId !== peer) return;
+      if (wire.type === 'text' && wire.groupId) {
+        for (const listener of this.mediaListeners) listener(wire, peer);
+      } else if (wire.type === 'text' || wire.type === 'alert') {
         const value = envelope(wire, wire.type === 'text');
         if (isWirePacket(value)) await this.accept(peer, value, false, generation);
-      } else for (const listener of this.mediaListeners) listener(wire);
+      } else for (const listener of this.mediaListeners) listener(wire, peer);
       return;
     }
     if (!session.ready || wire.hopCount < 1 || (wire.directOnly && wire.packet.recipientId !== this.identity.id)) return;

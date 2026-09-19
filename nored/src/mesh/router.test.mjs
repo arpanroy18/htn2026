@@ -304,6 +304,24 @@ test('oversized and nonfinite packets are rejected before allocation', async () 
   assert.equal(isWirePacket({ version:1,type:'mesh-inventory',senderId:n.nodes[0].id,recipientId:n.nodes[1].id,session:'s',page:0,last:true,ids:Array(51).fill('x') }),false);
 });
 
+test('group packets can pass through an immediate relay without changing the original sender', async () => {
+  const n = await network(3);
+  await n.connect(1, 2);
+  const received = [];
+  n.nodes[2].router.onApplicationPacket((packet, peerId) => received.push({ packet, peerId }));
+  const packet = {
+    ...n.text(0, 2, 'group-message'),
+    recipientId: n.nodes[2].id,
+    groupId: 'group-1',
+    hops: 1,
+    ttlHops: 5,
+  };
+  await n.nodes[2].router.receive(n.nodes[1].id, packet);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].packet.senderId, n.nodes[0].id);
+  assert.equal(received[0].peerId, n.nodes[1].id);
+});
+
 
 test('corrupt legacy history is rejected instead of marking an empty import complete', () => {
   assert.throws(() => validateLegacyHistory({ threads: [], messages: null }), /preserved/);

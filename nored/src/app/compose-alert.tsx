@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlertsIcon } from '@/components/signal/icons';
 import { Chip, OutlinedButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
-import { type Severity } from '@/mesh/alertStore';
+import { type Severity, severityTone } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
 
 const severities: Severity[] = ['INFO', 'HELP', 'DANGER'];
@@ -52,11 +52,20 @@ export default function ComposeAlertScreen() {
 
         <Text style={styles.label}>SEVERITY</Text>
         <View style={styles.row}>
-          {severities.map((item) => (
-            <RowPress key={item} onPress={() => setSeverity(item)} style={[styles.seg, severity === item && styles.segOn]}>
-              <Text style={[styles.segText, severity === item && styles.segTextOn]}>{item}</Text>
-            </RowPress>
-          ))}
+          {severities.map((item) => {
+            const tone = severityTone(item);
+            const selected = severity === item;
+            const accent =
+              tone === 'yellow' ? signal.yellow : tone === 'orange' ? signal.orange : signal.red;
+            return (
+              <RowPress
+                key={item}
+                onPress={() => setSeverity(item)}
+                style={[styles.seg, selected && { borderColor: accent, borderWidth: 1.5 }]}>
+                <Text style={[styles.segText, selected && { color: accent }]}>{item}</Text>
+              </RowPress>
+            );
+          })}
         </View>
 
         <View style={styles.labelRow}>
@@ -90,7 +99,7 @@ export default function ComposeAlertScreen() {
         <Text style={styles.label}>PREVIEW</Text>
         <View style={styles.preview}>
           <View style={styles.previewTop}>
-            <Chip label={severity} tone={severity === 'DANGER' ? 'blue' : severity === 'HELP' ? 'mist' : 'sky'} />
+            <Chip label={severity} tone={severityTone(severity)} />
             <Text style={styles.previewMeta}>now · 0 hops</Text>
           </View>
           <Text style={styles.previewBody}>{body || 'Your message will preview here.'}</Text>

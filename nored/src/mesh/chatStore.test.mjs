@@ -2,13 +2,16 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  addGroupMember,
   appendMessage,
   emptyChatState,
   ensureDmThread,
+  ensureGroupThread,
   messagePreview,
   migrateDmPeer,
   patchMessage,
   queuedPackets,
+  remapPeerInGroups,
 } from './chatStore.ts';
 
 const previousId = 'aa:bb:cc:dd:ee:ff';
@@ -125,5 +128,58 @@ describe('chatStore delivery and unread state', () => {
     assert.equal(state.threads[0].preview, 'Photo');
     assert.equal(state.threads[0].unread, 1);
     assert.deepEqual(queuedPackets(state, previousId, 'local-device'), []);
+  });
+});
+
+describe('chatStore groups', () => {
+  it('creates a group thread and keeps later messages on that thread', () => {
+    const created = ensureGroupThread(emptyChatState, {
+      id: 'group-1',
+      name: 'Hallway Ops',
+      members: [
+        { id: 'local-device', name: 'You' },
+        { id: peerId, name: 'Taylor' },
+      ],
+    });
+    const next = appendMessage(
+      created,
+      message({
+        id: 'g1',
+        threadId: 'group-1',
+        senderId: peerId,
+        mine: false,
+        status: undefined,
+      }),
+      'Hallway Ops',
+      true,
+    );
+
+    assert.equal(created.threads[0].kind, 'group');
+    assert.equal(created.threads[0].memberIds.length, 2);
+    assert.equal(next.threads[0].kind, 'group');
+    assert.equal(next.threads[0].name, 'Hallway Ops');
+    assert.equal(next.threads[0].unread, 1);
+    assert.equal(next.messages['group-1'][0].threadId, 'group-1');
+  });
+
+  it('caps membership at eight and remaps a member id', () => {
+    const members = Array.from({ length: 8 }, (_, index) => ({
+      id: `member-${index}`,
+      name: `P${index}`,
+    }));
+    const full = ensureGroupThread(emptyChatState, {
+      id: 'group-1',
+      name: 'Ops',
+      members,
+    });
+    const ignored = addGroupMember(full, 'group-1', { id: 'member-extra', name: 'Extra' });
+    const remapped = remapPeerInGroups(full, 'member-1', peerId, 'Taylor');
+
+    assert.equal(full.threads[0].memberIds.length, 8);
+    assert.equal(ignored.threads[0].memberIds.length, 8);
+    assert.equal(ignored.threads[0].memberIds.includes('member-extra'), false);
+    assert.equal(remapped.threads[0].memberIds.includes('member-1'), false);
+    assert.equal(remapped.threads[0].memberIds.includes(peerId), true);
+    assert.equal(remapped.threads[0].memberNames[peerId], 'Taylor');
   });
 });

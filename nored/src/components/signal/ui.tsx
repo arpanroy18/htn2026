@@ -101,7 +101,14 @@ export function Hairline() {
   return <View style={styles.hairline} />;
 }
 
-export function Chip({ label, tone = 'fog' }: { label: string; tone?: 'fog' | 'sky' | 'mist' | 'blue' }) {
+export function Chip({
+  label,
+  tone = 'fog',
+}: {
+  label: string;
+  tone?: 'fog' | 'sky' | 'mist' | 'blue' | 'yellow' | 'orange' | 'red';
+}) {
+  const lightText = tone === 'blue' || tone === 'orange' || tone === 'red';
   return (
     <View
       style={[
@@ -109,8 +116,11 @@ export function Chip({ label, tone = 'fog' }: { label: string; tone?: 'fog' | 's
         tone === 'sky' && { backgroundColor: signal.sky },
         tone === 'mist' && { backgroundColor: signal.mist },
         tone === 'blue' && { backgroundColor: signal.blue },
+        tone === 'yellow' && { backgroundColor: signal.yellow },
+        tone === 'orange' && { backgroundColor: signal.orange },
+        tone === 'red' && { backgroundColor: signal.red },
       ]}>
-      <Text style={[styles.chipText, tone === 'blue' && { color: signal.white }]}>{label}</Text>
+      <Text style={[styles.chipText, lightText && { color: signal.white }]}>{label}</Text>
     </View>
   );
 }
@@ -165,18 +175,21 @@ export function RowPress({
   children,
   onPress,
   onLongPress,
+  disabled,
   style,
 }: {
   children: ReactNode;
   onPress?: () => void;
   onLongPress?: () => void;
+  disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 } & Pick<PressableProps, 'onPress'>) {
   return (
     <Pressable
+      disabled={disabled}
       onLongPress={onLongPress}
       onPress={onPress}
-      style={({ pressed }) => [style, pressed && styles.rowPressed]}>
+      style={({ pressed }) => [style, pressed && styles.rowPressed, disabled && styles.disabled]}>
       {children}
     </Pressable>
   );

@@ -15,11 +15,26 @@ type PacketBase = {
   senderId: string;
   recipientId: string;
   timestamp: number;
+  groupId?: string;
+  hops?: number;
+  ttlHops?: number;
 };
 
 export type TextPacket = PacketBase & {
   type: 'text';
   payload: string;
+};
+
+export type GroupMember = {
+  id: string;
+  name: string;
+};
+
+export type GroupSyncPacket = PacketBase & {
+  type: 'group-sync';
+  groupId: string;
+  name: string;
+  members: GroupMember[];
 };
 
 export type MediaKind = 'image' | 'audio';
@@ -66,13 +81,38 @@ export type AlertPacket = PacketBase & {
   ttlHops?: number;
 };
 
+export type GameId = 'mesh-ping' | 'telephone';
+
+export type GameEvent =
+  | 'invite'
+  | 'join'
+  | 'leave'
+  | 'ping'
+  | 'pong'
+  | 'baton'
+  | 'round-start'
+  | 'stroke'
+  | 'round-finish';
+
+export type GamePacket = PacketBase & {
+  type: 'game';
+  gameId: GameId;
+  event: GameEvent;
+  roundId?: string;
+  targetId?: string;
+  sequence?: number;
+  payload?: string;
+};
+
 export type Packet =
   | TextPacket
+  | GroupSyncPacket
   | MediaManifestPacket
   | MediaChunkPacket
   | MediaAckPacket
   | MediaRetryPacket
-  | AlertPacket;
+  | AlertPacket
+  | GamePacket;
 
 export type DeviceIdentity = {
   id: string;
