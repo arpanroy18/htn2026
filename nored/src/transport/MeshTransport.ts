@@ -4,6 +4,7 @@ export type Peer = {
   rssi?: number;
   lastSeen: number;
   nored?: boolean;
+  replacesId?: string;
 };
 
 export type Packet = {

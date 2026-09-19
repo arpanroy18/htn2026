@@ -16,6 +16,7 @@ private struct PeerRecord {
   var rssi: Int?
   var lastSeen: Double
   var nored: Bool
+  var confirmedIdentity: Bool
 }
 
 private final class NoredPeripheralDelegate: NSObject, CBPeripheralManagerDelegate {
@@ -93,6 +94,7 @@ public final class NoredBluetoothModule: Module {
   private var rxCharacteristic: CBMutableCharacteristic?
   private var txCharacteristic: CBMutableCharacteristic?
   private var peers: [String: PeerRecord] = [:]
+  private var hardwareIdToPeerId: [String: String] = [:]
   private var lastEmitAt: [String: Double] = [:]
   private var started = false
   private var staleTimer: Timer?
@@ -112,7 +114,7 @@ public final class NoredBluetoothModule: Module {
 
     Function("requiredPermissions") { [] as [String] }
     Function("getIdentity") { self.identityMap() }
-    Function("getPeers") { self.peers.values.sorted { $0.lastSeen > $1.lastSeen }.map(self.peerMap) }
+    Function("getPeers") { self.peers.values.sorted { $0.lastSeen > $1.lastSeen }.map { self.peerMap($0) } }
 
     AsyncFunction("setDisplayName") { (rawName: String) -> [String: Any] in
       let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,8 +122,11 @@ public final class NoredBluetoothModule: Module {
         throw Exception(name: "ERR_INVALID_NAME", description: "Display name must be 1 to 40 characters")
       }
       UserDefaults.standard.set(name, forKey: displayNameKey)
+      if self.started {
+        self.restartAdvertising()
+      }
       return self.identityMap()
-    }
+    }.runOnQueue(.main)
 
     AsyncFunction("start") {
       self.startBluetooth()
@@ -230,6 +235,7 @@ public final class NoredBluetoothModule: Module {
     txCharacteristic = nil
     peers.keys.forEach(emitPeerLost)
     peers.removeAll()
+    hardwareIdToPeerId.removeAll()
     lastEmitAt.removeAll()
     emitState("stopped")
   }
@@ -267,6 +273,16 @@ public final class NoredBluetoothModule: Module {
           peripheralManager?.state == .poweredOn,
           identityCharacteristic != nil,
           peripheralManager?.isAdvertising == false else { return }
+    startAdvertising()
+  }
+
+  private func restartAdvertising() {
+    guard started, peripheralManager?.state == .poweredOn, identityCharacteristic != nil else { return }
+    peripheralManager?.stopAdvertising()
+    startAdvertising()
+  }
+
+  private func startAdvertising() {
     peripheralManager?.startAdvertising([
       CBAdvertisementDataServiceUUIDsKey: [serviceUUID],
       CBAdvertisementDataLocalNameKey: identityMap()["name"] as? String ?? "nored",
@@ -297,6 +313,7 @@ public final class NoredBluetoothModule: Module {
     for id in stale {
       peers.removeValue(forKey: id)
       lastEmitAt.removeValue(forKey: id)
+      hardwareIdToPeerId = hardwareIdToPeerId.filter { $0.value != id }
       emitPeerLost(id)
     }
   }
@@ -341,34 +358,72 @@ public final class NoredBluetoothModule: Module {
     rssi RSSI: NSNumber
   ) {
     guard started else { return }
-    let id = peripheral.identifier.uuidString.lowercased()
-    let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+    let hardwareId = peripheral.identifier.uuidString.lowercased()
+    let advertisedName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     let advertisedUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
     let overflowUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? []
-    let alreadyNored = peers[id]?.nored == true
+    var peerId = hardwareIdToPeerId[hardwareId] ?? hardwareId
+    var existing = peers[peerId] ?? peers[hardwareId]
+    let alreadyNored = existing?.nored == true
     let isNored = alreadyNored
       || central === noredCentralManager
       || advertisedUUIDs.contains(serviceUUID)
       || overflowUUIDs.contains(serviceUUID)
-    let resolvedName = [peripheral.name, advertisedName]
-      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .first { !$0.isEmpty }
-      ?? (isNored ? "Nored user" : "Unknown device")
+    let resolvedName: String = {
+      if let advertisedName, !advertisedName.isEmpty {
+        return advertisedName
+      }
+      if let existingName = existing?.name, !existingName.isEmpty {
+        return existingName
+      }
+      if let gapName = peripheral.name?.trimmingCharacters(in: .whitespacesAndNewlines), !gapName.isEmpty {
+        return gapName
+      }
+      return isNored ? "Nored user" : "Unknown device"
+    }()
+    if isNored, hardwareIdToPeerId[hardwareId] == nil {
+      let confirmed = peers.filter { $0.value.nored && $0.value.confirmedIdentity }
+      if let match = confirmed.first(where: {
+        namesCompatible($0.value.name, resolvedName) || resolvedName.lowercased() == "nored user"
+      }) ?? (confirmed.count == 1 ? confirmed.first : nil) {
+        peerId = match.key
+        existing = match.value
+      }
+    }
     let now = Date().timeIntervalSince1970 * 1000
-    let rssi = RSSI.intValue == 127 ? peers[id]?.rssi : RSSI.intValue
+    let rssi = RSSI.intValue == 127 ? existing?.rssi : RSSI.intValue
+    let displayName: String = {
+      if let advertisedName, !advertisedName.isEmpty {
+        return String(advertisedName.prefix(40))
+      }
+      if let existing, existing.confirmedIdentity {
+        return existing.name
+      }
+      return String(resolvedName.prefix(40))
+    }()
     let record = PeerRecord(
-      id: id,
-      name: String(resolvedName.prefix(40)),
+      id: peerId,
+      name: displayName,
       rssi: rssi,
       lastSeen: now,
-      nored: isNored
+      nored: isNored,
+      confirmedIdentity: existing?.confirmedIdentity == true
     )
-    peers[id] = record
-    if !isNored || alreadyNored, let last = lastEmitAt[id], now - last < 1000 {
+    var replacesId: String?
+    if peerId != hardwareId, peers[hardwareId] != nil {
+      peers.removeValue(forKey: hardwareId)
+      lastEmitAt.removeValue(forKey: hardwareId)
+      replacesId = hardwareId
+    }
+    peers[peerId] = record
+    hardwareIdToPeerId[hardwareId] = peerId
+    let nameChanged = existing?.name != record.name
+    if replacesId == nil, !isNored || alreadyNored, let last = lastEmitAt[peerId], now - last < 1000, !nameChanged {
       return
     }
-    lastEmitAt[id] = now
-    sendEvent("onPeerDiscovered", peerMap(record))
+    lastEmitAt[peerId] = now
+    sendEvent("onPeerDiscovered", peerMap(record, replacesId: replacesId))
   }
 
   public func peripheralManager(
@@ -431,15 +486,7 @@ public final class NoredBluetoothModule: Module {
           peripheral.respond(to: request, withResult: .unlikelyError)
           continue
         }
-        let record = PeerRecord(
-          id: id,
-          name: String(rawName.prefix(40)),
-          rssi: nil,
-          lastSeen: Date().timeIntervalSince1970 * 1000,
-          nored: true
-        )
-        peers[id] = record
-        sendEvent("onPeerDiscovered", peerMap(record))
+        upsertIdentityPeer(id: id.lowercased(), name: String(rawName.prefix(40)))
         log("info", "[DISCOVERY] nored peer \(String(id.prefix(8)))")
         peripheral.respond(to: request, withResult: .success)
       } catch {
@@ -465,7 +512,56 @@ public final class NoredBluetoothModule: Module {
     log("info", "[CONNECTION] disconnected \(central.identifier.uuidString.prefix(8))")
   }
 
-  private func peerMap(_ peer: PeerRecord) -> [String: Any] {
+  private func namesCompatible(_ left: String, _ right: String) -> Bool {
+    let a = left.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let b = right.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if a.isEmpty || b.isEmpty { return false }
+    if a == b { return true }
+    if a.hasPrefix(b) || b.hasPrefix(a) { return true }
+    return false
+  }
+
+  private func upsertIdentityPeer(id: String, name: String) {
+    let now = Date().timeIntervalSince1970 * 1000
+    var replacesId: String?
+    if peers[id] == nil {
+      let unconfirmed = peers.filter { $0.value.nored && !$0.value.confirmedIdentity }
+      if let match = unconfirmed.first(where: { namesCompatible($0.value.name, name) }) {
+        replacesId = match.key
+      } else if unconfirmed.count == 1, let only = unconfirmed.first {
+        replacesId = only.key
+      }
+    }
+    if let oldId = replacesId, oldId != id {
+      let previous = peers.removeValue(forKey: oldId)
+      lastEmitAt.removeValue(forKey: oldId)
+      for (hardwareId, peerId) in hardwareIdToPeerId where peerId == oldId {
+        hardwareIdToPeerId[hardwareId] = id
+      }
+      peers[id] = PeerRecord(
+        id: id,
+        name: name,
+        rssi: previous?.rssi,
+        lastSeen: now,
+        nored: true,
+        confirmedIdentity: true
+      )
+    } else {
+      let existing = peers[id]
+      peers[id] = PeerRecord(
+        id: id,
+        name: name,
+        rssi: existing?.rssi,
+        lastSeen: now,
+        nored: true,
+        confirmedIdentity: true
+      )
+    }
+    lastEmitAt[id] = now
+    sendEvent("onPeerDiscovered", peerMap(peers[id]!, replacesId: replacesId == id ? nil : replacesId))
+  }
+
+  private func peerMap(_ peer: PeerRecord, replacesId: String? = nil) -> [String: Any] {
     var map: [String: Any] = [
       "id": peer.id,
       "name": peer.name,
@@ -474,6 +570,9 @@ public final class NoredBluetoothModule: Module {
     ]
     if let rssi = peer.rssi {
       map["rssi"] = rssi
+    }
+    if let replacesId {
+      map["replacesId"] = replacesId
     }
     return map
   }

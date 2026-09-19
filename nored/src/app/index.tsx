@@ -94,17 +94,20 @@ export default function NearbyScreen() {
   const upsertPeer = useCallback((peer: Peer) => {
     if (!peer.nored && !hasDisplayName(peer)) return;
     setPeers((current) => {
-      const index = current.findIndex((item) => item.id === peer.id);
-      if (index === -1) return [...current, peer];
+      const withoutReplaced = peer.replacesId
+        ? current.filter((item) => item.id !== peer.replacesId && item.id !== peer.id)
+        : current;
+      const index = withoutReplaced.findIndex((item) => item.id === peer.id);
+      if (index === -1) return [...withoutReplaced, peer];
       const merged = {
-        ...current[index],
+        ...withoutReplaced[index],
         name: peer.name,
         rssi: peer.rssi,
         lastSeen: peer.lastSeen,
-        nored: current[index].nored || peer.nored,
+        nored: withoutReplaced[index].nored || peer.nored,
       };
-      if (peersEqual(current[index], merged)) return current;
-      const next = current.slice();
+      if (withoutReplaced === current && peersEqual(withoutReplaced[index], merged)) return current;
+      const next = withoutReplaced.slice();
       next[index] = merged;
       return next;
     });
@@ -154,8 +157,28 @@ export default function NearbyScreen() {
   };
 
   const shortId = useMemo(() => identity.id.slice(0, 8), [identity.id]);
-  const noredPeers = useMemo(() => peers.filter((peer) => peer.nored), [peers]);
-  const otherPeers = useMemo(() => peers.filter((peer) => !peer.nored), [peers]);
+  const noredPeers = useMemo(() => {
+    const latestByName = new Map<string, Peer>();
+    for (const peer of peers) {
+      if (!peer.nored) continue;
+      const key = peer.name.trim().toLowerCase();
+      const existing = latestByName.get(key);
+      if (!existing || peer.lastSeen >= existing.lastSeen) {
+        latestByName.set(key, peer);
+      }
+    }
+    return [...latestByName.values()];
+  }, [peers]);
+  const otherPeers = useMemo(() => {
+    const noredNames = new Set(noredPeers.map((peer) => peer.name.trim().toLowerCase()));
+    const noredIds = new Set(noredPeers.map((peer) => peer.id));
+    return peers.filter(
+      (peer) =>
+        !peer.nored &&
+        !noredIds.has(peer.id) &&
+        !noredNames.has(peer.name.trim().toLowerCase()),
+    );
+  }, [peers, noredPeers]);
 
   return (
     <KeyboardAvoidingView

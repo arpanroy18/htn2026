@@ -54,6 +54,7 @@ private data class PeerRecord(
   var rssi: Int?,
   var lastSeen: Long,
   var nored: Boolean = false,
+  var confirmedIdentity: Boolean = false,
 )
 
 class NoredBluetoothModule : Module() {
@@ -87,14 +88,14 @@ class NoredBluetoothModule : Module() {
 
     Function("requiredPermissions") { requiredPermissionNames() }
     Function("getIdentity") { identityMap() }
-    Function("getPeers") { peers.values.sortedByDescending { it.lastSeen }.map(::peerMap) }
+    Function("getPeers") { peers.values.sortedByDescending { it.lastSeen }.map { peerMap(it) } }
 
     AsyncFunction("setDisplayName") { rawName: String ->
       val name = rawName.trim()
       if (name.isEmpty() || name.length > 40) {
         throw CodedException("ERR_INVALID_NAME", "Display name must be 1 to 40 characters", null)
       }
-      preferences().edit().putString(DISPLAY_NAME, name).apply()
+      preferences().edit().putString(DISPLAY_NAME, name).commit()
       if (started) startAdvertiser()
       identityMap()
     }
@@ -346,8 +347,8 @@ class NoredBluetoothModule : Module() {
       val cutoff = System.currentTimeMillis() - STALE_PEER_MS
       peers.values.filter { it.lastSeen < cutoff && !gatts.containsKey(it.address) }.forEach {
         peers.remove(it.id)
-        addressToPeerId.remove(it.address)
-        lastEmitAt.remove(it.address)
+        addressToPeerId.entries.removeAll { entry -> entry.value == it.id }
+        lastEmitAt.remove(it.id)
         emitPeerLost(it.id)
       }
       mainHandler.postDelayed(this, 5_000L)
@@ -360,25 +361,47 @@ class NoredBluetoothModule : Module() {
     override fun onScanResult(callbackType: Int, result: ScanResult) {
       if (!started) return
       val address = result.device.address
-      val name = sequenceOf(result.scanRecord?.deviceName, result.device.name)
-        .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
-        .firstOrNull()
-        ?: "Unknown device"
+      val advertisedName = result.scanRecord?.deviceName?.trim()?.takeIf { it.isNotEmpty() }
       val now = System.currentTimeMillis()
-      val alreadyNored = peers[address]?.nored == true
+      val peerId = addressToPeerId[address] ?: address
+      val existing = peers[peerId] ?: peers[address]
+      val alreadyNored = existing?.nored == true
       val isNored = alreadyNored || result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
-      val displayName = name.take(40).let { if (isNored && it == "Unknown device") "Nored user" else it }
-      val record = PeerRecord(address, displayName, address, result.rssi, now, isNored)
-      peers[address] = record
-      addressToPeerId[address] = address
-      val last = lastEmitAt[address] ?: 0L
-      if (!alreadyNored && isNored || now - last >= 1_000L) {
-        lastEmitAt[address] = now
+      val fallbackName = existing?.name
+        ?: result.device.name?.trim()?.takeIf { it.isNotEmpty() }
+        ?: if (isNored) "Nored user" else "Unknown device"
+      val displayName = (advertisedName ?: fallbackName).take(40).let {
+        if (isNored && it.equals("Unknown device", ignoreCase = true)) "Nored user" else it
+      }
+      val nameChanged = existing != null && displayName != existing.name
+      val record = PeerRecord(
+        id = peerId,
+        name = displayName,
+        address = address,
+        rssi = result.rssi,
+        lastSeen = now,
+        nored = isNored,
+        confirmedIdentity = existing?.confirmedIdentity == true,
+      )
+      if (peerId != address) {
+        peers.remove(address)
+      }
+      peers[peerId] = record
+      addressToPeerId[address] = peerId
+      val last = lastEmitAt[peerId] ?: 0L
+      if (!alreadyNored && isNored || nameChanged || now - last >= 1_000L) {
+        lastEmitAt[peerId] = now
         emitPeer(record)
       }
       if (isNored && !gatts.containsKey(address) && connecting.add(address)) {
         log("info", "[DISCOVERY] Nored advertisement RSSI ${result.rssi}")
         connect(result.device)
+      } else if (isNored && nameChanged && existing?.confirmedIdentity == true) {
+        gatts[address]?.let { gatt ->
+          gatt.getService(SERVICE_UUID)?.getCharacteristic(IDENTITY_UUID)?.let { identity ->
+            readIdentity(gatt, identity)
+          }
+        }
       }
     }
 
@@ -413,10 +436,6 @@ class NoredBluetoothModule : Module() {
         connecting.remove(address)
         gatts.remove(address)
         try { gatt.close() } catch (_: Exception) {}
-        addressToPeerId.remove(address)?.let { peerId ->
-          peers.remove(peerId)
-          emitPeerLost(peerId)
-        }
         log("info", "[CONNECTION] disconnected $address status=$status")
       }
     }
@@ -517,10 +536,30 @@ class NoredBluetoothModule : Module() {
       val id = json.getString("id")
       val name = json.optString("name", "Nored device").take(40)
       UUID.fromString(id)
-      val record = PeerRecord(id, name, gatt.device.address, null, System.currentTimeMillis(), true)
+      val address = gatt.device.address
+      val previousId = addressToPeerId[address] ?: address
+      val existing = peers[id] ?: peers[previousId] ?: peers[address]
+      val record = PeerRecord(
+        id = id,
+        name = name,
+        address = address,
+        rssi = existing?.rssi,
+        lastSeen = System.currentTimeMillis(),
+        nored = true,
+        confirmedIdentity = true,
+      )
+      val replacesId = if (previousId != id && peers.containsKey(previousId)) previousId else null
+      if (replacesId != null) {
+        peers.remove(replacesId)
+        lastEmitAt.remove(replacesId)
+      }
+      if (address != id) {
+        peers.remove(address)
+        lastEmitAt.remove(address)
+      }
       peers[id] = record
-      addressToPeerId[gatt.device.address] = id
-      emitPeer(record)
+      addressToPeerId[address] = id
+      emitPeer(record, replacesId)
       log("info", "[DISCOVERY] peer discovered ${id.take(8)}")
       val rx = gatt.getService(SERVICE_UUID)?.getCharacteristic(RX_UUID)
         ?: throw IllegalStateException("RX characteristic missing")
@@ -540,16 +579,22 @@ class NoredBluetoothModule : Module() {
     }
   }
 
-  private fun peerMap(peer: PeerRecord): Map<String, Any?> = mapOf(
-    "id" to peer.id,
-    "name" to peer.name,
-    "rssi" to peer.rssi,
-    "lastSeen" to peer.lastSeen,
-    "nored" to peer.nored,
-  )
+  private fun peerMap(peer: PeerRecord, replacesId: String? = null): Map<String, Any?> {
+    val map = mutableMapOf<String, Any?>(
+      "id" to peer.id,
+      "name" to peer.name,
+      "rssi" to peer.rssi,
+      "lastSeen" to peer.lastSeen,
+      "nored" to peer.nored,
+    )
+    if (replacesId != null) {
+      map["replacesId"] = replacesId
+    }
+    return map
+  }
 
-  private fun emitPeer(peer: PeerRecord) = mainHandler.post {
-    sendEvent("onPeerDiscovered", peerMap(peer))
+  private fun emitPeer(peer: PeerRecord, replacesId: String? = null) = mainHandler.post {
+    sendEvent("onPeerDiscovered", peerMap(peer, replacesId))
   }
 
   private fun emitPeerLost(peerId: String) = mainHandler.post {
