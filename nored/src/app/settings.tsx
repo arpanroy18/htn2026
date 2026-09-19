@@ -52,7 +52,7 @@ export default function SettingsScreen() {
           onPress={() =>
             Alert.alert(
               'Clear local data',
-              'Delete all saved chats from this phone? This cannot be undone.',
+              'Delete all saved chats, contacts, photos and voice notes from this phone? This cannot be undone.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
