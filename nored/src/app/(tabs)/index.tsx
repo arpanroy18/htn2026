@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -69,6 +69,14 @@ export default function NearbyScreen() {
   const [editingName, setEditingName] = useState(false);
   const shortId = identity.id.slice(0, 8);
   const dirty = draftName.trim().length > 0 && draftName.trim() !== identity.name;
+  const badgePeers = useMemo(
+    () => noredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
+    [noredPeers],
+  );
+  const userPeers = useMemo(
+    () => noredPeers.filter((peer) => !peer.name.trim().toLowerCase().startsWith('nored badge')),
+    [noredPeers],
+  );
 
   const openDm = (peer: Peer) => {
     if (!peer.nored) return;
@@ -152,14 +160,32 @@ export default function NearbyScreen() {
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
-          <Text style={styles.groupLabel}>NORED · {noredPeers.length}</Text>
-          {noredPeers.length === 0 ? (
+          <Text style={styles.groupLabel}>
+            NORED NETWORK · {noredPeers.length + 1} TOTAL
+          </Text>
+          <Text style={[styles.groupLabel, styles.spaced]}>NORED USERS · {userPeers.length}</Text>
+          {userPeers.length === 0 ? (
             <View style={styles.emptyCard}>
-              <Text style={styles.empty}>No other Nored phones yet. Keep the app open so you stay visible.</Text>
+              <Text style={styles.empty}>
+                No other Nored users in range. Your own phone is shown above.
+              </Text>
             </View>
           ) : (
             <GroupedList>
-              {noredPeers.map((peer) => (
+              {userPeers.map((peer) => (
+                <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => openDm(peer)} peer={peer} />
+              ))}
+            </GroupedList>
+          )}
+
+          <Text style={[styles.groupLabel, styles.spaced]}>NORED BADGES · {badgePeers.length}</Text>
+          {badgePeers.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.empty}>No Nored badges in range.</Text>
+            </View>
+          ) : (
+            <GroupedList>
+              {badgePeers.map((peer) => (
                 <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => openDm(peer)} peer={peer} />
               ))}
             </GroupedList>

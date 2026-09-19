@@ -3,7 +3,9 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
+#include "driver/rmt_tx.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "nvs_flash.h"
@@ -16,6 +18,8 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "nored_display.h"
+
 static const char *TAG = "nored_badge";
 
 #define MAX_CONNS 2
@@ -24,20 +28,25 @@ static const char *TAG = "nored_badge";
 #define MAX_PACKET 2048
 #define SEEN_CAP 24
 #define PACKET_MAGIC 0x4E
+#define LED_GPIO 3
+#define LED_COUNT 6
+#define LED_RESOLUTION_HZ 10000000
+#define MAX_ALERT_BODY 160
 
-/* 6e4f5245-442d-4d45-5348-00000000000{1,2,3,4}  (nored-mesh) */
-static const ble_uuid128_t uuid_svc = BLE_UUID128_INIT(
-    0x45, 0x52, 0x4f, 0x6e, 0x2d, 0x44, 0x45, 0x4d,
-    0x53, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01);
-static const ble_uuid128_t uuid_identity = BLE_UUID128_INIT(
-    0x45, 0x52, 0x4f, 0x6e, 0x2d, 0x44, 0x45, 0x4d,
-    0x53, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02);
-static const ble_uuid128_t uuid_rx = BLE_UUID128_INIT(
-    0x45, 0x52, 0x4f, 0x6e, 0x2d, 0x44, 0x45, 0x4d,
-    0x53, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03);
-static const ble_uuid128_t uuid_tx = BLE_UUID128_INIT(
-    0x45, 0x52, 0x4f, 0x6e, 0x2d, 0x44, 0x45, 0x4d,
-    0x53, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04);
+/*
+ * Canonical Nored UUIDs (same strings as the phone app):
+ *   6e4f5245-442d-4d45-5348-00000000000{1,2,3,4}
+ * BLE_UUID128_INIT is little-endian: reverse the UUID string bytes.
+ * The previous encoding used mixed RFC-4122 field endianness, so phones
+ * never matched the service and listed the badge as generic Bluetooth.
+ */
+#define NORED_UUID128(n) BLE_UUID128_INIT( \
+    (n), 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x53, \
+    0x45, 0x4d, 0x2d, 0x44, 0x45, 0x52, 0x4f, 0x6e)
+static const ble_uuid128_t uuid_svc = NORED_UUID128(0x01);
+static const ble_uuid128_t uuid_identity = NORED_UUID128(0x02);
+static const ble_uuid128_t uuid_rx = NORED_UUID128(0x03);
+static const ble_uuid128_t uuid_tx = NORED_UUID128(0x04);
 
 static uint16_t h_identity;
 static uint16_t h_rx;
@@ -46,7 +55,16 @@ static uint8_t own_addr_type;
 
 static char local_id[MAX_ID];
 static char local_name[MAX_NAME + 1] = "Nored Badge";
-static char identity_json[128];
+static char identity_json[192];
+static rmt_channel_handle_t led_channel;
+static rmt_encoder_handle_t led_encoder;
+static QueueHandle_t alert_queue;
+
+typedef struct {
+    nored_alert_severity_t severity;
+    char sender[MAX_NAME + 1];
+    char body[MAX_ALERT_BODY + 1];
+} alert_event_t;
 
 typedef struct {
     uint16_t conn;
@@ -65,6 +83,126 @@ typedef struct {
 static link_t links[MAX_CONNS];
 static char seen_ids[SEEN_CAP][MAX_ID];
 static uint8_t seen_head;
+
+static const rmt_symbol_word_t ws2812_zero = {
+    .level0 = 1,
+    .duration0 = 3,
+    .level1 = 0,
+    .duration1 = 9,
+};
+
+static const rmt_symbol_word_t ws2812_one = {
+    .level0 = 1,
+    .duration0 = 9,
+    .level1 = 0,
+    .duration1 = 3,
+};
+
+static const rmt_symbol_word_t ws2812_reset = {
+    .level0 = 0,
+    .duration0 = 250,
+    .level1 = 0,
+    .duration1 = 250,
+};
+
+static size_t led_encoder_callback(const void *data, size_t data_size,
+                                   size_t symbols_written, size_t symbols_free,
+                                   rmt_symbol_word_t *symbols, bool *done, void *arg)
+{
+    (void)arg;
+    if (symbols_free < 8) return 0;
+
+    size_t data_pos = symbols_written / 8;
+    const uint8_t *bytes = data;
+    if (data_pos < data_size) {
+        size_t symbol_pos = 0;
+        for (int bit = 0x80; bit != 0; bit >>= 1) {
+            symbols[symbol_pos++] = (bytes[data_pos] & bit) ? ws2812_one : ws2812_zero;
+        }
+        return symbol_pos;
+    }
+
+    symbols[0] = ws2812_reset;
+    *done = true;
+    return 1;
+}
+
+static void led_write(const uint8_t *pixels)
+{
+    rmt_transmit_config_t config = {.loop_count = 0};
+    ESP_ERROR_CHECK(rmt_transmit(led_channel, led_encoder, pixels, LED_COUNT * 3, &config));
+    ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_channel, pdMS_TO_TICKS(100)));
+}
+
+static void led_set_all(uint8_t red, uint8_t green, uint8_t blue)
+{
+    uint8_t pixels[LED_COUNT * 3];
+    for (int i = 0; i < LED_COUNT; i++) {
+        pixels[i * 3] = green;
+        pixels[i * 3 + 1] = red;
+        pixels[i * 3 + 2] = blue;
+    }
+    led_write(pixels);
+}
+
+static void led_show_ready(void)
+{
+    uint8_t pixels[LED_COUNT * 3] = {0};
+    pixels[2] = 5; /* Upper-left LED, dim blue: Nored firmware is running. */
+    led_write(pixels);
+}
+
+static void alert_task(void *param)
+{
+    (void)param;
+    alert_event_t alert;
+    while (true) {
+        if (xQueueReceive(alert_queue, &alert, portMAX_DELAY) != pdTRUE) continue;
+
+        nored_display_alert(alert.severity, alert.sender, alert.body);
+
+        uint8_t red = 20;
+        uint8_t green = 16;
+        uint8_t blue = 0;
+        if (alert.severity == NORED_ALERT_HELP) {
+            red = 28;
+            green = 7;
+        } else if (alert.severity == NORED_ALERT_DANGER) {
+            red = 32;
+            green = 0;
+        }
+        for (int flash = 0; flash < 3; flash++) {
+            led_set_all(red, green, blue);
+            vTaskDelay(pdMS_TO_TICKS(220));
+            led_show_ready();
+            vTaskDelay(pdMS_TO_TICKS(180));
+        }
+    }
+}
+
+static void init_alert_leds(void)
+{
+    rmt_tx_channel_config_t channel_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .gpio_num = LED_GPIO,
+        .mem_block_symbols = 64,
+        .resolution_hz = LED_RESOLUTION_HZ,
+        .trans_queue_depth = 4,
+    };
+    ESP_ERROR_CHECK(rmt_new_tx_channel(&channel_config, &led_channel));
+
+    rmt_simple_encoder_config_t encoder_config = {
+        .callback = led_encoder_callback,
+    };
+    ESP_ERROR_CHECK(rmt_new_simple_encoder(&encoder_config, &led_encoder));
+    ESP_ERROR_CHECK(rmt_enable(led_channel));
+    led_show_ready();
+
+    alert_queue = xQueueCreate(4, sizeof(alert_event_t));
+    ESP_ERROR_CHECK(alert_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    BaseType_t created = xTaskCreate(alert_task, "alert", 3072, NULL, 4, NULL);
+    ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+}
 
 static link_t *link_by_conn(uint16_t conn)
 {
@@ -99,7 +237,8 @@ static void link_free(uint16_t conn)
 static void refresh_identity_json(void)
 {
     snprintf(identity_json, sizeof(identity_json),
-             "{\"v\":1,\"id\":\"%s\",\"name\":\"%s\"}", local_id, local_name);
+             "{\"v\":2,\"id\":\"%s\",\"name\":\"%s\",\"avatarIcon\":\"panda\",\"avatarColor\":3}",
+             local_id, local_name);
 }
 
 static bool json_string_field(const char *json, const char *key, char *out, size_t out_len)
@@ -146,14 +285,24 @@ static void advertise(void)
         return;
     }
 
-    /* 128-bit UUID fills the adv PDU; put the name in the scan response. */
+    /* 128-bit UUID fills the adv PDU; name + UUID again in the scan response. */
     struct ble_hs_adv_fields rsp = {0};
     rsp.name = (const uint8_t *)"nored-badge";
     rsp.name_len = 11;
     rsp.name_is_complete = 1;
+    rsp.uuids128 = &uuid_svc;
+    rsp.num_uuids128 = 1;
+    rsp.uuids128_is_complete = 1;
     rc = ble_gap_adv_rsp_set_fields(&rsp);
     if (rc != 0) {
-        ESP_LOGW(TAG, "scan rsp name rc=%d", rc);
+        memset(&rsp, 0, sizeof(rsp));
+        rsp.name = (const uint8_t *)"nored-badge";
+        rsp.name_len = 11;
+        rsp.name_is_complete = 1;
+        rc = ble_gap_adv_rsp_set_fields(&rsp);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "scan rsp name rc=%d", rc);
+        }
     }
 
     adv.conn_mode = BLE_GAP_CONN_MODE_UND;
@@ -186,41 +335,132 @@ static int notify_bytes(uint16_t conn, uint16_t attr, const uint8_t *data, uint1
     return rc;
 }
 
-static void notify_identity_value(link_t *dest, const char *json)
+static void send_wire_json(link_t *dest, const char *json)
 {
-    notify_bytes(dest->conn, h_identity, (const uint8_t *)json, strlen(json));
+    if (!dest || !dest->tx_notify) return;
+    uint16_t len = (uint16_t)strlen(json);
+    uint16_t chunk = payload_mtu(dest);
+    uint16_t total = (uint16_t)((len + chunk - 1) / chunk);
+    for (uint16_t seq = 0; seq < total; seq++) {
+        uint16_t start = seq * chunk;
+        uint16_t part = (start + chunk > len) ? (len - start) : chunk;
+        uint8_t frame[256];
+        frame[0] = PACKET_MAGIC;
+        frame[1] = (uint8_t)seq;
+        frame[2] = (uint8_t)total;
+        memcpy(frame + 3, json + start, part);
+        notify_bytes(dest->conn, h_tx, frame, (uint16_t)(part + 3));
+        vTaskDelay(pdMS_TO_TICKS(8));
+    }
 }
 
-static void publish_peer_identities(void)
+static void reply_to_hello(link_t *link, const char *payload)
 {
-    link_t *a = NULL;
-    link_t *b = NULL;
+    if (!strstr(payload, "\"type\":\"mesh-hello\"")) return;
+
+    char sender_id[MAX_ID] = {0};
+    if (!json_string_field(payload, "senderId", sender_id, sizeof(sender_id))) return;
+    if (!link->id[0]) strncpy(link->id, sender_id, MAX_ID - 1);
+
+    char hello[192];
+    snprintf(hello, sizeof(hello),
+             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
+             "\"type\":\"mesh-hello\",\"reply\":true}",
+             local_id, sender_id);
+    send_wire_json(link, hello);
+
+    char inventory[224];
+    snprintf(inventory, sizeof(inventory),
+             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
+             "\"type\":\"mesh-inventory\",\"session\":\"badge\",\"page\":0,"
+             "\"last\":true,\"ids\":[]}",
+             local_id, sender_id);
+    send_wire_json(link, inventory);
+    ESP_LOGI(TAG, "mesh session ready with %s", sender_id);
+}
+
+static const char *alert_json_root(const char *payload)
+{
+    if (!strstr(payload, "\"type\":\"mesh-data\"")) {
+        return payload;
+    }
+    const char *packet = strstr(payload, "\"packet\":");
+    return packet ? packet : payload;
+}
+
+static void peer_name_for_id(const char *id, char *out, size_t out_len)
+{
+    if (!out_len) return;
+    out[0] = 0;
+    if (!id[0]) return;
     for (int i = 0; i < MAX_CONNS; i++) {
-        if (links[i].used && links[i].id[0]) {
-            if (!a) a = &links[i];
-            else if (!b) b = &links[i];
+        if (links[i].used && strcmp(links[i].id, id) == 0 && links[i].name[0]) {
+            strncpy(out, links[i].name, out_len - 1);
+            out[out_len - 1] = 0;
+            return;
         }
     }
-    if (!a || !b) return;
+    strncpy(out, id, out_len - 1);
+    out[out_len - 1] = 0;
+}
 
-    char json_a[128];
-    char json_b[128];
-    snprintf(json_a, sizeof(json_a), "{\"v\":1,\"id\":\"%s\",\"name\":\"%s\"}", a->id, a->name[0] ? a->name : "Nored");
-    snprintf(json_b, sizeof(json_b), "{\"v\":1,\"id\":\"%s\",\"name\":\"%s\"}", b->id, b->name[0] ? b->name : "Nored");
-    /* Each phone should see the other phone's identity on this GATT link. */
-    notify_identity_value(a, json_b);
-    notify_identity_value(b, json_a);
-    ESP_LOGI(TAG, "bridged identities %s <-> %s", a->id, b->id);
+static void receive_alert(const char *payload)
+{
+    const char *json = alert_json_root(payload);
+    if (!strstr(json, "\"type\":\"alert\"")) return;
+
+    alert_event_t alert = {0};
+    alert.severity = NORED_ALERT_INFO;
+    if (strstr(json, "\"severity\":\"DANGER\"")) {
+        alert.severity = NORED_ALERT_DANGER;
+    } else if (strstr(json, "\"severity\":\"HELP\"")) {
+        alert.severity = NORED_ALERT_HELP;
+    }
+
+    char sender_id[MAX_ID] = {0};
+    if (json_string_field(json, "senderId", sender_id, sizeof(sender_id))) {
+        peer_name_for_id(sender_id, alert.sender, sizeof(alert.sender));
+    } else {
+        strncpy(alert.sender, "Unknown", sizeof(alert.sender) - 1);
+    }
+
+    if (!json_string_field(json, "body", alert.body, sizeof(alert.body))) {
+        strncpy(alert.body, "(no message)", sizeof(alert.body) - 1);
+    }
+
+    if (alert_queue && xQueueSend(alert_queue, &alert, 0) == pdTRUE) {
+        ESP_LOGI(TAG, "alert from %s: %s", alert.sender, alert.body);
+    }
+}
+
+static void acknowledge_packet(link_t *link, const char *packet_id)
+{
+    if (!link->id[0] || !packet_id[0]) return;
+    char receipt[256];
+    snprintf(receipt, sizeof(receipt),
+             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
+             "\"type\":\"mesh-receipt\",\"packetId\":\"%s\"}",
+             local_id, link->id, packet_id);
+    send_wire_json(link, receipt);
 }
 
 static void forward_packet(link_t *from, const uint8_t *payload, uint16_t len)
 {
+    reply_to_hello(from, (const char *)payload);
+    if (strstr((const char *)payload, "\"type\":\"mesh-hello\"") ||
+        strstr((const char *)payload, "\"type\":\"mesh-inventory\"") ||
+        strstr((const char *)payload, "\"type\":\"mesh-receipt\"")) {
+        return;
+    }
+
     char pkt_id[MAX_ID] = {0};
     json_string_field((const char *)payload, "id", pkt_id, sizeof(pkt_id));
     if (seen_packet(pkt_id)) {
         ESP_LOGI(TAG, "drop duplicate %s", pkt_id);
         return;
     }
+    acknowledge_packet(from, pkt_id);
+    receive_alert((const char *)payload);
 
     for (int i = 0; i < MAX_CONNS; i++) {
         link_t *dest = &links[i];
@@ -315,7 +555,6 @@ static int gatt_access(uint16_t conn_handle, uint16_t attr_handle,
             strncpy(link->id, id, MAX_ID - 1);
             strncpy(link->name, name[0] ? name : "Nored", MAX_NAME);
             ESP_LOGI(TAG, "peer %s (%s) on conn %u", link->name, link->id, conn_handle);
-            publish_peer_identities();
         }
         return 0;
     }
@@ -391,7 +630,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (event->subscribe.attr_handle == h_identity && event->subscribe.cur_notify) {
             notify_bytes(event->subscribe.conn_handle, h_identity,
                          (const uint8_t *)identity_json, strlen(identity_json));
-            publish_peer_identities();
         }
         return 0;
     case BLE_GAP_EVENT_ADV_COMPLETE:
@@ -458,6 +696,10 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     load_identity();
+    if (!nored_display_init()) {
+        ESP_LOGW(TAG, "display init failed; LEDs only");
+    }
+    init_alert_leds();
     ESP_ERROR_CHECK(nimble_port_init());
 
     ble_hs_cfg.sync_cb = on_sync;
