@@ -258,7 +258,7 @@ public final class NoredBluetoothModule: Module {
   private func stableHash(_ input: String) -> UInt32 {
     var hash: UInt32 = 0
     for scalar in input.unicodeScalars {
-      hash = (hash * 31 + scalar.value) & 0xFFFFFFFF
+      hash = hash &* 31 &+ scalar.value
     }
     return hash
   }
@@ -266,7 +266,7 @@ public final class NoredBluetoothModule: Module {
   private func avatarProfile(for id: String) -> (icon: String, color: Int) {
     let hash = stableHash(id)
     let icon = avatarIcons[Int(hash % UInt32(avatarIcons.count))]
-    let color = Int((hash * 31) % UInt32(avatarColorCount))
+    let color = Int((hash &* 31) % UInt32(avatarColorCount))
     return (icon, color)
   }
 
