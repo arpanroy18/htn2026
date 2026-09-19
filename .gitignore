@@ -98,3 +98,10 @@ temp/
 .turbo/
 .vercel/
 nored/app.local.json
+
+# ESP-IDF badge firmware
+/nored-badge/firmware/build/
+/nored-badge/firmware/sdkconfig
+/nored-badge/firmware/sdkconfig.old
+/nored-badge/firmware/managed_components/
+/nored-badge/firmware/dependencies.lock
