@@ -13,6 +13,7 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -1039,7 +1040,8 @@ class NoredBluetoothModule : Module() {
     identityNotifyInFlight = true
     val queued = try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        gattServer?.notifyCharacteristicChanged(device, characteristic, false, value) == true
+        gattServer?.notifyCharacteristicChanged(device, characteristic, false, value) ==
+          BluetoothStatusCodes.SUCCESS
       } else {
         @Suppress("DEPRECATION")
         characteristic.value = value
@@ -1113,7 +1115,8 @@ class NoredBluetoothModule : Module() {
         if (device == null || tx == null) {
           false
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-          gattServer?.notifyCharacteristicChanged(device, tx, false, frame) == true
+          gattServer?.notifyCharacteristicChanged(device, tx, false, frame) ==
+            BluetoothStatusCodes.SUCCESS
         } else {
           @Suppress("DEPRECATION")
           tx.value = frame
@@ -1130,8 +1133,9 @@ class NoredBluetoothModule : Module() {
       log("warn", "[MSG] notify path failed, retrying over write")
       job.serverDevice = null
     }
-    if (job.address != null) {
-      enqueueWrite(job.address, frame, packet = true)
+    val address = job.address
+    if (address != null) {
+      enqueueWrite(address, frame, packet = true)
       return
     }
     failCurrentSend("Peer is not connected over Bluetooth.")

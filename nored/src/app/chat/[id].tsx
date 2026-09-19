@@ -223,8 +223,13 @@ export default function ChatScreen() {
   const recordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
   const recorderState = useAudioRecorderState(audioRecorder, 100);
+  const recorderStateRef = useRef(recorderState);
   const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
+
+  useEffect(() => {
+    recorderStateRef.current = recorderState;
+  }, [recorderState]);
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -243,12 +248,12 @@ export default function ChatScreen() {
 
   useEffect(
     () => () => {
-      if (recordingTimer.current) clearTimeout(recordingTimer.current);
-      if (audioRecorder.getStatus().isRecording) {
-        void audioRecorder.stop();
+      if (recordingTimer.current) {
+        clearTimeout(recordingTimer.current);
+        recordingTimer.current = null;
       }
     },
-    [audioRecorder],
+    [],
   );
 
   useEffect(() => {
@@ -324,7 +329,7 @@ export default function ChatScreen() {
   const finishRecording = useCallback(
     async (sendRecording: boolean) => {
       if (!threadId) return;
-      const durationMs = audioRecorder.getStatus().durationMillis;
+      const durationMs = recorderStateRef.current.durationMillis;
       if (recordingTimer.current) {
         clearTimeout(recordingTimer.current);
         recordingTimer.current = null;
