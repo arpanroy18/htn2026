@@ -1,33 +1,33 @@
-import { signal } from '@/theme/signal';
 import type { DeviceIdentity, Peer } from '@/transport';
 
-export const AVATAR_ICON_IDS = [
-  'nearby',
-  'chats',
-  'alerts',
-  'games',
-  'gear',
-  'mic',
-  'image',
-  'send',
+export const ANIMAL_FACE_IDS = [
+  'dog',
+  'cat',
+  'lion',
+  'monkey',
+  'panda',
+  'koala',
+  'bear',
+  'pig',
+  'sheep',
+  'frog',
 ] as const;
 
-export type AvatarIconId = (typeof AVATAR_ICON_IDS)[number];
+export type AnimalFaceId = (typeof ANIMAL_FACE_IDS)[number];
 
 export const AVATAR_TONES = [
-  { bg: signal.sky, fg: signal.ink },
-  { bg: signal.mist, fg: signal.ink },
-  { bg: signal.deep, fg: signal.white },
-  { bg: signal.blue, fg: signal.white },
-  { bg: signal.yellow, fg: signal.ink },
-  { bg: signal.orange, fg: signal.white },
-  { bg: '#c8e6c9', fg: signal.ink },
-  { bg: '#f8bbd0', fg: signal.ink },
-  { bg: signal.twilight, fg: signal.white },
+  { bg: '#cfe8ff' },
+  { bg: '#ffe08a' },
+  { bg: '#ffb199' },
+  { bg: '#c8e6c9' },
+  { bg: '#f8bbd0' },
+  { bg: '#d9c9ff' },
+  { bg: '#ffd6a5' },
+  { bg: '#b8e0d2' },
 ] as const;
 
 export type AvatarProfile = {
-  icon: AvatarIconId;
+  icon: AnimalFaceId;
   colorIndex: number;
   tone: (typeof AVATAR_TONES)[number];
 };
@@ -42,7 +42,7 @@ export function stableHash(input: string) {
 
 export function avatarFromSeed(seed: string): AvatarProfile {
   const hash = stableHash(seed);
-  const icon = AVATAR_ICON_IDS[hash % AVATAR_ICON_IDS.length];
+  const icon = ANIMAL_FACE_IDS[hash % ANIMAL_FACE_IDS.length];
   const colorIndex = (hash * 31) % AVATAR_TONES.length;
   return { icon, colorIndex, tone: AVATAR_TONES[colorIndex] };
 }
@@ -53,8 +53,8 @@ export function resolveAvatar(
   colorIndex?: number,
 ): AvatarProfile {
   const fallback = avatarFromSeed(seed);
-  const resolvedIcon = AVATAR_ICON_IDS.includes(icon as AvatarIconId)
-    ? (icon as AvatarIconId)
+  const resolvedIcon = ANIMAL_FACE_IDS.includes(icon as AnimalFaceId)
+    ? (icon as AnimalFaceId)
     : fallback.icon;
   const resolvedColor =
     typeof colorIndex === 'number' && colorIndex >= 0 && colorIndex < AVATAR_TONES.length

@@ -1,21 +1,9 @@
 import { Children, Fragment, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View, type PressableProps, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
-import {
-  type AvatarIconId,
-  avatarFromSeed,
-  resolveAvatar,
-} from '@/avatar/profile';
-import {
-  AlertsIcon,
-  ChatsIcon,
-  GamesIcon,
-  GearIcon,
-  ImageIcon,
-  MicIcon,
-  NearbyIcon,
-  SendIcon,
-} from '@/components/signal/icons';
+import { avatarFromSeed, resolveAvatar } from '@/avatar/profile';
+import { AnimalFace } from '@/components/signal/animalFaces';
+import { ChatsIcon } from '@/components/signal/icons';
 import { signal } from '@/theme/signal';
 
 export function OutlinedButton({
@@ -154,29 +142,6 @@ export function UnreadBadge({ count }: { count: number }) {
   );
 }
 
-function renderAvatarIcon(icon: AvatarIconId, size: number, color: string) {
-  switch (icon) {
-    case 'nearby':
-      return <NearbyIcon color={color} size={size} />;
-    case 'chats':
-      return <ChatsIcon color={color} size={size} />;
-    case 'alerts':
-      return <AlertsIcon color={color} size={size} />;
-    case 'games':
-      return <GamesIcon color={color} size={size} />;
-    case 'gear':
-      return <GearIcon color={color} size={size} />;
-    case 'mic':
-      return <MicIcon color={color} size={size} />;
-    case 'image':
-      return <ImageIcon color={color} size={size} />;
-    case 'send':
-      return <SendIcon color={color} size={size} />;
-    default:
-      return <NearbyIcon color={color} size={size} />;
-  }
-}
-
 export type AvatarStackMember = {
   id: string;
   name: string;
@@ -270,7 +235,7 @@ export function Avatar({
 }) {
   const seed = peerId ?? name;
   const profile = kind === 'group' ? avatarFromSeed(name) : resolveAvatar(seed, icon, color);
-  const iconSize = size * 0.46;
+  const iconSize = size * (kind === 'group' ? 0.46 : 0.64);
   return (
     <View
       style={[
@@ -283,9 +248,9 @@ export function Avatar({
         },
       ]}>
       {kind === 'group' ? (
-        <ChatsIcon color={profile.tone.fg} size={iconSize} />
+        <ChatsIcon color={signal.ink} size={iconSize} />
       ) : (
-        renderAvatarIcon(profile.icon, iconSize, profile.tone.fg)
+        <AnimalFace animal={profile.icon} size={iconSize} />
       )}
     </View>
   );
