@@ -14,6 +14,7 @@ declare class NoredBluetoothModule extends NativeModule<NoredBluetoothModuleEven
   getIdentity(): DeviceIdentity;
   setDisplayName(name: string): Promise<DeviceIdentity>;
   getPeers(): Peer[];
+  sendPacket(peerId: string, packet: string): Promise<void>;
 }
 
 export default requireNativeModule<NoredBluetoothModule>('NoredBluetooth');

@@ -4,27 +4,29 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress, UnreadBadge } from '@/components/signal/ui';
-import { mockThreads, type Thread } from '@/data/mock';
+import { useChat } from '@/mesh/ChatContext';
+import { formatThreadTime, type ChatThread } from '@/mesh/chatStore';
+import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
-function ThreadRow({ thread }: { thread: Thread }) {
+function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }) {
   const unread = thread.unread > 0;
   return (
     <RowPress
       onPress={() =>
         router.push({
           pathname: '/chat/[id]',
-          params: { id: thread.id, title: thread.name, kind: thread.kind },
+          params: { id: thread.id, title: thread.name, kind: 'dm' },
         })
       }
       style={styles.row}>
-      <Avatar kind={thread.kind} name={thread.name} size={52} />
+      <Avatar kind="dm" name={thread.name} size={52} />
       <View style={styles.main}>
         <View style={styles.titleRow}>
           <Text numberOfLines={1} style={[styles.name, unread && styles.nameUnread]}>
             {thread.name}
           </Text>
-          <Text style={[styles.time, unread && styles.timeUnread]}>{thread.time}</Text>
+          <Text style={[styles.time, unread && styles.timeUnread]}>{formatThreadTime(thread.updatedAt)}</Text>
         </View>
         <View style={styles.previewRow}>
           <Text numberOfLines={1} style={[styles.preview, unread && styles.previewUnread]}>
@@ -32,10 +34,10 @@ function ThreadRow({ thread }: { thread: Thread }) {
           </Text>
           <UnreadBadge count={thread.unread} />
         </View>
-        {thread.queued || thread.outOfRange ? (
+        {thread.queued || !inRange ? (
           <View style={styles.chips}>
             {thread.queued ? <Chip label="Queued" tone="mist" /> : null}
-            {thread.outOfRange ? <Chip label="Out of range" /> : null}
+            {!inRange ? <Chip label="Out of range" /> : null}
           </View>
         ) : null}
       </View>
@@ -44,8 +46,11 @@ function ThreadRow({ thread }: { thread: Thread }) {
 }
 
 export default function ChatsScreen() {
-  const groups = mockThreads.filter((thread) => thread.kind === 'group');
-  const dms = mockThreads.filter((thread) => thread.kind === 'dm');
+  const { threads } = useChat();
+  const { noredPeers } = useMeshUi();
+  const inRange = new Set(
+    noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
+  );
 
   return (
     <Screen>
@@ -58,27 +63,23 @@ export default function ChatsScreen() {
         title="Chats"
       />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {groups.length ? (
+        {threads.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
+            <Text style={styles.empty}>
+              Tap a Nored phone on Nearby to start a 1:1 text thread. Messages travel over Bluetooth and queue if the other phone drops out of range.
+            </Text>
+          </View>
+        ) : (
           <>
-            <Text style={styles.groupLabel}>GROUPS</Text>
+            <Text style={styles.groupLabel}>DIRECT</Text>
             <GroupedList>
-              {groups.map((thread) => (
-                <ThreadRow key={thread.id} thread={thread} />
+              {threads.map((thread) => (
+                <ThreadRow inRange={inRange.has(thread.peerId)} key={thread.id} thread={thread} />
               ))}
             </GroupedList>
           </>
-        ) : null}
-
-        {dms.length ? (
-          <>
-            <Text style={[styles.groupLabel, styles.spaced]}>DIRECT</Text>
-            <GroupedList>
-              {dms.map((thread) => (
-                <ThreadRow key={thread.id} thread={thread} />
-              ))}
-            </GroupedList>
-          </>
-        ) : null}
+        )}
       </ScrollView>
     </Screen>
   );
@@ -93,7 +94,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     marginBottom: 6,
   },
-  spaced: { marginTop: 18 },
   row: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -110,4 +110,14 @@ const styles = StyleSheet.create({
   preview: { color: signal.slate, flex: 1, fontSize: 14, lineHeight: 20 },
   previewUnread: { color: signal.ink, fontWeight: '500' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  emptyCard: {
+    backgroundColor: signal.white,
+    borderColor: signal.fog,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginTop: 8,
+    padding: 18,
+  },
+  emptyTitle: { color: signal.ink, fontSize: 18, fontWeight: '800', lineHeight: 24 },
+  empty: { color: signal.slate, fontSize: 15, lineHeight: 22, marginTop: 8 },
 });

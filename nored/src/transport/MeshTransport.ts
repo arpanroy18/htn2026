@@ -4,6 +4,7 @@ export type Peer = {
   rssi?: number;
   lastSeen: number;
   nored?: boolean;
+  identityConfirmed?: boolean;
   replacesId?: string;
 };
 
@@ -11,6 +12,7 @@ export type Packet = {
   version: 1;
   id: string;
   senderId: string;
+  recipientId: string;
   type: 'text';
   timestamp: number;
   payload: string;

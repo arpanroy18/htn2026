@@ -9,8 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.arpanroy.nored",
-      "appleTeamId": "H8L4WX3K77"
+      "bundleIdentifier": "com.arpanroy.nored"
     },
     "android": {
       "adaptiveIcon": {

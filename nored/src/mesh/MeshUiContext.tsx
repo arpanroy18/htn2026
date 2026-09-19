@@ -13,6 +13,7 @@ function peersEqual(a: Peer, b: Peer) {
     a.id === b.id &&
     a.name === b.name &&
     a.nored === b.nored &&
+    a.identityConfirmed === b.identityConfirmed &&
     a.rssi === b.rssi
   );
 }
@@ -69,6 +70,9 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
         rssi: peer.rssi,
         lastSeen: peer.lastSeen,
         nored: withoutReplaced[index].nored || peer.nored,
+        identityConfirmed:
+          withoutReplaced[index].identityConfirmed || peer.identityConfirmed,
+        replacesId: peer.replacesId ?? withoutReplaced[index].replacesId,
       };
       if (withoutReplaced === current && peersEqual(withoutReplaced[index], merged)) return current;
       const next = withoutReplaced.slice();
@@ -133,16 +137,9 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const noredPeers = useMemo(() => {
-    const latestByName = new Map<string, Peer>();
-    for (const peer of peers) {
-      if (!peer.nored) continue;
-      const key = peer.name.trim().toLowerCase();
-      const existing = latestByName.get(key);
-      if (!existing || peer.lastSeen >= existing.lastSeen) {
-        latestByName.set(key, peer);
-      }
-    }
-    return [...latestByName.values()].sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+    return peers
+      .filter((peer) => peer.nored)
+      .sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
   }, [peers]);
 
   const otherPeers = useMemo(() => {

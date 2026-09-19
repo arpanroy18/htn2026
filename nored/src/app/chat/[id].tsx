@@ -1,5 +1,5 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -14,23 +14,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AlertsIcon, ImageIcon, MicIcon, PlusIcon, SendIcon } from '@/components/signal/icons';
 import { Avatar, IconButton } from '@/components/signal/ui';
-import { messagesFor, threadById, type ChatMessage, type DeliveryStatus } from '@/data/mock';
+import { useChat } from '@/mesh/ChatContext';
+import { useMeshUi } from '@/mesh/MeshUiContext';
+import type { ChatDelivery, ChatMessage } from '@/mesh/chatStore';
 import { signal } from '@/theme/signal';
 
-function statusLabel(status?: DeliveryStatus) {
+function statusLabel(status?: ChatDelivery) {
   if (!status) return '';
   return status[0].toUpperCase() + status.slice(1);
-}
-
-function Waveform() {
-  const bars = [6, 14, 10, 18, 8, 16, 12, 20, 9, 15, 7, 13];
-  return (
-    <View style={styles.wave}>
-      {bars.map((height, index) => (
-        <View key={index} style={[styles.bar, { height }]} />
-      ))}
-    </View>
-  );
 }
 
 function Bubble({
@@ -48,33 +39,7 @@ function Bubble({
         mine ? styles.bubbleMine : styles.bubbleTheirs,
         showTail && (mine ? styles.tailMine : styles.tailTheirs),
       ]}>
-      {message.kind === 'text' ? <Text style={[styles.body, mine && styles.bodyMine]}>{message.body}</Text> : null}
-      {message.kind === 'audio' ? (
-        <View>
-          <View style={styles.audioRow}>
-            <View style={[styles.play, mine && styles.playMine]} />
-            <Waveform />
-            <Text style={[styles.duration, mine && styles.bodyMine]}>{message.duration}</Text>
-          </View>
-          {message.transcriptUnavailable ? (
-            <Text style={[styles.badge, mine && styles.bodyMineMuted]}>Transcript unavailable</Text>
-          ) : null}
-          {message.transcript ? (
-            <View style={styles.sideBySide}>
-              <Text style={[styles.transcript, mine && styles.bodyMine]}>{message.transcript}</Text>
-              {message.translation ? (
-                <Text style={[styles.translation, mine && styles.bodyMineMuted]}>{message.translation}</Text>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-      {message.kind === 'image' ? (
-        <Pressable style={({ pressed }) => [styles.image, pressed && styles.pressed]}>
-          <View style={styles.imageFill} />
-          <Text style={[styles.imageCaption, mine && styles.bodyMine]}>{message.body}</Text>
-        </Pressable>
-      ) : null}
+      <Text style={[styles.body, mine && styles.bodyMine]}>{message.body}</Text>
     </View>
   );
 }
@@ -95,45 +60,41 @@ function groupMessages(items: ChatMessage[]): Row[] {
 
 export default function ChatScreen() {
   const params = useLocalSearchParams<{ id: string; title?: string; kind?: string }>();
-  const thread = threadById(params.id);
-  const title = params.title ?? thread?.name ?? 'Chat';
+  const { noredPeers } = useMeshUi();
+  const { threadFor, messagesFor, openDm, sendText, markRead, clearActive } = useChat();
+  const threadId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const thread = threadFor(threadId ?? '');
+  const title = thread?.name ?? params.title ?? 'Chat';
   const kind = params.kind ?? thread?.kind ?? 'dm';
   const isGroup = kind === 'group';
+  const inRange = noredPeers.some(
+    (peer) => peer.id === (thread?.peerId ?? threadId) && peer.identityConfirmed,
+  );
 
   const [draft, setDraft] = useState('');
   const [emergency, setEmergency] = useState(false);
-  const [threadId, setThreadId] = useState(params.id);
-  const [items, setItems] = useState<ChatMessage[]>(() => messagesFor(params.id));
-
-  if (threadId !== params.id) {
-    setThreadId(params.id);
-    setItems(messagesFor(params.id));
-  }
-
+  const scrollRef = useRef<ScrollView>(null);
+  const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
 
+  useEffect(() => {
+    if (!threadId || isGroup) return;
+    openDm(threadId, title);
+    markRead(threadId);
+    return () => clearActive();
+  }, [clearActive, isGroup, markRead, openDm, threadId, title]);
+
   const subtitle = useMemo(() => {
-    if (thread?.outOfRange) return 'Out of range · will queue';
-    if (isGroup) return `${thread?.members ?? '—'} members · mesh group`;
-    return '1:1 · local history';
-  }, [isGroup, thread]);
+    if (isGroup) return 'Groups are still local — Bluetooth text is 1:1 for now';
+    if (!inRange) return 'Out of range · will queue until they reappear';
+    return '1:1 · Bluetooth';
+  }, [inRange, isGroup]);
 
   const send = () => {
     const body = draft.trim();
-    if (!body) return;
-    setItems((current) => [
-      ...current,
-      {
-        id: String(Date.now()),
-        sender: 'You',
-        mine: true,
-        kind: 'text',
-        body,
-        status: thread?.outOfRange ? 'sent' : 'relayed',
-        time: 'now',
-      },
-    ]);
+    if (!body || !threadId || isGroup) return;
     setDraft('');
+    void sendText(threadId, body);
   };
 
   return (
@@ -152,34 +113,48 @@ export default function ChatScreen() {
           ) : null}
         </View>
 
-        <ScrollView contentContainerStyle={styles.messages} showsVerticalScrollIndicator={false}>
-          {rows.map(({ message, first, last }) => (
-            <View key={message.id} style={[styles.rowWrap, message.mine ? styles.rowWrapMine : styles.rowWrapTheirs, first && styles.rowSpaced]}>
-              {!message.mine ? (
-                <View style={styles.avatarSlot}>{last ? <Avatar name={message.sender} size={26} /> : null}</View>
-              ) : null}
-              <View style={[styles.column, message.mine && styles.columnMine]}>
-                {!message.mine && first ? <Text style={styles.sender}>{message.sender}</Text> : null}
-                <Bubble message={message} showTail={last} />
-                {last ? (
-                  <View style={[styles.metaRow, message.mine && styles.metaRowMine]}>
-                    <Text style={styles.time}>{message.time}</Text>
-                    {message.mine && message.status ? (
-                      <>
-                        <Text style={styles.metaDot}>·</Text>
-                        <Text style={styles.status}>{statusLabel(message.status)}</Text>
-                      </>
-                    ) : null}
-                  </View>
+        <ScrollView
+          contentContainerStyle={styles.messages}
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          ref={scrollRef}
+          showsVerticalScrollIndicator={false}>
+          {rows.length === 0 ? (
+            <Text style={styles.empty}>
+              {isGroup
+                ? 'Group mesh send is not wired yet.'
+                : inRange
+                  ? 'Bluetooth is linked. Send a text.'
+                  : 'This phone is out of range. You can still type — it will queue.'}
+            </Text>
+          ) : (
+            rows.map(({ message, first, last }) => (
+              <View key={message.id} style={[styles.rowWrap, message.mine ? styles.rowWrapMine : styles.rowWrapTheirs, first && styles.rowSpaced]}>
+                {!message.mine ? (
+                  <View style={styles.avatarSlot}>{last ? <Avatar name={message.sender} size={26} /> : null}</View>
                 ) : null}
+                <View style={[styles.column, message.mine && styles.columnMine]}>
+                  {!message.mine && first ? <Text style={styles.sender}>{message.sender}</Text> : null}
+                  <Bubble message={message} showTail={last} />
+                  {last ? (
+                    <View style={[styles.metaRow, message.mine && styles.metaRowMine]}>
+                      <Text style={styles.time}>{message.time}</Text>
+                      {message.mine && message.status ? (
+                        <>
+                          <Text style={styles.metaDot}>·</Text>
+                          <Text style={styles.status}>{statusLabel(message.status)}</Text>
+                        </>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
               </View>
-            </View>
-          ))}
+            ))
+          )}
         </ScrollView>
 
         <View style={[styles.composer, emergency && styles.composerEmergency]}>
           {emergency ? (
-            <Text style={styles.emergencyHint}>Styled as an emergency broadcast · mesh flood not connected yet</Text>
+            <Text style={styles.emergencyHint}>Emergency broadcasts are not sent over the mesh yet</Text>
           ) : null}
           <View style={styles.composerRow}>
             <IconButton onPress={() => {}} tone="outline">
@@ -188,10 +163,11 @@ export default function ChatScreen() {
             <View style={styles.inputPill}>
               <TextInput
                 accessibilityLabel="Message"
+                editable={!isGroup}
                 maxLength={2000}
                 multiline
                 onChangeText={setDraft}
-                placeholder="Message"
+                placeholder={isGroup ? 'Groups coming later' : 'Message'}
                 placeholderTextColor={signal.slate}
                 style={styles.input}
                 value={draft}
@@ -246,7 +222,8 @@ const styles = StyleSheet.create({
   emergencyToggleOn: { backgroundColor: signal.blue, borderColor: signal.blue },
   emergencyLabel: { color: signal.slate, fontSize: 12, fontWeight: '600' },
   emergencyLabelOn: { color: signal.white },
-  messages: { gap: 2, padding: 20, paddingBottom: 12 },
+  messages: { flexGrow: 1, gap: 2, padding: 20, paddingBottom: 12 },
+  empty: { color: signal.slate, fontSize: 15, lineHeight: 22, marginTop: 12 },
   rowWrap: { flexDirection: 'row', gap: 8, maxWidth: '100%' },
   rowWrapTheirs: { alignSelf: 'flex-start' },
   rowWrapMine: { alignSelf: 'flex-end', justifyContent: 'flex-end' },
@@ -272,33 +249,6 @@ const styles = StyleSheet.create({
   tailMine: { borderBottomRightRadius: 4 },
   body: { color: signal.ink, fontSize: 16, lineHeight: 22 },
   bodyMine: { color: signal.white },
-  bodyMineMuted: { color: 'rgba(255,255,255,0.72)' },
-  audioRow: { alignItems: 'center', flexDirection: 'row', gap: 10 },
-  play: {
-    borderColor: signal.ink,
-    borderLeftWidth: 10,
-    borderBottomWidth: 6,
-    borderTopWidth: 6,
-    borderBottomColor: 'transparent',
-    borderTopColor: 'transparent',
-    height: 0,
-    width: 0,
-  },
-  playMine: { borderLeftColor: signal.white },
-  wave: { alignItems: 'flex-end', flexDirection: 'row', gap: 3, height: 20 },
-  bar: { backgroundColor: signal.ink, borderRadius: 1, width: 3 },
-  duration: { color: signal.ink, fontSize: 13, fontWeight: '600' },
-  badge: { color: signal.slate, fontSize: 12, marginTop: 8 },
-  sideBySide: { gap: 6, marginTop: 10 },
-  transcript: { color: signal.ink, fontSize: 14, lineHeight: 21 },
-  translation: { color: signal.slate, fontSize: 14, lineHeight: 21 },
-  image: { width: 180 },
-  imageFill: {
-    backgroundColor: signal.sky,
-    borderRadius: 14,
-    height: 120,
-  },
-  imageCaption: { color: signal.ink, fontSize: 13, marginTop: 8 },
   metaRow: { alignItems: 'center', flexDirection: 'row', gap: 5, marginLeft: 4, marginTop: 4 },
   metaRowMine: { marginLeft: 0, marginRight: 4 },
   metaDot: { color: signal.slate, fontSize: 12 },

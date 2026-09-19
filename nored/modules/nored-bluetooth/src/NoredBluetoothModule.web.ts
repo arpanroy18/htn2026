@@ -28,6 +28,10 @@ class NoredBluetoothModule extends NativeModule<NoredBluetoothModuleEvents> {
   getPeers() {
     return [];
   }
+
+  async sendPacket(_peerId: string, _packet: string) {
+    throw new Error('Bluetooth LE is only available in an iOS or Android development build.');
+  }
 }
 
 export default registerWebModule(NoredBluetoothModule, 'NoredBluetoothModule');

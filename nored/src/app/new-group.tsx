@@ -4,17 +4,12 @@ import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Avatar, GroupedList, OutlinedButton, RowPress } from '@/components/signal/ui';
-import { mockThreads } from '@/data/mock';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
 export default function NewGroupScreen() {
   const { noredPeers } = useMeshUi();
   const [name, setName] = useState('');
-  const fallback = mockThreads.filter((thread) => thread.kind === 'dm').map((thread) => thread.name);
-  const people = noredPeers.length
-    ? noredPeers.map((peer) => peer.name)
-    : fallback;
   const [picked, setPicked] = useState<string[]>([]);
 
   const remaining = 8 - picked.length;
@@ -27,8 +22,8 @@ export default function NewGroupScreen() {
   };
 
   const helper = useMemo(() => {
-    if (noredPeers.length === 0) return 'No live peers yet — sample names are shown so the layout can be reviewed.';
-    return 'Invite in-range Nored phones. Membership UI only; the mesh does not persist groups yet.';
+    if (noredPeers.length === 0) return 'No Nored phones in range. Groups stay local until mesh membership is implemented.';
+    return 'Invite in-range Nored phones. Membership is not sent over Bluetooth yet.';
   }, [noredPeers.length]);
 
   return (
@@ -45,25 +40,29 @@ export default function NewGroupScreen() {
           value={name}
         />
         <Text style={styles.label}>IN RANGE · {remaining} seats left</Text>
-        <GroupedList>
-          {people.map((person) => {
-            const on = picked.includes(person);
-            return (
-              <RowPress key={person} onPress={() => toggle(person)} style={styles.row}>
-                <Avatar name={person} size={38} />
-                <Text style={styles.person}>{person}</Text>
-                <View style={[styles.check, on && styles.checkOn]} />
-              </RowPress>
-            );
-          })}
-        </GroupedList>
+        {noredPeers.length === 0 ? (
+          <Text style={styles.empty}>Nearby Nored users will show up here.</Text>
+        ) : (
+          <GroupedList>
+            {noredPeers.map((peer) => {
+              const on = picked.includes(peer.id);
+              return (
+                <RowPress key={peer.id} onPress={() => toggle(peer.id)} style={styles.row}>
+                  <Avatar name={peer.name} size={38} />
+                  <Text style={styles.person}>{peer.name}</Text>
+                  <View style={[styles.check, on && styles.checkOn]} />
+                </RowPress>
+              );
+            })}
+          </GroupedList>
+        )}
         <OutlinedButton
           disabled={!canCreate}
           label="Create group"
           onPress={() =>
             router.replace({
               pathname: '/chat/[id]',
-              params: { id: 'g-new', title: name.trim(), kind: 'group' },
+              params: { id: `g-${Date.now()}`, title: name.trim(), kind: 'group' },
             })
           }
         />
@@ -88,6 +87,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
   },
+  empty: { color: signal.slate, fontSize: 15, lineHeight: 22 },
   row: {
     alignItems: 'center',
     flexDirection: 'row',

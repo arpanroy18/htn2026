@@ -4,12 +4,29 @@ import NoredBluetooth from '@/../modules/nored-bluetooth';
 import type { Peer as NativePeer } from '@/../modules/nored-bluetooth';
 
 import type {
+  DeviceIdentity,
   MeshTransport,
   Packet,
   Peer,
   Subscription,
   TransportState,
 } from './MeshTransport';
+
+function normalizePeerId(id: string) {
+  return id.trim().toLowerCase();
+}
+
+function normalizeIdentity(identity: DeviceIdentity): DeviceIdentity {
+  return { ...identity, id: normalizePeerId(identity.id) };
+}
+
+function normalizePeer(peer: Peer): Peer {
+  return {
+    ...peer,
+    id: normalizePeerId(peer.id),
+    replacesId: peer.replacesId ? normalizePeerId(peer.replacesId) : undefined,
+  };
+}
 
 class NoredBleTransport implements MeshTransport {
   async start() {
@@ -35,31 +52,63 @@ class NoredBleTransport implements MeshTransport {
   }
 
   getIdentity() {
-    return NoredBluetooth.getIdentity();
+    return normalizeIdentity(NoredBluetooth.getIdentity());
   }
 
-  setDisplayName(name: string) {
-    return NoredBluetooth.setDisplayName(name);
+  async setDisplayName(name: string) {
+    return normalizeIdentity(await NoredBluetooth.setDisplayName(name));
   }
 
   async getPeers(): Promise<Peer[]> {
-    return NoredBluetooth.getPeers();
+    return (await NoredBluetooth.getPeers()).map(normalizePeer);
   }
 
-  async sendPacket(_peerId: string, _packet: Packet): Promise<void> {
-    throw new Error('Packet transport is enabled after the physical discovery checkpoint.');
+  async sendPacket(peerId: string, packet: Packet): Promise<void> {
+    await NoredBluetooth.sendPacket(
+      normalizePeerId(peerId),
+      JSON.stringify({
+        ...packet,
+        senderId: normalizePeerId(packet.senderId),
+        recipientId: normalizePeerId(packet.recipientId),
+      }),
+    );
   }
 
   onPeerDiscovered(callback: (peer: Peer) => void): Subscription {
-    return NoredBluetooth.addListener('onPeerDiscovered', (peer: NativePeer) => callback(peer));
+    return NoredBluetooth.addListener('onPeerDiscovered', (peer: NativePeer) =>
+      callback(normalizePeer(peer)),
+    );
   }
 
   onPeerLost(callback: (peerId: string) => void): Subscription {
-    return NoredBluetooth.addListener('onPeerLost', ({ peerId }) => callback(peerId));
+    return NoredBluetooth.addListener('onPeerLost', ({ peerId }) =>
+      callback(normalizePeerId(peerId)),
+    );
   }
 
-  onPacketReceived(_callback: (peerId: string, packet: Packet) => void): Subscription {
-    return { remove() {} };
+  onPacketReceived(callback: (peerId: string, packet: Packet) => void): Subscription {
+    return NoredBluetooth.addListener('onPacketReceived', (event: { peerId: string; packet: string }) => {
+      try {
+        const packet = JSON.parse(event.packet) as Packet;
+        if (
+          packet?.version !== 1 ||
+          !packet.id ||
+          packet.type !== 'text' ||
+          typeof packet.senderId !== 'string' ||
+          typeof packet.recipientId !== 'string' ||
+          typeof packet.payload !== 'string'
+        ) {
+          return;
+        }
+        callback(normalizePeerId(event.peerId), {
+          ...packet,
+          senderId: normalizePeerId(packet.senderId),
+          recipientId: normalizePeerId(packet.recipientId),
+        });
+      } catch {
+        // Drop malformed frames; native logs already recorded the parse failure.
+      }
+    });
   }
 
   onStateChanged(callback: (state: TransportState) => void): Subscription {

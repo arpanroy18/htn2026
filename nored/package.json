@@ -43,7 +43,8 @@
     "ios": "expo run:ios",
     "ios:offline": "expo run:ios --configuration Release",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --experimental-strip-types src/mesh/chatStore.test.mjs"
   },
   "private": true
 }

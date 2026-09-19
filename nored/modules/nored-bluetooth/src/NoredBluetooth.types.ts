@@ -4,6 +4,7 @@ export type Peer = {
   rssi?: number;
   lastSeen: number;
   nored?: boolean;
+  identityConfirmed?: boolean;
   replacesId?: string;
 };
 
@@ -27,9 +28,15 @@ export type NativeLog = {
   timestamp: number;
 };
 
+export type PacketEvent = {
+  peerId: string;
+  packet: string;
+};
+
 export type NoredBluetoothModuleEvents = {
   onPeerDiscovered: (peer: Peer) => void;
   onPeerLost: (event: { peerId: string }) => void;
   onStateChanged: (event: { state: BluetoothState }) => void;
   onLog: (event: NativeLog) => void;
+  onPacketReceived: (event: PacketEvent) => void;
 };

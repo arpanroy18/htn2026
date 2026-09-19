@@ -14,6 +14,7 @@ import {
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { GearIcon, SignalBars } from '@/components/signal/icons';
 import { Avatar, GroupedList, IconButton, OutlinedButton, RowPress } from '@/components/signal/ui';
+import { useChat } from '@/mesh/ChatContext';
 import { hopLabel, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 import type { Peer } from '@/transport';
@@ -57,15 +58,18 @@ export default function NearbyScreen() {
     logs,
     rescan,
   } = useMeshUi();
+  const { openDm: rememberDm } = useChat();
   const [rescanning, setRescanning] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const shortId = identity.id.slice(0, 8);
   const dirty = draftName.trim().length > 0 && draftName.trim() !== identity.name;
 
   const openDm = (peer: Peer) => {
+    if (!peer.nored) return;
+    rememberDm(peer.id, peer.name);
     router.push({
       pathname: '/chat/[id]',
-      params: { id: `dm-${peer.id.slice(0, 8)}`, title: peer.name, kind: 'dm' },
+      params: { id: peer.id, title: peer.name, kind: 'dm' },
     });
   };
 
@@ -157,12 +161,12 @@ export default function NearbyScreen() {
           ) : (
             <GroupedList>
               {otherPeers.map((peer) => (
-                <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => openDm(peer)} peer={peer} />
+                <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => invite(peer)} peer={peer} />
               ))}
             </GroupedList>
           )}
 
-          <Text style={styles.hint}>Tap a peer to message. Hold to invite into a group.</Text>
+          <Text style={styles.hint}>Tap a Nored phone to send Bluetooth text. Hold to invite into a group.</Text>
 
           <View style={styles.actions}>
             <OutlinedButton disabled={rescanning} label={rescanning ? 'Scanning…' : 'Rescan'} onPress={onRescan} style={styles.actionBtn} />
