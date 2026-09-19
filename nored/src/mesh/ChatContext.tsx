@@ -44,6 +44,7 @@ import {
   sha256,
   writeMediaBytes,
 } from './mediaFiles';
+import { clearChatState, loadChatState, saveChatState } from './chatPersistence';
 import {
   MEDIA_CHUNK_BYTES,
   MEDIA_REASSEMBLY_TIMEOUT_MS,
@@ -71,6 +72,7 @@ type ChatUi = {
   totalUnread: number;
   markRead: (threadId: string) => void;
   clearActive: () => void;
+  clearLocalData: () => Promise<void>;
 };
 
 const ChatContext = createContext<ChatUi | null>(null);
@@ -78,6 +80,7 @@ const ChatContext = createContext<ChatUi | null>(null);
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { identity, peers, noredPeers } = useMeshUi();
   const [state, setState] = useState<ChatState>(emptyChatState);
+  const [hydrated, setHydrated] = useState(false);
   const stateRef = useRef(state);
   const peersRef = useRef(peers);
   const seenIds = useRef(new Set<string>());
@@ -93,6 +96,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadChatState().then((loaded) => {
+      if (cancelled) return;
+      setState(loaded);
+      for (const messages of Object.values(loaded.messages)) {
+        for (const message of messages) {
+          seenIds.current.add(message.id);
+        }
+      }
+      setHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = setTimeout(() => {
+      void saveChatState(stateRef.current);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [hydrated, state]);
 
   useEffect(() => {
     peersRef.current = peers;
@@ -474,6 +502,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     activeThread.current = null;
   }, []);
 
+  const clearLocalData = useCallback(async () => {
+    seenIds.current.clear();
+    incomingTransfers.current.clear();
+    outgoingTransfers.current.clear();
+    activeThread.current = null;
+    const next = emptyChatState;
+    stateRef.current = next;
+    setState(next);
+    await clearChatState();
+  }, []);
+
   const sendText = useCallback(
     async (peerId: string, body: string) => {
       peerId = resolvePeerId(peerId);
@@ -612,9 +651,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       totalUnread,
       markRead,
       clearActive,
+      clearLocalData,
     }),
     [
       clearActive,
+      clearLocalData,
       markRead,
       messagesFor,
       openDm,

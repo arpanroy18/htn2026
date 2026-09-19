@@ -222,11 +222,13 @@ export default function ChatScreen() {
   const [emergency, setEmergency] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [preparingMedia, setPreparingMedia] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [startingRecording, setStartingRecording] = useState(false);
+  const [recordingDurationMs, setRecordingDurationMs] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const recordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recordingStartedAt = useRef<number | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingDurationMs, setRecordingDurationMs] = useState(0);
+  const recorderPrepared = useRef(false);
   const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
   const items = messagesFor(threadId ?? '');
   const rows = useMemo(() => groupMessages(items), [items]);
@@ -246,25 +248,33 @@ export default function ChatScreen() {
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      if (recordingTimer.current) {
-        clearTimeout(recordingTimer.current);
-        recordingTimer.current = null;
-      }
-      if (isRecording) {
-        void audioRecorder.stop().catch(() => undefined);
-      }
-    },
-    [audioRecorder, isRecording],
-  );
-
   useEffect(() => {
     if (!threadId || isGroup) return;
     openDm(threadId, title);
     markRead(threadId);
     return () => clearActive();
   }, [clearActive, isGroup, markRead, openDm, threadId, title]);
+
+  useEffect(
+    () => () => {
+      if (recordingTimer.current) clearTimeout(recordingTimer.current);
+      if (recorderPrepared.current) {
+        recorderPrepared.current = false;
+        void audioRecorder.stop().catch(() => undefined);
+      }
+    },
+    [audioRecorder],
+  );
+
+  useEffect(() => {
+    if (!isRecording) return;
+    const interval = setInterval(() => {
+      if (recordingStartedAt.current != null) {
+        setRecordingDurationMs(Date.now() - recordingStartedAt.current);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isRecording]);
 
   const subtitle = useMemo(() => {
     if (isGroup) return 'Groups are still local — Bluetooth text is 1:1 for now';
@@ -279,8 +289,79 @@ export default function ChatScreen() {
     void sendText(threadId, body);
   };
 
+  const finishRecording = useCallback(
+    async (sendRecording: boolean) => {
+      if (!threadId) return;
+      const durationMs =
+        recordingStartedAt.current != null
+          ? Date.now() - recordingStartedAt.current
+          : recordingDurationMs;
+      if (recordingTimer.current) {
+        clearTimeout(recordingTimer.current);
+        recordingTimer.current = null;
+      }
+      recordingStartedAt.current = null;
+      setIsRecording(false);
+      setStartingRecording(false);
+      setRecordingDurationMs(0);
+
+      if (recorderPrepared.current) {
+        recorderPrepared.current = false;
+        try {
+          await audioRecorder.stop();
+          await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+          if (sendRecording && audioRecorder.uri && durationMs >= 300) {
+            setPreparingMedia(true);
+            await sendVoiceNote(threadId, audioRecorder.uri, durationMs);
+          }
+        } catch (error) {
+          Alert.alert(
+            'Could not send voice note',
+            error instanceof Error ? error.message : 'The voice note could not be prepared.',
+          );
+        } finally {
+          setPreparingMedia(false);
+        }
+      }
+    },
+    [audioRecorder, recordingDurationMs, sendVoiceNote, threadId],
+  );
+
+  const startRecording = async () => {
+    if (!threadId || isGroup || preparingMedia || isRecording || startingRecording) return;
+    setStartingRecording(true);
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Microphone permission needed', 'Allow microphone access to record a voice note.');
+      setStartingRecording(false);
+      return;
+    }
+    try {
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await audioRecorder.prepareToRecordAsync();
+      recorderPrepared.current = true;
+      audioRecorder.record({ forDuration: MAX_VOICE_SECONDS });
+      recordingStartedAt.current = Date.now();
+      setIsRecording(true);
+      setStartingRecording(false);
+      recordingTimer.current = setTimeout(() => {
+        void finishRecording(true);
+      }, MAX_VOICE_SECONDS * 1000);
+    } catch (error) {
+      recorderPrepared.current = false;
+      setStartingRecording(false);
+      const message = error instanceof Error ? error.message : 'Voice recording could not start.';
+      Alert.alert(
+        'Could not record',
+        message.includes('ExpoAudio') || message.includes('native')
+          ? `${message}\n\nRebuild the app so audio support is included:\nnpx expo run:ios --device`
+          : message,
+      );
+    }
+  };
+
   const chooseImage = async () => {
-    if (!threadId || isGroup || preparingMedia || isRecording) return;
+    if (!threadId || isGroup || preparingMedia || isRecording || startingRecording) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Photos permission needed', 'Allow photo access to send an image.');
@@ -296,7 +377,7 @@ export default function ChatScreen() {
     if (!image || result.canceled) return;
     setPreparingMedia(true);
     try {
-      await sendImage(threadId, image.uri, image.width, image.height);
+      await sendImage(threadId, image.uri, image.width ?? 0, image.height ?? 0);
     } catch (error) {
       Alert.alert(
         'Could not send image',
@@ -306,74 +387,6 @@ export default function ChatScreen() {
       setPreparingMedia(false);
     }
   };
-
-  const startRecording = async () => {
-    if (!threadId || isGroup || preparingMedia) return;
-    const permission = await requestRecordingPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Microphone permission needed', 'Allow microphone access to record a voice note.');
-      return;
-    }
-    try {
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      await audioRecorder.prepareToRecordAsync();
-      audioRecorder.record({ forDuration: MAX_VOICE_SECONDS });
-      recordingStartedAt.current = Date.now();
-      setIsRecording(true);
-      setRecordingDurationMs(0);
-      recordingTimer.current = setTimeout(() => {
-        void finishRecording(true);
-      }, MAX_VOICE_SECONDS * 1000);
-    } catch (error) {
-      Alert.alert(
-        'Could not record',
-        error instanceof Error ? error.message : 'Voice recording could not start.',
-      );
-    }
-  };
-
-  const finishRecording = useCallback(
-    async (sendRecording: boolean) => {
-      if (!threadId || !isRecording) return;
-      const durationMs =
-        recordingStartedAt.current != null
-          ? Date.now() - recordingStartedAt.current
-          : recordingDurationMs;
-      if (recordingTimer.current) {
-        clearTimeout(recordingTimer.current);
-        recordingTimer.current = null;
-      }
-      recordingStartedAt.current = null;
-      setIsRecording(false);
-      try {
-        await audioRecorder.stop();
-        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-        if (sendRecording && audioRecorder.uri && durationMs >= 300) {
-          setPreparingMedia(true);
-          await sendVoiceNote(threadId, audioRecorder.uri, durationMs);
-        }
-      } catch (error) {
-        Alert.alert(
-          'Could not send voice note',
-          error instanceof Error ? error.message : 'The voice note could not be prepared.',
-        );
-      } finally {
-        setPreparingMedia(false);
-        setRecordingDurationMs(0);
-      }
-    },
-    [audioRecorder, isRecording, recordingDurationMs, sendVoiceNote, threadId],
-  );
-
-  useEffect(() => {
-    if (!isRecording) return;
-    const interval = setInterval(() => {
-      if (recordingStartedAt.current != null) {
-        setRecordingDurationMs(Date.now() - recordingStartedAt.current);
-      }
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isRecording]);
 
   return (
     <KeyboardAvoidingView
@@ -441,7 +454,7 @@ export default function ChatScreen() {
           {emergency ? (
             <Text style={styles.emergencyHint}>Emergency broadcasts are not sent over the mesh yet</Text>
           ) : null}
-          {isRecording ? (
+          {isRecording || startingRecording ? (
             <View style={styles.recordingRow}>
               <Pressable
                 onPress={() => void finishRecording(false)}
@@ -449,12 +462,21 @@ export default function ChatScreen() {
                 <Text style={styles.recordingCancelText}>Cancel</Text>
               </Pressable>
               <View style={styles.recordingStatus}>
-                <View style={styles.recordingDot} />
+                {startingRecording ? (
+                  <ActivityIndicator color={signal.blue} size="small" />
+                ) : (
+                  <View style={styles.recordingDot} />
+                )}
                 <Text style={styles.recordingTime}>
-                  {formatDuration(recordingDurationMs)} / 1:00
+                  {startingRecording
+                    ? 'Starting…'
+                    : `${formatDuration(recordingDurationMs)} / 1:00`}
                 </Text>
               </View>
-              <IconButton onPress={() => void finishRecording(true)} tone="outline">
+              <IconButton
+                disabled={startingRecording}
+                onPress={() => void finishRecording(true)}
+                tone="outline">
                 <SendIcon color={signal.blue} size={16} />
               </IconButton>
             </View>

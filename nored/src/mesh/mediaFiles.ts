@@ -5,6 +5,7 @@ import {
 } from 'expo-audio';
 import * as Crypto from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
+import { copyAsync, cacheDirectory } from 'expo-file-system/legacy';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 
 export const MAX_IMAGE_BYTES = 200 * 1024;
@@ -62,6 +63,22 @@ function destinationFile(id: string, extension: string) {
   return file;
 }
 
+/** Photo picker URIs on iOS are often ph:// — copy to cache before File/ImageManipulator touch them. */
+export async function materializeLocalUri(sourceUri: string, fallbackExtension: string) {
+  if (sourceUri.startsWith('file://')) {
+    return sourceUri;
+  }
+  if (!cacheDirectory) {
+    throw new Error('Cache directory is unavailable.');
+  }
+  const extension = sourceUri.includes('.')
+    ? sourceUri.split('.').pop()?.split('?')[0] ?? fallbackExtension
+    : fallbackExtension;
+  const destination = `${cacheDirectory}nored-${Date.now()}.${extension}`;
+  await copyAsync({ from: sourceUri, to: destination });
+  return destination;
+}
+
 export async function sha256(bytes: Uint8Array) {
   const data = bytes.slice().buffer as ArrayBuffer;
   const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, data);
@@ -71,7 +88,8 @@ export async function sha256(bytes: Uint8Array) {
 }
 
 export async function fileBytes(uri: string) {
-  return new File(uri).bytes();
+  const localUri = uri.startsWith('file://') ? uri : await materializeLocalUri(uri, 'bin');
+  return new File(localUri).bytes();
 }
 
 export async function writeMediaBytes(
@@ -89,9 +107,10 @@ export async function persistVoiceNote(
   sourceUri: string,
   id: string,
 ): Promise<PreparedMedia> {
-  const source = new File(sourceUri);
+  const localUri = await materializeLocalUri(sourceUri, 'm4a');
+  const source = new File(localUri);
   const destination = destinationFile(id, 'm4a');
-  source.copy(destination);
+  await source.copy(destination);
   const bytes = await destination.bytes();
   return {
     uri: destination.uri,
@@ -104,11 +123,15 @@ export async function persistVoiceNote(
 export async function prepareImage(
   sourceUri: string,
   id: string,
-  sourceWidth: number,
-  sourceHeight: number,
+  sourceWidth?: number,
+  sourceHeight?: number,
 ): Promise<PreparedImage> {
-  let width = sourceWidth;
-  let height = sourceHeight;
+  const materializedUri = await materializeLocalUri(sourceUri, 'jpg');
+  let width =
+    sourceWidth && sourceWidth > 0 ? sourceWidth : MAX_IMAGE_SIDE;
+  let height =
+    sourceHeight && sourceHeight > 0 ? sourceHeight : MAX_IMAGE_SIDE;
+
   if (Math.max(width, height) > MAX_IMAGE_SIDE) {
     const scale = MAX_IMAGE_SIDE / Math.max(width, height);
     width = Math.max(1, Math.round(width * scale));
@@ -117,7 +140,7 @@ export async function prepareImage(
 
   let quality = 0.6;
   let attempts = 0;
-  let renderedUri = sourceUri;
+  let renderedUri = materializedUri;
   let renderedWidth = width;
   let renderedHeight = height;
 
@@ -145,7 +168,7 @@ export async function prepareImage(
     throw new Error('This image could not be compressed below 200 KB.');
   }
   const destination = destinationFile(id, 'jpg');
-  temporary.copy(destination);
+  await temporary.copy(destination);
   const bytes = await destination.bytes();
   return {
     uri: destination.uri,

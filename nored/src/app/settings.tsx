@@ -4,11 +4,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ChevronIcon } from '@/components/signal/icons';
 import { Avatar, GroupedList, OutlinedButton, RowPress } from '@/components/signal/ui';
+import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
 export default function SettingsScreen() {
   const { identity } = useMeshUi();
+  const { clearLocalData } = useChat();
 
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
@@ -34,18 +36,26 @@ export default function SettingsScreen() {
         <Text style={[styles.label, styles.spaced]}>STORAGE</Text>
         <GroupedList>
           <View style={styles.rowStatic}>
-            <Text style={styles.rowLabel}>Local only</Text>
-            <Text style={styles.rowValue}>Messages, peers, groups</Text>
+            <Text style={styles.rowLabel}>Local JSON</Text>
+            <Text style={styles.rowValue}>Chats saved on device</Text>
           </View>
         </GroupedList>
 
         <OutlinedButton
           label="Clear local data"
           onPress={() =>
-            Alert.alert('Clear local data', 'This control is visual only until persistence lands.', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Clear', style: 'destructive' },
-            ])
+            Alert.alert(
+              'Clear local data',
+              'Delete all saved chats from this phone? This cannot be undone.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Clear',
+                  style: 'destructive',
+                  onPress: () => void clearLocalData(),
+                },
+              ],
+            )
           }
           style={styles.clearButton}
         />
