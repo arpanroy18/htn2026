@@ -21,10 +21,18 @@ function normalizeIdentity(identity: DeviceIdentity): DeviceIdentity {
   return { ...identity, id: normalizePeerId(identity.id) };
 }
 
+function normalizeRssi(rssi: unknown): number | undefined {
+  if (typeof rssi !== 'number' || !Number.isFinite(rssi) || rssi === 127 || rssi > 20 || rssi < -127) {
+    return undefined;
+  }
+  return rssi;
+}
+
 function normalizePeer(peer: Peer): Peer {
   return {
     ...peer,
     id: normalizePeerId(peer.id),
+    rssi: normalizeRssi(peer.rssi),
     replacesId: peer.replacesId ? normalizePeerId(peer.replacesId) : undefined,
   };
 }

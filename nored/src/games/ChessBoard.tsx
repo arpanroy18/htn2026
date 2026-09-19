@@ -1,5 +1,5 @@
 import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
@@ -35,23 +35,22 @@ const PIECE_IMAGES: Record<Color, Record<PieceSymbol, ImageSourcePropType>> = {
   },
 };
 
-function ChessPieceSprite({
+const ChessPieceSprite = memo(function ChessPieceSprite({
   color,
   type,
-  size,
 }: {
   color: Color;
   type: PieceSymbol;
-  size: number;
 }) {
   return (
     <Image
+      fadeDuration={0}
       resizeMode="contain"
       source={PIECE_IMAGES[color][type]}
-      style={{ height: size, width: size }}
+      style={styles.piece}
     />
   );
-}
+});
 
 function squaresFor(color: Color) {
   const files = color === 'w' ? 'abcdefgh' : 'hgfedcba';
@@ -64,13 +63,15 @@ export function ChessBoard() {
   const { participants, chessMatch, startChess, moveChess, resignChess } = useGames();
   const hasOpponent = participants.chess.some((player) => player.id !== identity.id);
   const [selected, setSelected] = useState<string>();
-  const [boardWidth, setBoardWidth] = useState(320);
   const chess = useMemo(() => new Chess(chessMatch?.fen), [chessMatch?.fen]);
   const myColor = chessMatch
     ? chessColorForPlayer(chessMatch, identity.id) ?? 'w'
     : 'w';
   const squares = useMemo(() => squaresFor(myColor), [myColor]);
-  const targets = selected && chessMatch ? legalTargets(chessMatch.fen, selected) : [];
+  const targets = useMemo(
+    () => (selected && chessMatch ? legalTargets(chessMatch.fen, selected) : []),
+    [chessMatch, selected],
+  );
   const myTurn = Boolean(chessMatch && playerCanMove(chessMatch, identity.id));
 
   const run = async (
@@ -152,11 +153,7 @@ export function ChessBoard() {
         ) : null}
       </View>
 
-      <View
-        onLayout={(event) =>
-          setBoardWidth(Math.max(8, event.nativeEvent.layout.width - 4))
-        }
-        style={styles.board}>
+      <View style={styles.board}>
         {Array.from({ length: 8 }, (_, rowIndex) => (
           <View key={rowIndex} style={styles.boardRow}>
             {squares.slice(rowIndex * 8, rowIndex * 8 + 8).map((square) => {
@@ -181,11 +178,7 @@ export function ChessBoard() {
                     isSelected && styles.selected,
                   ]}>
                   {piece ? (
-                    <ChessPieceSprite
-                      color={piece.color}
-                      size={(boardWidth / 8) * 0.82}
-                      type={piece.type}
-                    />
+                    <ChessPieceSprite color={piece.color} type={piece.type} />
                   ) : null}
                   {isTarget ? <View style={styles.target} /> : null}
                 </Pressable>
@@ -273,6 +266,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
   },
+  piece: { height: '82%', width: '82%' },
   selected: { borderColor: signal.deep, borderWidth: 3 },
   lastMove: { backgroundColor: '#f4dc78' },
   target: {

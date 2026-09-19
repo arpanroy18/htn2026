@@ -1,21 +1,26 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   Alert,
   Image,
-  ImageBackground,
   PanResponder,
   Pressable,
   StyleSheet,
   Text,
   View,
+  type LayoutChangeEvent,
 } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
 import { useGames } from './GameContext';
+import { getPongFrame, subscribePongFrame } from './pongRuntime';
 
 const BOARD_HEIGHT = 220;
+const BALL_SIZE = 20;
+const PADDLE_WIDTH = 0.3;
+const PADDLE_HEIGHT = 0.28;
 const TABLE_IMAGE = require('../../public/assets/pong/table.png');
 const BLUE_PADDLE = require('../../public/assets/pong/blue-paddle.png');
 const RED_PADDLE = require('../../public/assets/pong/red-paddle.png');
@@ -29,19 +34,57 @@ export function PongBoard() {
     pongMatch &&
       (pongMatch.hostId === identity.id || pongMatch.guestId === identity.id),
   );
+  const running = Boolean(pongMatch?.running);
+  const courtWidth = useSharedValue(1);
+  const courtHeight = useSharedValue(BOARD_HEIGHT);
+  const ballX = useSharedValue(pongMatch?.ballX ?? 0.5);
+  const ballY = useSharedValue(pongMatch?.ballY ?? 0.5);
+  const leftY = useSharedValue(pongMatch?.leftY ?? 0.5);
+  const rightY = useSharedValue(pongMatch?.rightY ?? 0.5);
+
+  useEffect(() => {
+    const apply = (match: NonNullable<typeof pongMatch>) => {
+      ballX.value = match.ballX;
+      ballY.value = match.ballY;
+      leftY.value = match.leftY;
+      rightY.value = match.rightY;
+    };
+    const current = getPongFrame();
+    if (current) apply(current);
+    return subscribePongFrame(apply);
+  }, [ballX, ballY, leftY, rightY]);
 
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => isPlayer && Boolean(pongMatch?.running),
-        onMoveShouldSetPanResponder: () => isPlayer && Boolean(pongMatch?.running),
+        onStartShouldSetPanResponder: () => isPlayer && running,
+        onMoveShouldSetPanResponder: () => isPlayer && running,
         onPanResponderGrant: (event) =>
           movePongPaddle(event.nativeEvent.locationY / BOARD_HEIGHT),
         onPanResponderMove: (event) =>
           movePongPaddle(event.nativeEvent.locationY / BOARD_HEIGHT),
       }),
-    [isPlayer, movePongPaddle, pongMatch?.running],
+    [isPlayer, movePongPaddle, running],
   );
+
+  const onCourtLayout = (event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    courtWidth.value = Math.max(1, width);
+    courtHeight.value = Math.max(1, height);
+  };
+
+  const leftPaddleStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: (leftY.value - PADDLE_HEIGHT / 2) * courtHeight.value }],
+  }));
+  const rightPaddleStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: (rightY.value - PADDLE_HEIGHT / 2) * courtHeight.value }],
+  }));
+  const ballStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: ballX.value * courtWidth.value - BALL_SIZE / 2 },
+      { translateY: ballY.value * courtHeight.value - BALL_SIZE / 2 },
+    ],
+  }));
 
   const start = async () => {
     const result = await startPong();
@@ -74,40 +117,34 @@ export function PongBoard() {
         </View>
       </View>
 
-      <ImageBackground
-        imageStyle={styles.courtImage}
-        resizeMode="stretch"
-        source={TABLE_IMAGE}
+      <View
+        collapsable={false}
+        onLayout={onCourtLayout}
         style={styles.court}
         {...panResponder.panHandlers}>
         <Image
+          fadeDuration={0}
+          resizeMode="stretch"
+          source={TABLE_IMAGE}
+          style={styles.courtImage}
+        />
+        <Animated.Image
+          fadeDuration={0}
           resizeMode="contain"
           source={BLUE_PADDLE}
-          style={[
-            styles.paddle,
-            styles.leftPaddle,
-            { top: `${((pongMatch?.leftY ?? 0.5) * 100) - 14}%` },
-          ]}
+          style={[styles.paddle, styles.leftPaddle, leftPaddleStyle]}
         />
-        <Image
+        <Animated.Image
+          fadeDuration={0}
           resizeMode="contain"
           source={RED_PADDLE}
-          style={[
-            styles.paddle,
-            styles.rightPaddle,
-            { top: `${((pongMatch?.rightY ?? 0.5) * 100) - 14}%` },
-          ]}
+          style={[styles.paddle, styles.rightPaddle, rightPaddleStyle]}
         />
-        <Image
+        <Animated.Image
+          fadeDuration={0}
           resizeMode="contain"
           source={YELLOW_BALL}
-          style={[
-            styles.ball,
-            {
-              left: `${((pongMatch?.ballX ?? 0.5) * 100) - 2}%`,
-              top: `${((pongMatch?.ballY ?? 0.5) * 100) - 2}%`,
-            },
-          ]}
+          style={[styles.ball, ballStyle]}
         />
         {!pongMatch ? (
           <View style={styles.courtMessage}>
@@ -121,7 +158,7 @@ export function PongBoard() {
             </Text>
           </View>
         ) : null}
-      </ImageBackground>
+      </View>
 
       {!pongMatch || !pongMatch.running ? (
         <Pressable
@@ -170,18 +207,26 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
-  courtImage: { borderRadius: 14 },
+  courtImage: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 14,
+    height: '100%',
+    width: '100%',
+  },
   paddle: {
-    height: '28%',
+    height: `${PADDLE_HEIGHT * 100}%`,
     position: 'absolute',
-    width: '30%',
+    top: 0,
+    width: `${PADDLE_WIDTH * 100}%`,
   },
   leftPaddle: { left: '-9%' },
   rightPaddle: { right: '-9%' },
   ball: {
-    height: 20,
+    height: BALL_SIZE,
+    left: 0,
     position: 'absolute',
-    width: 20,
+    top: 0,
+    width: BALL_SIZE,
   },
   courtMessage: {
     alignItems: 'center',

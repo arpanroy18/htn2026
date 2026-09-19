@@ -6,11 +6,13 @@ import {
   appendTelephoneEntry,
   appendStroke,
   assignedTelephoneChain,
+  applyPongState,
   createTelephoneGame,
   createPongMatch,
   decodeDrawing,
   decodeStroke,
   encodeDrawing,
+  encodePongState,
   encodeStroke,
   nextTelephoneMode,
   makeGamePacket,
@@ -146,6 +148,16 @@ describe('pong simulation', () => {
     assert.equal(scored.leftScore, 5);
     assert.equal(scored.winnerId, 'host');
     assert.equal(scored.running, false);
+  });
+
+  it('round-trips compact match snapshots', () => {
+    const match = createPongMatch('host', 'guest');
+    const encoded = encodePongState({ ...match, ballX: 0.31, leftScore: 2 });
+    const next = applyPongState(match, encoded);
+    assert.ok(next);
+    assert.equal(next.ballX, 0.31);
+    assert.equal(next.leftScore, 2);
+    assert.equal(next.hostId, 'host');
   });
 });
 
