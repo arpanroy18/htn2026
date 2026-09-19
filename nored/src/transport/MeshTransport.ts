@@ -3,6 +3,7 @@ export type Peer = {
   name: string;
   rssi?: number;
   lastSeen: number;
+  nored?: boolean;
 };
 
 export type Packet = {

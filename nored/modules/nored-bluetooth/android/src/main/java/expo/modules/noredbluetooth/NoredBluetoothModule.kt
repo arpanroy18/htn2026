@@ -11,7 +11,6 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -22,7 +21,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.exception.CodedException
@@ -172,12 +170,11 @@ class NoredBluetoothModule : Module() {
     }
     try {
       scanner.stopScan(scanCallback)
-      val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
       val settings = ScanSettings.Builder()
         .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
         .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
         .build()
-      scanner.startScan(listOf(filter), settings, scanCallback)
+      scanner.startScan(null, settings, scanCallback)
       log("info", "[BLE] scanner started")
       emitState("running")
     } catch (error: SecurityException) {
@@ -197,6 +194,7 @@ class NoredBluetoothModule : Module() {
       if (hasPermissions()) adapter?.bluetoothLeScanner?.stopScan(scanCallback)
     } catch (_: Exception) {}
     closeConnections()
+    lastEmitAt.clear()
     emitState("stopped")
   }
 
@@ -256,24 +254,34 @@ class NoredBluetoothModule : Module() {
       peers.values.filter { it.lastSeen < cutoff && !gatts.containsKey(it.address) }.forEach {
         peers.remove(it.id)
         addressToPeerId.remove(it.address)
+        lastEmitAt.remove(it.address)
         emitPeerLost(it.id)
       }
       mainHandler.postDelayed(this, 5_000L)
     }
   }
 
+  private val lastEmitAt = ConcurrentHashMap<String, Long>()
+
   private val scanCallback = object : ScanCallback() {
     override fun onScanResult(callbackType: Int, result: ScanResult) {
       if (!started) return
       val address = result.device.address
-      addressToPeerId[address]?.let { peerId ->
-        peers[peerId]?.let { peer ->
-          peer.rssi = result.rssi
-          peer.lastSeen = System.currentTimeMillis()
-          emitPeer(peer)
-        }
+      val name = sequenceOf(result.scanRecord?.deviceName, result.device.name)
+        .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+        .firstOrNull()
+        ?: "Unknown device"
+      val now = System.currentTimeMillis()
+      val record = PeerRecord(address, name.take(40), address, result.rssi, now)
+      peers[address] = record
+      addressToPeerId[address] = address
+      val last = lastEmitAt[address] ?: 0L
+      if (now - last >= 1_000L) {
+        lastEmitAt[address] = now
+        emitPeer(record)
       }
-      if (!gatts.containsKey(address) && connecting.add(address)) {
+      val isNored = result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
+      if (isNored && !gatts.containsKey(address) && connecting.add(address)) {
         log("info", "[DISCOVERY] Nored advertisement RSSI ${result.rssi}")
         connect(result.device)
       }

@@ -8,12 +8,14 @@ private let rxUUID = CBUUID(string: "6E4F5245-442D-4D45-5348-000000000003")
 private let txUUID = CBUUID(string: "6E4F5245-442D-4D45-5348-000000000004")
 private let deviceIdKey = "nored_ble_device_id"
 private let displayNameKey = "nored_ble_display_name"
+private let stalePeerMs: Double = 20_000
 
 private struct PeerRecord {
-  let id: String
-  let name: String
-  let centralId: UUID
+  var id: String
+  var name: String
+  var rssi: Int?
   var lastSeen: Double
+  var nored: Bool
 }
 
 private final class NoredPeripheralDelegate: NSObject, CBPeripheralManagerDelegate {
@@ -60,15 +62,40 @@ private final class NoredPeripheralDelegate: NSObject, CBPeripheralManagerDelega
   }
 }
 
+private final class NoredCentralDelegate: NSObject, CBCentralManagerDelegate {
+  weak var owner: NoredBluetoothModule?
+
+  init(owner: NoredBluetoothModule) {
+    self.owner = owner
+  }
+
+  func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    owner?.centralManagerDidUpdateState(central)
+  }
+
+  func centralManager(
+    _ central: CBCentralManager,
+    didDiscover peripheral: CBPeripheral,
+    advertisementData: [String: Any],
+    rssi RSSI: NSNumber
+  ) {
+    owner?.centralManager(central, didDiscover: peripheral, advertisementData: advertisementData, rssi: RSSI)
+  }
+}
+
 public final class NoredBluetoothModule: Module {
   private var peripheralManager: CBPeripheralManager?
   private var peripheralDelegate: NoredPeripheralDelegate?
+  private var centralManager: CBCentralManager?
+  private var noredCentralManager: CBCentralManager?
+  private var centralDelegate: NoredCentralDelegate?
   private var identityCharacteristic: CBMutableCharacteristic?
   private var rxCharacteristic: CBMutableCharacteristic?
   private var txCharacteristic: CBMutableCharacteristic?
   private var peers: [String: PeerRecord] = [:]
-  private var centralToPeer: [UUID: String] = [:]
+  private var lastEmitAt: [String: Double] = [:]
   private var started = false
+  private var staleTimer: Timer?
 
   public func definition() -> ModuleDefinition {
     Name("NoredBluetooth")
@@ -97,21 +124,22 @@ public final class NoredBluetoothModule: Module {
     }
 
     AsyncFunction("start") {
-      self.startAdvertising()
+      self.startBluetooth()
     }.runOnQueue(.main)
 
     AsyncFunction("stop") {
-      self.stopAdvertising()
+      self.stopBluetooth()
     }.runOnQueue(.main)
 
     OnAppEntersForeground {
-      if self.started, self.peripheralManager?.state == .poweredOn {
+      if self.started {
         self.beginAdvertisingIfReady()
+        self.beginScanningIfReady()
       }
     }
 
     OnDestroy {
-      self.stopAdvertising()
+      self.stopBluetooth()
     }
   }
 
@@ -139,7 +167,7 @@ public final class NoredBluetoothModule: Module {
     ])) ?? Data()
   }
 
-  private func startAdvertising() {
+  private func startBluetooth() {
     #if targetEnvironment(simulator)
     emitState("unsupported")
     return
@@ -153,23 +181,47 @@ public final class NoredBluetoothModule: Module {
     }
     started = true
     emitState("starting")
+    if peripheralDelegate == nil {
+      peripheralDelegate = NoredPeripheralDelegate(owner: self)
+    }
     if peripheralManager == nil {
-      let delegate = NoredPeripheralDelegate(owner: self)
-      peripheralDelegate = delegate
       peripheralManager = CBPeripheralManager(
-        delegate: delegate,
+        delegate: peripheralDelegate,
         queue: .main,
         options: [CBPeripheralManagerOptionShowPowerAlertKey: true]
       )
-    } else if peripheralManager?.state == .poweredOn {
-      configureServiceIfNeeded()
-      beginAdvertisingIfReady()
+    }
+    if centralDelegate == nil {
+      centralDelegate = NoredCentralDelegate(owner: self)
+    }
+    if centralManager == nil {
+      centralManager = CBCentralManager(
+        delegate: centralDelegate,
+        queue: .main,
+        options: [CBCentralManagerOptionShowPowerAlertKey: false]
+      )
+    }
+    if noredCentralManager == nil {
+      noredCentralManager = CBCentralManager(
+        delegate: centralDelegate,
+        queue: .main,
+        options: [CBCentralManagerOptionShowPowerAlertKey: false]
+      )
+    } else {
+      beginScanningIfReady()
+    }
+    staleTimer?.invalidate()
+    staleTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+      self?.dropStalePeers()
     }
     #endif
   }
 
-  private func stopAdvertising() {
+  private func stopBluetooth() {
     started = false
+    staleTimer?.invalidate()
+    staleTimer = nil
+    centralManager?.stopScan()
     peripheralManager?.stopAdvertising()
     peripheralManager?.removeAllServices()
     identityCharacteristic = nil
@@ -177,7 +229,7 @@ public final class NoredBluetoothModule: Module {
     txCharacteristic = nil
     peers.keys.forEach(emitPeerLost)
     peers.removeAll()
-    centralToPeer.removeAll()
+    lastEmitAt.removeAll()
     emitState("stopped")
   }
 
@@ -214,7 +266,38 @@ public final class NoredBluetoothModule: Module {
           peripheralManager?.state == .poweredOn,
           identityCharacteristic != nil,
           peripheralManager?.isAdvertising == false else { return }
-    peripheralManager?.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [serviceUUID]])
+    peripheralManager?.startAdvertising([
+      CBAdvertisementDataServiceUUIDsKey: [serviceUUID],
+      CBAdvertisementDataLocalNameKey: identityMap()["name"] as? String ?? "nored",
+    ])
+  }
+
+  private func beginScanningIfReady() {
+    guard started else { return }
+    let scanOptions = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+    if centralManager?.state == .poweredOn {
+      centralManager?.stopScan()
+      centralManager?.scanForPeripherals(withServices: nil, options: scanOptions)
+    }
+    if noredCentralManager?.state == .poweredOn {
+      noredCentralManager?.stopScan()
+      noredCentralManager?.scanForPeripherals(withServices: [serviceUUID], options: scanOptions)
+    }
+    if centralManager?.state == .poweredOn || noredCentralManager?.state == .poweredOn {
+      log("info", "[BLE] scanner started")
+      emitState("running")
+    }
+  }
+
+  private func dropStalePeers() {
+    guard started else { return }
+    let cutoff = Date().timeIntervalSince1970 * 1000 - stalePeerMs
+    let stale = peers.filter { $0.value.lastSeen < cutoff }.map(\.key)
+    for id in stale {
+      peers.removeValue(forKey: id)
+      lastEmitAt.removeValue(forKey: id)
+      emitPeerLost(id)
+    }
   }
 
   public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
@@ -230,8 +313,59 @@ public final class NoredBluetoothModule: Module {
     case .unsupported:
       emitState("unsupported")
     default:
+      break
+    }
+  }
+
+  public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    switch central.state {
+    case .poweredOn:
+      beginScanningIfReady()
+    case .poweredOff:
+      emitState("poweredOff")
+      log("warn", "[BLE] Bluetooth powered off")
+    case .unauthorized:
+      emitState("unauthorized")
+    case .unsupported:
+      emitState("unsupported")
+    default:
       emitState("unknown")
     }
+  }
+
+  public func centralManager(
+    _ central: CBCentralManager,
+    didDiscover peripheral: CBPeripheral,
+    advertisementData: [String: Any],
+    rssi RSSI: NSNumber
+  ) {
+    guard started else { return }
+    let id = peripheral.identifier.uuidString.lowercased()
+    let advertisedUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+    let overflowUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? []
+    let isNored = central === noredCentralManager
+      || advertisedUUIDs.contains(serviceUUID)
+      || overflowUUIDs.contains(serviceUUID)
+      || peers[id]?.nored == true
+    let resolvedName = [peripheral.name, advertisedName]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .first { !$0.isEmpty }
+      ?? (isNored ? "Nored user" : "Unknown device")
+    let now = Date().timeIntervalSince1970 * 1000
+    let rssi = RSSI.intValue == 127 ? peers[id]?.rssi : RSSI.intValue
+    let record = PeerRecord(
+      id: id,
+      name: String(resolvedName.prefix(40)),
+      rssi: rssi,
+      lastSeen: now,
+      nored: isNored
+    )
+    peers[id] = record
+    if let last = lastEmitAt[id], now - last < 1000 {
+      return
+    }
+    lastEmitAt[id] = now
+    sendEvent("onPeerDiscovered", peerMap(record))
   }
 
   public func peripheralManager(
@@ -241,7 +375,6 @@ public final class NoredBluetoothModule: Module {
   ) {
     if let error {
       log("error", "[ERROR] GATT service setup failed: \(error.localizedDescription)")
-      emitState("unknown")
       return
     }
     beginAdvertisingIfReady()
@@ -252,12 +385,13 @@ public final class NoredBluetoothModule: Module {
     error: Error?
   ) {
     if let error {
+      if (error as NSError).localizedDescription.contains("already started") {
+        return
+      }
       log("error", "[ERROR] advertiser failed: \(error.localizedDescription)")
-      emitState("unknown")
       return
     }
     log("info", "[BLE] advertiser started")
-    emitState("running")
   }
 
   public func peripheralManager(
@@ -297,13 +431,12 @@ public final class NoredBluetoothModule: Module {
         let record = PeerRecord(
           id: id,
           name: String(rawName.prefix(40)),
-          centralId: request.central.identifier,
+          rssi: nil,
           lastSeen: Date().timeIntervalSince1970 * 1000
         )
         peers[id] = record
-        centralToPeer[request.central.identifier] = id
         sendEvent("onPeerDiscovered", peerMap(record))
-        log("info", "[DISCOVERY] peer discovered \(String(id.prefix(8)))")
+        log("info", "[DISCOVERY] nored peer \(String(id.prefix(8)))")
         peripheral.respond(to: request, withResult: .success)
       } catch {
         log("error", "[ERROR] invalid peer identity")
@@ -325,19 +458,19 @@ public final class NoredBluetoothModule: Module {
     central: CBCentral,
     didUnsubscribeFrom characteristic: CBCharacteristic
   ) {
-    if let peerId = centralToPeer.removeValue(forKey: central.identifier) {
-      peers.removeValue(forKey: peerId)
-      emitPeerLost(peerId)
-      log("info", "[CONNECTION] disconnected \(String(peerId.prefix(8)))")
-    }
+    log("info", "[CONNECTION] disconnected \(central.identifier.uuidString.prefix(8))")
   }
 
   private func peerMap(_ peer: PeerRecord) -> [String: Any] {
-    [
+    var map: [String: Any] = [
       "id": peer.id,
       "name": peer.name,
-      "lastSeen": peer.lastSeen
+      "lastSeen": peer.lastSeen,
     ]
+    if let rssi = peer.rssi {
+      map["rssi"] = rssi
+    }
+    return map
   }
 
   private func emitPeerLost(_ peerId: String) {

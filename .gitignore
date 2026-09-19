@@ -1,0 +1,99 @@
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Logs & debug
+logs/
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.*
+
+# Node
+node_modules/
+.npm/
+.pnpm-store/
+jspm_packages/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.p12
+*.key
+*.jks
+*.keystore
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+credentials.json
+
+# TypeScript
+*.tsbuildinfo
+
+# Expo / Metro / EAS
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+*.orig.*
+.kotlin/
+
+# Generated native projects (expo prebuild). Keep the custom module sources.
+/nored/ios/
+/nored/android/
+
+# Native build artifacts (Gradle / Xcode / CocoaPods)
+**/build/
+**/.gradle/
+**/local.properties
+**/.cxx/
+**/DerivedData/
+**/*.xcuserstate
+**/xcuserdata/
+**/*.hmap
+**/*.ipa
+**/*.apk
+**/*.aab
+**/*.apk.d
+**/Pods/
+**/Podfile.lock
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.perspectivev3
+!default.perspectivev3
+
+# Testing / coverage
+coverage/
+.nyc_output/
+
+# Misc
+*.orig
+.cache/
+tmp/
+temp/
+.turbo/
+.vercel/

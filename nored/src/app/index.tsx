@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -31,9 +31,14 @@ function signalLabel(rssi?: number) {
   return 'Weak signal';
 }
 
-function seenLabel(lastSeen: number, now: number) {
-  const seconds = Math.max(0, Math.floor((now - lastSeen) / 1000));
-  return seconds < 2 ? 'Seen now' : `Seen ${seconds}s ago`;
+function hasDisplayName(peer: Peer) {
+  const name = peer.name?.trim();
+  if (!name) return false;
+  return name.toLowerCase() !== 'unknown device';
+}
+
+function peersEqual(a: Peer, b: Peer) {
+  return a.id === b.id && a.name === b.name && signalLabel(a.rssi) === signalLabel(b.rssi);
 }
 
 function statusCopy(state: TransportState) {
@@ -55,6 +60,22 @@ function statusCopy(state: TransportState) {
   }
 }
 
+const PeerRow = memo(function PeerRow({ peer }: { peer: Peer }) {
+  return (
+    <View style={styles.peerCard}>
+      <View style={styles.peerIndicator} />
+      <View style={styles.peerMain}>
+        <Text style={styles.peerName}>{peer.name}</Text>
+        <Text style={styles.peerId}>ID {peer.id.slice(0, 8)}</Text>
+      </View>
+      <View style={styles.peerMeta}>
+        <Text style={styles.signal}>{signalLabel(peer.rssi)}</Text>
+        <Text style={styles.seen}>In range</Text>
+      </View>
+    </View>
+  );
+});
+
 export default function NearbyScreen() {
   const [identity, setIdentity] = useState<DeviceIdentity>(() => meshTransport.getIdentity());
   const [draftName, setDraftName] = useState(identity.name);
@@ -62,15 +83,19 @@ export default function NearbyScreen() {
   const [state, setState] = useState<TransportState>('starting');
   const [error, setError] = useState<string>();
   const [logs, setLogs] = useState<string[]>([]);
-  const [now, setNow] = useState(0);
   const [saving, setSaving] = useState(false);
+  const lastLogAt = useRef(0);
 
   const upsertPeer = useCallback((peer: Peer) => {
-    setPeers((current) =>
-      [...current.filter((item) => item.id !== peer.id), peer].sort(
-        (a, b) => b.lastSeen - a.lastSeen,
-      ),
-    );
+    if (!hasDisplayName(peer)) return;
+    setPeers((current) => {
+      const index = current.findIndex((item) => item.id === peer.id);
+      if (index === -1) return [...current, peer];
+      if (peersEqual(current[index], peer)) return current;
+      const next = current.slice();
+      next[index] = { ...current[index], name: peer.name, rssi: peer.rssi, lastSeen: peer.lastSeen };
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -81,22 +106,22 @@ export default function NearbyScreen() {
       ),
       meshTransport.onStateChanged(setState),
       meshTransport.onLog((message) => {
-        console.info(message);
-        setLogs((current) => [message, ...current].slice(0, 8));
+        const now = Date.now();
+        if (now - lastLogAt.current < 1500) return;
+        lastLogAt.current = now;
+        setLogs((current) => [message, ...current].slice(0, 3));
       }),
     ];
 
     meshTransport
       .start()
       .then(() => meshTransport.getPeers())
-      .then(setPeers)
+      .then((items) => setPeers(items.filter(hasDisplayName)))
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : 'Bluetooth failed to start.');
       });
 
-    const clock = setInterval(() => setNow(Date.now()), 1_000);
     return () => {
-      clearInterval(clock);
       subscriptions.forEach((subscription) => subscription.remove());
       void meshTransport.stop();
     };
@@ -168,31 +193,20 @@ export default function NearbyScreen() {
         <FlatList
           contentContainerStyle={peers.length === 0 ? styles.emptyList : styles.peerList}
           data={peers}
+          extraData={peers.length}
           keyExtractor={(peer) => peer.id}
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <View style={styles.radar}>
                 <View style={styles.radarInner} />
               </View>
-              <Text style={styles.emptyTitle}>No Nored phones yet</Text>
+              <Text style={styles.emptyTitle}>No Bluetooth devices yet</Text>
               <Text style={styles.emptyBody}>
-                Keep this screen open. On both phones, enable Bluetooth after turning airplane mode on.
+                Keep this screen open with Bluetooth on. Nearby BLE devices should appear as they advertise.
               </Text>
             </View>
           }
-          renderItem={({ item }) => (
-            <View style={styles.peerCard}>
-              <View style={styles.peerIndicator} />
-              <View style={styles.peerMain}>
-                <Text style={styles.peerName}>{item.name}</Text>
-                <Text style={styles.peerId}>ID {item.id.slice(0, 8)}</Text>
-              </View>
-              <View style={styles.peerMeta}>
-                <Text style={styles.signal}>{signalLabel(item.rssi)}</Text>
-                <Text style={styles.seen}>{seenLabel(item.lastSeen, now)}</Text>
-              </View>
-            </View>
-          )}
+          renderItem={({ item }) => <PeerRow peer={item} />}
         />
 
         <View style={styles.logPanel}>
