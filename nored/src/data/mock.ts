@@ -9,15 +9,21 @@ export type GameCard = {
 
 export const mockGames: GameCard[] = [
   {
-    id: 'mesh-ping',
-    name: 'Mesh Ping',
-    blurb: 'Pass a baton around the mesh. Leaderboard of hops and round-trip time.',
-    players: '2–8 nearby',
+    id: 'pong',
+    name: 'Bluetooth Pong',
+    blurb: 'Two paddles, one ball, and nearby head-to-head play without internet.',
+    players: '2 players',
   },
   {
     id: 'telephone',
     name: 'Drawing Telephone',
-    blurb: 'Each peer alters a tiny doodle. Compressed deltas only — one BLE frame per turn.',
+    blurb: 'Start a secret phrase, then rotate every chain through drawings and guesses.',
     players: '3–8',
+  },
+  {
+    id: 'chess',
+    name: 'Bluetooth Chess',
+    blurb: 'Standard chess with legal moves, checkmate, and direct turn synchronization.',
+    players: '2 players',
   },
 ];

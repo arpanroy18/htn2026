@@ -2,12 +2,12 @@ import { PermissionsAndroid, Platform } from 'react-native';
 
 import NoredBluetooth from '@/../modules/nored-bluetooth';
 import type { Peer as NativePeer } from '@/../modules/nored-bluetooth';
-import { isPacket } from '@/mesh/mediaTransfer';
+import { isWirePacket } from '@/mesh/protocol';
+import type { WirePacket } from '@/mesh/protocol';
 
 import type {
   DeviceIdentity,
   MeshTransport,
-  Packet,
   Peer,
   Subscription,
   TransportState,
@@ -21,10 +21,18 @@ function normalizeIdentity(identity: DeviceIdentity): DeviceIdentity {
   return { ...identity, id: normalizePeerId(identity.id) };
 }
 
+function normalizeRssi(rssi: unknown): number | undefined {
+  if (typeof rssi !== 'number' || !Number.isFinite(rssi) || rssi === 127 || rssi > 20 || rssi < -127) {
+    return undefined;
+  }
+  return rssi;
+}
+
 function normalizePeer(peer: Peer): Peer {
   return {
     ...peer,
     id: normalizePeerId(peer.id),
+    rssi: normalizeRssi(peer.rssi),
     replacesId: peer.replacesId ? normalizePeerId(peer.replacesId) : undefined,
   };
 }
@@ -64,14 +72,10 @@ class NoredBleTransport implements MeshTransport {
     return (await NoredBluetooth.getPeers()).map(normalizePeer);
   }
 
-  async sendPacket(peerId: string, packet: Packet): Promise<void> {
+  async sendPacket(peerId: string, packet: WirePacket): Promise<void> {
     await NoredBluetooth.sendPacket(
       normalizePeerId(peerId),
-      JSON.stringify({
-        ...packet,
-        senderId: normalizePeerId(packet.senderId),
-        recipientId: normalizePeerId(packet.recipientId),
-      }),
+      JSON.stringify(packet),
     );
   }
 
@@ -87,18 +91,17 @@ class NoredBleTransport implements MeshTransport {
     );
   }
 
-  onPacketReceived(callback: (peerId: string, packet: Packet) => void): Subscription {
+  onPacketReceived(callback: (peerId: string, packet: WirePacket) => void): Subscription {
     return NoredBluetooth.addListener('onPacketReceived', (event: { peerId: string; packet: string }) => {
       try {
         const packet = JSON.parse(event.packet) as unknown;
-        if (!isPacket(packet)) return;
-        callback(normalizePeerId(event.peerId), {
-          ...packet,
-          senderId: normalizePeerId(packet.senderId),
-          recipientId: normalizePeerId(packet.recipientId),
-        });
+        if (!isWirePacket(packet)) {
+          console.warn('[ROUTER] Dropped invalid or unsupported wire packet.');
+          return;
+        }
+        callback(normalizePeerId(event.peerId), packet);
       } catch {
-        // Drop malformed frames; native logs already recorded the parse failure.
+        console.warn('[ROUTER] Dropped malformed JSON frame.');
       }
     });
   }

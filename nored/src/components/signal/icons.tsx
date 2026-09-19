@@ -1,3 +1,4 @@
+import { SymbolView } from 'expo-symbols';
 import { View, type ViewStyle } from 'react-native';
 
 type IconProps = {
@@ -261,41 +262,14 @@ export function ChevronIcon({ size = 14, color, strokeWidth = 1.6 }: IconProps) 
   );
 }
 
-export function GearIcon({ size = 20, color, strokeWidth = 1.6 }: IconProps) {
+export function GearIcon({ size = 20, color }: IconProps) {
   return (
-    <View style={{ alignItems: 'center', height: size, justifyContent: 'center', width: size }}>
-      <View
-        style={{
-          borderColor: color,
-          borderRadius: size * 0.32,
-          borderWidth: strokeWidth,
-          height: size * 0.64,
-          width: size * 0.64,
-        }}
-      />
-      {[0, 45, 90, 135].map((deg) => (
-        <View
-          key={deg}
-          style={{
-            backgroundColor: color,
-            height: size,
-            position: 'absolute',
-            transform: [{ rotate: `${deg}deg` }],
-            width: strokeWidth,
-          }}
-        />
-      ))}
-      <View style={{ backgroundColor: color, borderRadius: size * 0.16, height: size * 0.32, position: 'absolute', width: size * 0.32 }} />
-      <View
-        style={{
-          backgroundColor: '#fff',
-          borderRadius: size * 0.1,
-          height: size * 0.2,
-          position: 'absolute',
-          width: size * 0.2,
-        }}
-      />
-    </View>
+    <SymbolView
+      name={{ android: 'settings', ios: 'gearshape', web: 'settings' }}
+      size={size}
+      tintColor={color}
+      weight="medium"
+    />
   );
 }
 

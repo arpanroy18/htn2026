@@ -7,6 +7,7 @@ import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
 import { type AlertItem, severityTone } from '@/mesh/alertStore';
+import { alertThreadId } from '@/mesh/chatStore';
 import { signal } from '@/theme/signal';
 
 function AlertRow({ item }: { item: AlertItem }) {
@@ -15,11 +16,11 @@ function AlertRow({ item }: { item: AlertItem }) {
       onPress={() =>
         router.push({
           pathname: '/chat/[id]',
-          params: { id: `alert-${item.id}`, title: 'EMERGENCY', kind: 'group' },
+          params: { id: alertThreadId(item.id), title: 'Alert', kind: 'group' },
         })
       }
       style={styles.row}>
-      <Avatar name={item.sender} size={44} />
+      <Avatar name={item.sender} peerId={item.senderId} size={44} />
       <View style={styles.rowMain}>
         <View style={styles.rowTop}>
           <Chip label={item.severity} tone={severityTone(item.severity)} />
@@ -64,7 +65,6 @@ export default function AlertsScreen() {
               <AlertsIcon color={signal.ink} size={20} />
             </View>
             <View style={styles.channelCopy}>
-              <Text style={styles.kicker}>PRE-SEEDED CHANNEL</Text>
               <Text style={styles.channelTitle}>EMERGENCY</Text>
             </View>
             <Switch
@@ -126,8 +126,7 @@ const styles = StyleSheet.create({
     width: 40,
   },
   channelCopy: { flex: 1 },
-  kicker: { color: signal.ink, fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
-  channelTitle: { color: signal.ink, fontSize: 22, fontWeight: '800', lineHeight: 26, marginTop: 2 },
+  channelTitle: { color: signal.ink, fontSize: 22, fontWeight: '800', lineHeight: 26 },
   channelBody: { color: signal.slate, fontSize: 14, lineHeight: 20, marginTop: 12 },
   section: {
     color: signal.ink,

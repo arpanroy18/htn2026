@@ -15,12 +15,12 @@ import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { GearIcon, SignalBars } from '@/components/signal/icons';
 import { Avatar, GroupedList, IconButton, OutlinedButton, RowPress } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
-import { hopLabel, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
+import { hopLabel, isValidRssi, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 import type { Peer } from '@/transport';
 
 function levelFor(rssi?: number): 0 | 1 | 2 | 3 {
-  if (rssi === undefined) return 0;
+  if (!isValidRssi(rssi)) return 0;
   if (rssi >= -60) return 3;
   if (rssi >= -75) return 2;
   return 1;
@@ -29,7 +29,13 @@ function levelFor(rssi?: number): 0 | 1 | 2 | 3 {
 function PeerRow({ peer, onPress, onLongPress }: { peer: Peer; onPress: () => void; onLongPress: () => void }) {
   return (
     <RowPress onLongPress={onLongPress} onPress={onPress} style={styles.peer}>
-      <Avatar name={peer.name} size={44} />
+      <Avatar
+        color={peer.avatarColor}
+        icon={peer.avatarIcon}
+        name={peer.name}
+        peerId={peer.id}
+        size={44}
+      />
       <View style={styles.peerMain}>
         <Text style={styles.peerName}>{peer.name}</Text>
         <Text style={styles.peerMeta}>
@@ -97,7 +103,7 @@ export default function NearbyScreen() {
         <ScreenHeader
           action={
             <IconButton onPress={() => router.push('/settings')} tone="ghost">
-              <GearIcon color={signal.slate} size={22} />
+              <GearIcon color={signal.slate} size={24} />
             </IconButton>
           }
           title="Nearby"
@@ -105,7 +111,13 @@ export default function NearbyScreen() {
 
         <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
           <RowPress onPress={() => setEditingName(true)} style={styles.identity}>
-            <Avatar name={identity.name} size={52} />
+            <Avatar
+              color={identity.avatarColor}
+              icon={identity.avatarIcon}
+              name={identity.name}
+              peerId={identity.id}
+              size={52}
+            />
             <View style={styles.identityMain}>
               {editingName ? (
                 <TextInput

@@ -5,12 +5,10 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
   type ReactNode,
 } from 'react';
 
 import {
-  meshTransport,
   type MediaAckPacket,
   type MediaChunkPacket,
   type MediaManifestPacket,
@@ -19,17 +17,18 @@ import {
   type Peer,
 } from '@/transport';
 
+import { ALERT_TTL_HOPS } from './alertStore';
 import { useMeshUi } from './MeshUiContext';
 import {
   addGroupMember,
   appendMessage,
   createId,
-  emptyChatState,
   ensureDmThread,
   ensureGroupThread,
   formatMessageClock,
   GROUP_TTL_HOPS,
   groupCount,
+  isAlertThreadId,
   isGroupSyncPacket,
   isTextPacket,
   makeGroupSyncPacket,
@@ -45,7 +44,6 @@ import {
   peerName,
   queuedGroupMedia,
   queuedGroupText,
-  queuedPackets,
   remapPeerInGroups,
   threadHasMember,
   type ChatMessage,
@@ -53,13 +51,15 @@ import {
   type ChatThread,
 } from './chatStore';
 import {
+  clearMediaFiles,
   fileBytes,
   prepareImage,
   persistVoiceNote,
   sha256,
   writeMediaBytes,
 } from './mediaFiles';
-import { clearChatState, loadChatState, saveChatState } from './chatPersistence';
+import { useRouterService, useRouterData } from './RouterContext';
+import { clearLegacyHistory } from './persistence';
 import {
   MEDIA_CHUNK_BYTES,
   MEDIA_REASSEMBLY_TIMEOUT_MS,
@@ -100,10 +100,30 @@ function confirmedPeers(peers: Peer[]) {
   return peers.filter((peer) => peer.identityConfirmed);
 }
 
+/**
+ * Group sends fan the same transfer out to several peers, so the in-flight chunk
+ * list has to be tracked per recipient — keying on the transfer id alone let the
+ * last peer overwrite the rest, and their acks and retries were then ignored.
+ */
+function outgoingKey(transferId: string, recipientId: string) {
+  return `${transferId}|${recipientId}`;
+}
+
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { identity, peers, noredPeers } = useMeshUi();
-  const [state, setState] = useState<ChatState>(emptyChatState);
-  const [hydrated, setHydrated] = useState(false);
+  const meshRouter = useRouterService();
+  const data = useRouterData();
+  const state = data.chat;
+  const setState = useCallback((change: (current: ChatState) => ChatState) => {
+    const epoch = meshRouter.epoch;
+    const result = meshRouter.store.transaction((draft) => {
+      if (epoch !== meshRouter.epoch) return;
+      draft.chat = change(draft.chat);
+      stateRef.current = draft.chat;
+    });
+    void result.catch((error) => console.warn('[STORE]', error instanceof Error ? error.message : 'Write failed'));
+    return result;
+  }, [meshRouter]);
   const stateRef = useRef(state);
   const peersRef = useRef(peers);
   const noredPeersRef = useRef(noredPeers);
@@ -112,6 +132,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const peerAliases = useRef(new Map<string, string>());
   const flushing = useRef(new Set<string>());
   const lastFlushAt = useRef(new Map<string, number>());
+  const mediaReceiveTail = useRef(Promise.resolve());
+  const mediaSending = useRef(new Set<string>());
   const incomingTransfers = useRef(new Map<string, IncomingTransfer>());
   const outgoingTransfers = useRef(
     new Map<string, { manifest: MediaManifestPacket; chunks: MediaChunkPacket[] }>(),
@@ -120,31 +142,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadChatState().then((loaded) => {
-      if (cancelled) return;
-      setState(loaded);
-      for (const messages of Object.values(loaded.messages)) {
-        for (const message of messages) {
-          seenIds.current.add(message.id);
-        }
-      }
-      setHydrated(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    const timer = setTimeout(() => {
-      void saveChatState(stateRef.current);
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [hydrated, state]);
 
   useEffect(() => {
     peersRef.current = peers;
@@ -168,6 +165,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const resolveThreadId = useCallback(
     (threadId: string) => {
+      if (isAlertThreadId(threadId)) return threadId;
       const exact = stateRef.current.threads.find((thread) => thread.id === threadId);
       if (exact?.kind === 'group') return exact.id;
       return resolvePeerId(threadId);
@@ -192,7 +190,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         activeThread.current = peerId;
       }
     }
-  }, [peers, resolvePeerId]);
+  }, [peers, resolvePeerId, setState]);
 
   const remember = useCallback((id: string) => {
     seenIds.current.add(id);
@@ -213,8 +211,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const sendPacket = useCallback(async (peerId: string, packet: Packet) => {
-    await meshTransport.sendPacket(peerId, packet);
-  }, []);
+    const mediaKind =
+      packet.type === 'media-chunk'
+        ? outgoingTransfers.current.get(outgoingKey(packet.transferId, peerId))?.manifest.mediaKind
+        : undefined;
+    await meshRouter.sendDirect(peerId, packet, mediaKind === 'audio' ? 4 : undefined);
+  }, [meshRouter]);
 
   const floodPacket = useCallback(
     async (packet: Packet, excludePeerId?: string) => {
@@ -257,9 +259,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         timestamp: packet.timestamp || Date.now(),
         time: formatMessageClock(packet.timestamp || Date.now()),
       };
-      setState((current) => appendMessage(current, message, threadName, unread));
+      return setState((current) => appendMessage(current, message, threadName, unread));
     },
-    [remember],
+    [remember, setState],
   );
 
   const appendMediaMessage = useCallback(
@@ -299,14 +301,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         width: manifest.width,
         height: manifest.height,
         durationMs: manifest.durationMs,
-        transferProgress: localUri ? 0 : 0,
+        // Media we already hold on disk is complete; only an inbound transfer starts at 0.
+        transferProgress: localUri ? 1 : 0,
         status: mine ? status : undefined,
         timestamp: manifest.timestamp,
         time: formatMessageClock(manifest.timestamp),
       };
-      setState((current) => appendMessage(current, message, threadName, unread));
+      return setState((current) => appendMessage(current, message, threadName, unread));
     },
-    [remember],
+    [remember, setState],
   );
 
   const mediaThreadId = useCallback(
@@ -322,32 +325,47 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       bytes: Uint8Array,
       onlySequences?: number[],
     ) => {
-      const allChunks = splitMediaBytes({ manifest, bytes });
-      outgoingTransfers.current.set(manifest.id, { manifest, chunks: allChunks });
-      const chunks = onlySequences
-        ? onlySequences.map((sequence) => allChunks[sequence]).filter(Boolean)
-        : allChunks;
-      const threadId = mediaThreadId(manifest, peerId);
-      if (!onlySequences) await sendPacket(peerId, manifest);
-      for (let index = 0; index < chunks.length; index += 1) {
-        await sendPacket(peerId, chunks[index]);
-        const completed = onlySequences
-          ? undefined
-          : Math.min(0.98, (index + 1) / Math.max(1, chunks.length));
-        if (completed !== undefined) {
+      const key = outgoingKey(manifest.id, peerId);
+      if (mediaSending.current.has(key)) return;
+      const epoch = meshRouter.epoch;
+      mediaSending.current.add(key);
+      try {
+        const allChunks = splitMediaBytes({ manifest, bytes });
+        outgoingTransfers.current.set(key, { manifest, chunks: allChunks });
+        const chunks = onlySequences
+          ? onlySequences.map((sequence) => allChunks[sequence]).filter(Boolean)
+          : allChunks;
+        const threadId = mediaThreadId(manifest, peerId);
+        if (!onlySequences) {
           setState((current) =>
-            patchMessage(current, threadId, manifest.id, { transferProgress: completed }),
+            patchMessage(current, threadId, manifest.id, { transferProgress: 0, transferError: undefined }),
           );
+          await sendPacket(peerId, manifest);
         }
-      }
+        for (let index = 0; index < chunks.length; index += 1) {
+          if (epoch !== meshRouter.epoch) throw new Error('Transfer cancelled.');
+          await sendPacket(peerId, chunks[index]);
+          if (!onlySequences) {
+            setState((current) =>
+              patchMessage(current, threadId, manifest.id, {
+                // Every chunk is on the wire once the loop ends; the ack only confirms delivery.
+                transferProgress: (index + 1) / Math.max(1, chunks.length),
+                transferError: undefined,
+              }),
+            );
+          }
+        }
+      } finally { mediaSending.current.delete(key); }
     },
-    [mediaThreadId, sendPacket],
+    [mediaThreadId, meshRouter, sendPacket, setState],
   );
 
   const sendStoredMedia = useCallback(
     async (peerId: string, message: ChatMessage) => {
       if (!message.localUri || !message.hash || !message.mimeType || !message.byteLength) return;
+      const epoch = meshRouter.epoch;
       const bytes = await fileBytes(message.localUri);
+      if (epoch !== meshRouter.epoch) return;
       const groupId = message.threadId !== peerId ? message.threadId : undefined;
       const manifest = makeMediaManifest({
         id: message.id,
@@ -358,7 +376,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ttlHops: groupId ? GROUP_TTL_HOPS : undefined,
         mediaKind: message.kind === 'image' ? 'image' : 'audio',
         mimeType: message.mimeType,
-        byteLength: message.byteLength,
+        byteLength: bytes.byteLength,
         chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
         hash: message.hash,
         width: message.width,
@@ -375,7 +393,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       await transmitMedia(peerId, manifest, bytes);
     },
-    [floodTargets, identity.id, transmitMedia],
+    [floodTargets, identity.id, transmitMedia, meshRouter],
   );
 
   const applyGroupSync = useCallback(
@@ -402,34 +420,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       });
       return true;
     },
-    [identity.id],
+    [identity.id, setState],
   );
 
   const flushPeer = useCallback(
     async (peerId: string) => {
       peerId = resolvePeerId(peerId);
       if (flushing.current.has(peerId)) return;
-      const pending = queuedPackets(stateRef.current, peerId, identity.id);
       const pendingMedia = (stateRef.current.messages[peerId] ?? []).filter(
         (message) =>
           message.mine &&
           message.status === 'queued' &&
           (message.kind === 'image' || message.kind === 'audio'),
       );
-      if (!pending.length && !pendingMedia.length) return;
+      if (!pendingMedia.length) return;
       const last = lastFlushAt.current.get(peerId) ?? 0;
       if (Date.now() - last < 2000) return;
       flushing.current.add(peerId);
       lastFlushAt.current.set(peerId, Date.now());
       try {
-        for (const packet of pending) {
-          try {
-            await sendPacket(peerId, packet);
-            setState((current) => patchMessage(current, peerId, packet.id, { status: 'sent' }));
-          } catch {
-            break;
-          }
-        }
         for (const message of pendingMedia) {
           try {
             await sendStoredMedia(peerId, message);
@@ -441,7 +450,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         flushing.current.delete(peerId);
       }
     },
-    [identity.id, resolvePeerId, sendPacket, sendStoredMedia],
+    [resolvePeerId, sendStoredMedia],
   );
 
   const flushGroups = useCallback(async () => {
@@ -490,12 +499,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } finally {
       flushing.current.delete(key);
     }
-  }, [floodPacket, floodTargets, identity.id, sendStoredMedia]);
+  }, [floodPacket, floodTargets, identity.id, sendStoredMedia, setState]);
 
   const handlePacket = useCallback(
     async (packet: Packet, fromPeerId: string) => {
       if (packet.senderId === identity.id || packet.recipientId !== identity.id) return;
-
       if (isGroupSyncPacket(packet)) {
         if (seenIds.current.has(packet.id)) return;
         remember(packet.id);
@@ -505,10 +513,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       const groupId = packet.groupId;
+      const alertComment = isAlertThreadId(groupId);
       const groupThread = groupId
         ? stateRef.current.threads.find((thread) => thread.id === groupId)
         : undefined;
-      if (groupId && groupThread && !threadHasMember(groupThread, identity.id)) {
+      if (groupId && !alertComment && groupThread && !threadHasMember(groupThread, identity.id)) {
         if (
           packet.type === 'text' ||
           packet.type === 'media-manifest' ||
@@ -521,14 +530,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const name = peerName(peersRef.current, packet.senderId, 'Nearby peer');
-      const threadName = groupThread?.name ?? name;
+      const name = meshRouter.name(packet.senderId);
+      const threadName = alertComment ? (groupThread?.name ?? 'Alert') : (groupThread?.name ?? name);
       const threadId = packetThreadId(packet, false);
 
       if (isTextPacket(packet)) {
         if (seenIds.current.has(packet.id)) return;
         if (groupId) {
-          if (threadHasMember(groupThread, identity.id)) {
+          if (alertComment || threadHasMember(groupThread, identity.id)) {
             ingest(packet, threadName, false, undefined, activeThread.current !== threadId);
           } else {
             remember(packet.id);
@@ -536,12 +545,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
           return;
         }
-        ingest(packet, threadName, false, undefined, activeThread.current !== threadId);
+        await ingest(packet, threadName, false, undefined, activeThread.current !== threadId);
         return;
       }
 
+      const epoch = meshRouter.epoch;
       if (packet.type === 'media-manifest') {
-        if (seenIds.current.has(packet.id)) {
+        if (incomingTransfers.current.has(packet.id)) return;
+        if ((stateRef.current.messages[threadId] ?? []).some((message) => message.id === packet.id && !!message.localUri)) {
           if (incomingTransfers.current.has(packet.id)) return;
           const ack: MediaAckPacket = {
             version: 1,
@@ -556,9 +567,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           await sendPacket(packet.senderId, ack);
           return;
         }
-        if (!groupId || threadHasMember(groupThread, identity.id)) {
+        if (!groupId || alertComment || threadHasMember(groupThread, identity.id)) {
           incomingTransfers.current.set(packet.id, createIncomingTransfer(packet));
-          appendMediaMessage(
+          await appendMediaMessage(
             packet,
             threadName,
             false,
@@ -574,32 +585,38 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (packet.type === 'media-chunk') {
-        if (seenIds.current.has(packet.id)) {
-          const existing = incomingTransfers.current.get(packet.transferId);
-          if (existing) acceptMediaChunk(existing, packet);
-          return;
+        // A duplicate still has to fall through to the completion check below: when
+        // the *last* chunk arrived twice, the transfer used to stall at 99% forever.
+        if (!seenIds.current.has(packet.id)) {
+          remember(packet.id);
+          if (groupId) void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
         }
-        remember(packet.id);
-        if (groupId) void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
         const transfer = incomingTransfers.current.get(packet.transferId);
-        if (!transfer || !acceptMediaChunk(transfer, packet)) return;
+        if (!transfer) return;
+        const before = transfer.chunks.size;
+        if (!acceptMediaChunk(transfer, packet)) return;
         const received = transfer.chunks.size;
+        const complete = received === transfer.manifest.chunkCount;
+        // Flooding re-delivers chunks constantly; only write when progress moved.
+        if (received === before && !complete) return;
         const chunkThreadId = mediaThreadId(transfer.manifest, packet.senderId);
         setState((current) =>
           patchMessage(current, chunkThreadId, packet.transferId, {
             transferProgress: received / transfer.manifest.chunkCount,
           }),
         );
-        if (received !== transfer.manifest.chunkCount) return;
+        if (!complete) return;
         try {
           const bytes = assembleMediaBytes(transfer);
           if ((await sha256(bytes)) !== transfer.manifest.hash) {
             throw new Error('The media integrity check failed.');
           }
           const extension = transfer.manifest.mediaKind === 'image' ? 'jpg' : 'm4a';
+          if (epoch !== meshRouter.epoch) return;
           const localUri = await writeMediaBytes(transfer.manifest.id, extension, bytes);
+          if (epoch !== meshRouter.epoch) return;
           incomingTransfers.current.delete(packet.transferId);
-          setState((current) =>
+          await setState((current) =>
             patchMessage(current, chunkThreadId, packet.transferId, {
               localUri,
               transferProgress: 1,
@@ -630,9 +647,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (packet.type === 'media-ack') {
-        const outgoing = outgoingTransfers.current.get(packet.transferId);
+        const key = outgoingKey(packet.transferId, packet.senderId);
+        const outgoing = outgoingTransfers.current.get(key);
         if (!outgoing) return;
-        outgoingTransfers.current.delete(packet.transferId);
+        outgoingTransfers.current.delete(key);
         setState((current) =>
           patchMessage(current, packet.groupId ?? packet.senderId, packet.transferId, {
             status: 'sent',
@@ -644,7 +662,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (packet.type === 'media-retry') {
-        const outgoing = outgoingTransfers.current.get(packet.transferId);
+        const outgoing = outgoingTransfers.current.get(outgoingKey(packet.transferId, packet.senderId));
         if (!outgoing) return;
         for (const sequence of packet.missing) {
           const chunk = outgoing.chunks[sequence];
@@ -661,15 +679,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       mediaThreadId,
       remember,
       sendPacket,
+      meshRouter,
+      setState,
     ],
   );
 
   useEffect(() => {
-    const subscription = meshTransport.onPacketReceived((peerId, packet) => {
-      void handlePacket(packet, peerId);
+    const subscription = meshRouter.onApplicationPacket((packet, peerId) => {
+      const epoch = meshRouter.epoch;
+      mediaReceiveTail.current = mediaReceiveTail.current
+        .then(() => epoch === meshRouter.epoch ? handlePacket(packet, peerId) : undefined)
+        .catch((error) => console.warn('[MEDIA]', error instanceof Error ? error.message : 'Receive failed'));
     });
     return () => subscription.remove();
-  }, [handlePacket]);
+  }, [handlePacket, meshRouter]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -705,11 +728,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           transferId: transfer.manifest.id,
           missing,
         };
-        void sendPacket(transfer.manifest.senderId, retry);
+        void sendPacket(transfer.manifest.senderId, retry).catch(() => undefined);
       }
     }, 2000);
     return () => clearInterval(timer);
-  }, [identity.id, mediaThreadId, sendPacket]);
+  }, [identity.id, mediaThreadId, sendPacket, setState]);
 
   const sendablePeerKey = useMemo(
     () =>
@@ -736,28 +759,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const openDm = useCallback((peerId: string, name: string) => {
     const resolvedId = resolvePeerId(peerId);
     setState((current) => ensureDmThread(current, resolvedId, name));
-  }, [resolvePeerId]);
+  }, [resolvePeerId, setState]);
 
   const markRead = useCallback((threadId: string) => {
     const resolvedId = resolveThreadId(threadId);
     activeThread.current = resolvedId;
+    meshRouter.setActiveThread(resolvedId);
     setState((current) => markThreadRead(current, resolvedId));
-  }, [resolveThreadId]);
+  }, [meshRouter, resolveThreadId, setState]);
 
   const clearActive = useCallback(() => {
     activeThread.current = null;
-  }, []);
+    meshRouter.setActiveThread(null);
+  }, [meshRouter]);
 
   const clearLocalData = useCallback(async () => {
     seenIds.current.clear();
     incomingTransfers.current.clear();
     outgoingTransfers.current.clear();
+    mediaSending.current.clear();
+    flushing.current.clear();
+    lastFlushAt.current.clear();
     activeThread.current = null;
-    const next = emptyChatState;
-    stateRef.current = next;
-    setState(next);
-    await clearChatState();
-  }, []);
+    await meshRouter.clear();
+    await clearLegacyHistory();
+    await clearMediaFiles();
+  }, [meshRouter]);
 
   const publishGroup = useCallback(
     (groupId: string) => {
@@ -805,7 +832,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       publishGroup(id);
       return { ok: true, id };
     },
-    [identity.id, identity.name, publishGroup, resolvePeerId],
+    [identity.id, identity.name, publishGroup, resolvePeerId, setState],
   );
 
   const inviteToGroup = useCallback(
@@ -833,7 +860,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       publishGroup(thread.id);
       return { ok: true, id: thread.id };
     },
-    [publishGroup, resolvePeerId, resolveThreadId],
+    [publishGroup, resolvePeerId, resolveThreadId, setState],
   );
 
   const sendText = useCallback(
@@ -842,37 +869,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (!text) return;
       const threadId = resolveThreadId(peerId);
       const thread = stateRef.current.threads.find((item) => item.id === threadId);
-      if (thread?.kind === 'group') {
+      const floodAsGroup = isAlertThreadId(threadId) || thread?.kind === 'group';
+      if (floodAsGroup) {
         const packet = makeTextPacket({
           senderId: identity.id,
           recipientId: identity.id,
-          groupId: thread.id,
+          groupId: threadId,
           hops: 0,
-          ttlHops: GROUP_TTL_HOPS,
+          ttlHops: isAlertThreadId(threadId) ? ALERT_TTL_HOPS : GROUP_TTL_HOPS,
           body: text,
         });
-        ingest(packet, thread.name, true, 'queued', false);
+        ingest(packet, thread?.name ?? 'Alert', true, 'queued', false);
         const sent = await floodPacket(packet);
         if (sent > 0) {
-          setState((current) => patchMessage(current, thread.id, packet.id, { status: 'sent' }));
+          setState((current) => patchMessage(current, threadId, packet.id, { status: 'sent' }));
         }
         return;
       }
-      const name = peerName(noredPeers, threadId, peerName(peers, threadId, 'Nearby peer'));
-      const packet = makeTextPacket({ senderId: identity.id, recipientId: threadId, body: text });
-      const canSend = noredPeers.some(
-        (peer) => peer.id === threadId && peer.identityConfirmed,
-      );
-      ingest(packet, name, true, 'queued', false);
-      if (!canSend) return;
-      try {
-        await sendPacket(threadId, packet);
-        setState((current) => patchMessage(current, threadId, packet.id, { status: 'sent' }));
-      } catch {
-        // It remains queued and will retry after the peer reconnects.
-      }
+      await meshRouter.enqueue(makeTextPacket({ senderId: identity.id, recipientId: threadId, body: text }));
     },
-    [floodPacket, identity.id, ingest, noredPeers, peers, resolveThreadId, sendPacket],
+    [floodPacket, identity.id, ingest, meshRouter, resolveThreadId, setState],
   );
 
   const sendPreparedMedia = useCallback(
@@ -892,18 +908,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     ) => {
       const threadId = resolveThreadId(peerId);
       const thread = stateRef.current.threads.find((item) => item.id === threadId);
+      const isGroup = isAlertThreadId(threadId) || thread?.kind === 'group';
+      const epoch = meshRouter.epoch;
       const bytes = await fileBytes(prepared.uri);
-      const isGroup = thread?.kind === 'group';
+      if (epoch !== meshRouter.epoch) return;
       const manifest = makeMediaManifest({
         id,
         senderId: identity.id,
         recipientId: isGroup ? identity.id : threadId,
-        groupId: isGroup ? thread.id : undefined,
+        groupId: isGroup ? threadId : undefined,
         hops: isGroup ? 0 : undefined,
-        ttlHops: isGroup ? GROUP_TTL_HOPS : undefined,
+        ttlHops: isGroup ? (isAlertThreadId(threadId) ? ALERT_TTL_HOPS : GROUP_TTL_HOPS) : undefined,
         mediaKind,
         mimeType: prepared.mimeType,
-        byteLength: prepared.byteLength,
+        // Both must describe the same byte run the chunker is about to split.
+        byteLength: bytes.byteLength,
         chunkCount: Math.ceil(bytes.byteLength / MEDIA_CHUNK_BYTES),
         hash: prepared.hash,
         width: prepared.width,
@@ -911,9 +930,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         durationMs: prepared.durationMs,
       });
       const name = isGroup
-        ? thread.name
+        ? thread?.name ?? 'Alert'
         : peerName(noredPeers, threadId, peerName(peers, threadId, 'Nearby peer'));
-      appendMediaMessage(manifest, name, true, prepared.uri, 'queued', false);
+      await appendMediaMessage(manifest, name, true, prepared.uri, 'queued', false);
+      if (epoch !== meshRouter.epoch) return;
       if (isGroup) {
         const targets = floodTargets();
         if (!targets.length) return;
@@ -922,11 +942,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             await transmitMedia(peer.id, { ...manifest, recipientId: peer.id }, bytes);
           }
           setState((current) =>
-            patchMessage(current, thread.id, manifest.id, { status: 'sent', transferProgress: 1 }),
+            patchMessage(current, threadId, manifest.id, { status: 'sent', transferProgress: 1 }),
           );
         } catch (error) {
           setState((current) =>
-            patchMessage(current, thread.id, manifest.id, {
+            patchMessage(current, threadId, manifest.id, {
               transferError: error instanceof Error ? error.message : 'Media transfer failed.',
             }),
           );
@@ -955,22 +975,28 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       peers,
       resolveThreadId,
       transmitMedia,
+      setState,
+      meshRouter,
     ],
   );
 
   const sendImage = useCallback(
     async (peerId: string, sourceUri: string, width: number, height: number) => {
+      const epoch = meshRouter.epoch;
       const id = createId();
       const prepared = await prepareImage(sourceUri, id, width, height);
+      if (epoch !== meshRouter.epoch) return;
       await sendPreparedMedia(peerId, 'image', prepared, id);
     },
-    [sendPreparedMedia],
+    [sendPreparedMedia, meshRouter],
   );
 
   const sendVoiceNote = useCallback(
     async (peerId: string, sourceUri: string, durationMs: number) => {
+      const epoch = meshRouter.epoch;
       const id = createId();
       const prepared = await persistVoiceNote(sourceUri, id);
+      if (epoch !== meshRouter.epoch) return;
       await sendPreparedMedia(
         peerId,
         'audio',
@@ -978,7 +1004,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         id,
       );
     },
-    [sendPreparedMedia],
+    [sendPreparedMedia, meshRouter],
   );
 
   const messagesFor = useCallback(

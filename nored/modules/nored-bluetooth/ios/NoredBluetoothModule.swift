@@ -8,6 +8,10 @@ private let rxUUID = CBUUID(string: "6E4F5245-442D-4D45-5348-000000000003")
 private let txUUID = CBUUID(string: "6E4F5245-442D-4D45-5348-000000000004")
 private let deviceIdKey = "nored_ble_device_id"
 private let displayNameKey = "nored_ble_display_name"
+private let avatarIconKey = "nored_ble_avatar_icon"
+private let avatarColorKey = "nored_ble_avatar_color"
+private let avatarIcons = ["nearby", "chats", "alerts", "games", "gear", "mic", "image", "send"]
+private let avatarColorCount = 9
 private let stalePeerMs: Double = 20_000
 private let packetMagic: UInt8 = 0x4E
 private let maxConnections = 6
@@ -19,6 +23,8 @@ private struct PeerRecord {
   var lastSeen: Double
   var nored: Bool
   var confirmedIdentity: Bool
+  var avatarIcon: String?
+  var avatarColor: Int?
 }
 
 private struct ClientLink {
@@ -157,6 +163,10 @@ private final class NoredPeripheralClientDelegate: NSObject, CBPeripheralDelegat
   func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
     owner?.peripheral(peripheral, didModifyServices: invalidatedServices)
   }
+
+  func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+    owner?.peripheral(peripheral, didReadRSSI: RSSI, error: error)
+  }
 }
 
 public final class NoredBluetoothModule: Module {
@@ -245,6 +255,33 @@ public final class NoredBluetoothModule: Module {
     }
   }
 
+  private func stableHash(_ input: String) -> UInt32 {
+    var hash: UInt32 = 0
+    for scalar in input.unicodeScalars {
+      hash = hash &* 31 &+ scalar.value
+    }
+    return hash
+  }
+
+  private func avatarProfile(for id: String) -> (icon: String, color: Int) {
+    let hash = stableHash(id)
+    let icon = avatarIcons[Int(hash % UInt32(avatarIcons.count))]
+    let color = Int((hash &* 31) % UInt32(avatarColorCount))
+    return (icon, color)
+  }
+
+  private func ensureAvatarProfile(for id: String) -> (icon: String, color: Int) {
+    let defaults = UserDefaults.standard
+    if let icon = defaults.string(forKey: avatarIconKey),
+       defaults.object(forKey: avatarColorKey) != nil {
+      return (icon, defaults.integer(forKey: avatarColorKey))
+    }
+    let profile = avatarProfile(for: id)
+    defaults.set(profile.icon, forKey: avatarIconKey)
+    defaults.set(profile.color, forKey: avatarColorKey)
+    return profile
+  }
+
   private func identityMap() -> [String: Any] {
     let defaults = UserDefaults.standard
     var id = defaults.string(forKey: deviceIdKey)
@@ -257,7 +294,13 @@ public final class NoredBluetoothModule: Module {
     if storedName != name {
       defaults.set(name, forKey: displayNameKey)
     }
-    return ["id": id!, "name": name]
+    let avatar = ensureAvatarProfile(for: id!)
+    return [
+      "id": id!,
+      "name": name,
+      "avatarIcon": avatar.icon,
+      "avatarColor": avatar.color,
+    ]
   }
 
   private func normalizedDisplayName(_ rawName: String) -> String? {
@@ -278,9 +321,11 @@ public final class NoredBluetoothModule: Module {
   private func identityData() -> Data {
     let identity = identityMap()
     return (try? JSONSerialization.data(withJSONObject: [
-      "v": 1,
+      "v": 2,
       "id": identity["id"]!,
-      "name": identity["name"]!
+      "name": identity["name"]!,
+      "avatarIcon": identity["avatarIcon"]!,
+      "avatarColor": identity["avatarColor"]!,
     ])) ?? Data()
   }
 
@@ -464,6 +509,7 @@ public final class NoredBluetoothModule: Module {
       publishIdentityUpdate()
       writeIdentityToConnectedPeers()
     }
+    pollRemoteRssi()
     adoptConnectedPeripherals()
   }
 
@@ -563,7 +609,7 @@ public final class NoredBluetoothModule: Module {
       return isNored ? "Nored user" : "Unknown device"
     }()
     let now = Date().timeIntervalSince1970 * 1000
-    let rssi = RSSI.intValue == 127 ? existing?.rssi : RSSI.intValue
+    let rssi = sanitizedRssi(RSSI.intValue) ?? existing?.rssi
     let displayName: String = {
       if let advertisedName, !advertisedName.isEmpty {
         return String(advertisedName.prefix(40))
@@ -610,6 +656,7 @@ public final class NoredBluetoothModule: Module {
     clientLinks[peripheral.identifier] = link
     log("info", "[CONNECTION] connected \(peripheral.identifier.uuidString.prefix(8))")
     restartAdvertising()
+    peripheral.readRSSI()
     peripheral.discoverServices([serviceUUID])
   }
 
@@ -908,6 +955,8 @@ public final class NoredBluetoothModule: Module {
         return
       }
       let peerId = id.lowercased()
+      let avatarIcon = value?["avatarIcon"] as? String
+      let avatarColor = value?["avatarColor"] as? Int
       var link = clientLinks[peripheral.identifier] ?? ClientLink(peripheral: peripheral)
       link.peerId = peerId
       clientLinks[peripheral.identifier] = link
@@ -917,6 +966,8 @@ public final class NoredBluetoothModule: Module {
       upsertIdentityPeer(
         id: peerId,
         name: String(rawName.prefix(40)),
+        avatarIcon: avatarIcon,
+        avatarColor: avatarColor,
         replacing: previousId == peerId ? nil : previousId
       )
       log("info", "[DISCOVERY] peer discovered \(peerId.prefix(8))")
@@ -1128,20 +1179,25 @@ public final class NoredBluetoothModule: Module {
     let total = Int(data[2])
     guard total > 0, seq < total else { return }
     let part = data.subdata(in: 3..<data.count)
-    var assembler = assemblers[peerId] ?? FrameAssembler(
-      total: total,
-      parts: [:],
-      startedAt: Date().timeIntervalSince1970 * 1000
-    )
-    if assembler.total != total {
-      assembler = FrameAssembler(total: total, parts: [:], startedAt: Date().timeIntervalSince1970 * 1000)
+    let now = Date().timeIntervalSince1970 * 1000
+    var assembler = assemblers[peerId]
+    if let existing = assembler, existing.total != total {
+      if seq == 0, total == 1, let packet = String(data: part, encoding: .utf8) {
+        sendEvent("onPacketReceived", ["peerId": peerId, "packet": packet])
+        return
+      }
+      guard seq == 0 else { return }
+      assembler = FrameAssembler(total: total, parts: [:], startedAt: now)
+    } else if assembler == nil {
+      assembler = FrameAssembler(total: total, parts: [:], startedAt: now)
     }
-    assembler.parts[seq] = part
-    if assembler.parts.count == total {
+    assembler!.parts[seq] = part
+    assembler!.startedAt = now
+    if assembler!.parts.count == total {
       assemblers.removeValue(forKey: peerId)
       var payload = Data()
       for index in 0..<total {
-        guard let next = assembler.parts[index] else { return }
+        guard let next = assembler!.parts[index] else { return }
         payload.append(next)
       }
       guard let packet = String(data: payload, encoding: .utf8) else {
@@ -1151,11 +1207,17 @@ public final class NoredBluetoothModule: Module {
       log("info", "[MSG] received \(payload.count) bytes")
       sendEvent("onPacketReceived", ["peerId": peerId, "packet": packet])
     } else {
-      assemblers[peerId] = assembler
+      assemblers[peerId] = assembler!
     }
   }
 
-  private func upsertIdentityPeer(id: String, name: String, replacing requestedReplacement: String? = nil) {
+  private func upsertIdentityPeer(
+    id: String,
+    name: String,
+    avatarIcon: String? = nil,
+    avatarColor: Int? = nil,
+    replacing requestedReplacement: String? = nil
+  ) {
     let now = Date().timeIntervalSince1970 * 1000
     let replacesId = requestedReplacement.flatMap { peers[$0] == nil ? nil : $0 }
     if let oldId = replacesId, oldId != id {
@@ -1167,24 +1229,68 @@ public final class NoredBluetoothModule: Module {
       peers[id] = PeerRecord(
         id: id,
         name: name,
-        rssi: previous?.rssi,
+        rssi: sanitizedRssi(previous?.rssi) ?? sanitizedRssi(peers[id]?.rssi),
         lastSeen: now,
         nored: true,
-        confirmedIdentity: true
+        confirmedIdentity: true,
+        avatarIcon: avatarIcon ?? previous?.avatarIcon,
+        avatarColor: avatarColor ?? previous?.avatarColor
       )
     } else {
       let existing = peers[id]
+      let fallback = requestedReplacement.flatMap { peers[$0]?.rssi }
       peers[id] = PeerRecord(
         id: id,
         name: name,
-        rssi: existing?.rssi,
+        rssi: sanitizedRssi(existing?.rssi) ?? sanitizedRssi(fallback),
         lastSeen: now,
         nored: true,
-        confirmedIdentity: true
+        confirmedIdentity: true,
+        avatarIcon: avatarIcon ?? existing?.avatarIcon,
+        avatarColor: avatarColor ?? existing?.avatarColor
       )
     }
     lastEmitAt[id] = now
     sendEvent("onPeerDiscovered", peerMap(peers[id]!, replacesId: replacesId == id ? nil : replacesId))
+  }
+
+  private func sanitizedRssi(_ raw: Int?) -> Int? {
+    guard let raw, raw != 127, raw >= -127, raw <= 20 else { return nil }
+    return raw
+  }
+
+  private func signalBucket(_ rssi: Int) -> Int {
+    if rssi >= -60 { return 3 }
+    if rssi >= -75 { return 2 }
+    return 1
+  }
+
+  private func pollRemoteRssi() {
+    for link in clientLinks.values {
+      link.peripheral.readRSSI()
+    }
+  }
+
+  public func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+    guard error == nil else { return }
+    applyRssi(hardwareId: peripheral.identifier.uuidString.lowercased(), raw: RSSI.intValue)
+  }
+
+  private func applyRssi(hardwareId: String, raw: Int) {
+    guard let rssi = sanitizedRssi(raw) else { return }
+    let peerId = hardwareIdToPeerId[hardwareId] ?? hardwareId
+    guard var peer = peers[peerId] ?? peers[hardwareId] else { return }
+    let previous = peer.rssi
+    if previous == rssi { return }
+    let bucketChanged = previous == nil || signalBucket(previous!) != signalBucket(rssi)
+    peer.rssi = rssi
+    peers[peer.id] = peer
+    let now = Date().timeIntervalSince1970 * 1000
+    let last = lastEmitAt[peer.id] ?? 0
+    if bucketChanged || now - last >= 1000 {
+      lastEmitAt[peer.id] = now
+      sendEvent("onPeerDiscovered", peerMap(peer))
+    }
   }
 
   private func peerMap(_ peer: PeerRecord, replacesId: String? = nil) -> [String: Any] {
@@ -1195,8 +1301,14 @@ public final class NoredBluetoothModule: Module {
       "nored": peer.nored,
       "identityConfirmed": peer.confirmedIdentity,
     ]
-    if let rssi = peer.rssi {
+    if let rssi = sanitizedRssi(peer.rssi) {
       map["rssi"] = rssi
+    }
+    if let avatarIcon = peer.avatarIcon {
+      map["avatarIcon"] = avatarIcon
+    }
+    if let avatarColor = peer.avatarColor {
+      map["avatarColor"] = avatarColor
     }
     if let replacesId {
       map["replacesId"] = replacesId

@@ -16,7 +16,13 @@ export default function SettingsScreen() {
     <SafeAreaView edges={['bottom']} style={styles.safe}>
       <ScrollView contentContainerStyle={styles.body}>
         <View style={styles.profile}>
-          <Avatar name={identity.name} size={64} />
+          <Avatar
+            color={identity.avatarColor}
+            icon={identity.avatarIcon}
+            name={identity.name}
+            peerId={identity.id}
+            size={64}
+          />
           <Text style={styles.name}>{identity.name}</Text>
           <Text style={styles.meta}>No account · Device ID {identity.id.slice(0, 8)}</Text>
         </View>
@@ -46,13 +52,13 @@ export default function SettingsScreen() {
           onPress={() =>
             Alert.alert(
               'Clear local data',
-              'Delete all saved chats from this phone? This cannot be undone.',
+              'Delete all saved chats, contacts, photos and voice notes from this phone? This cannot be undone.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
                   text: 'Clear',
                   style: 'destructive',
-                  onPress: () => void clearLocalData(),
+                  onPress: () => void clearLocalData().catch((error) => Alert.alert('Could not clear all data', error instanceof Error ? error.message : 'Storage operation failed.')),
                 },
               ],
             )

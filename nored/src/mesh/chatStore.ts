@@ -8,11 +8,20 @@ import type {
   TextPacket,
 } from '@/transport';
 
-export type ChatDelivery = 'queued' | 'sent' | 'relayed' | 'failed';
+export type ChatDelivery = 'queued' | 'sending' | 'carrying' | 'delivered' | 'expired' | 'sent' | 'relayed' | 'failed';
 
 export const MAX_GROUP_MEMBERS = 8;
 export const MAX_GROUPS = 20;
 export const GROUP_TTL_HOPS = 5;
+export const ALERT_THREAD_PREFIX = 'alert-';
+
+export function alertThreadId(alertId: string) {
+  return `${ALERT_THREAD_PREFIX}${alertId}`;
+}
+
+export function isAlertThreadId(threadId: string | undefined) {
+  return Boolean(threadId?.startsWith(ALERT_THREAD_PREFIX));
+}
 
 export type ChatThread = {
   id: string;
@@ -361,10 +370,10 @@ export function appendMessage(
 ): ChatState {
   const previous = state.messages[message.threadId] ?? [];
   if (previous.some((item) => item.id === message.id)) return state;
-  const messages = [...previous, message].slice(-1000);
+  const messages = [...previous, message].sort((a, b) => a.timestamp - b.timestamp);
   const queued = messages.some((item) => item.mine && item.status === 'queued');
   const current = state.threads.find((item) => item.id === message.threadId);
-  const kind = current?.kind ?? 'dm';
+  const kind = isAlertThreadId(message.threadId) ? 'group' : (current?.kind ?? 'dm');
   const thread: ChatThread = {
     id: message.threadId,
     kind,
@@ -372,8 +381,8 @@ export function appendMessage(
     memberIds: current?.memberIds ?? (kind === 'dm' ? [message.threadId] : []),
     memberNames: current?.memberNames ?? {},
     name: kind === 'group' ? (current?.name ?? threadName) : threadName,
-    preview: messagePreview(message),
-    updatedAt: message.timestamp,
+    preview: messagePreview(messages.at(-1)!),
+    updatedAt: messages.at(-1)!.timestamp,
     unread: unread ? (current?.unread ?? 0) + 1 : (current?.unread ?? 0),
     queued,
   };

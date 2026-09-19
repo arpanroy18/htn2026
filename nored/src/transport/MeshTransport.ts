@@ -1,3 +1,4 @@
+import type { WirePacket } from '../mesh/protocol';
 export type Peer = {
   id: string;
   name: string;
@@ -6,6 +7,8 @@ export type Peer = {
   nored?: boolean;
   identityConfirmed?: boolean;
   replacesId?: string;
+  avatarIcon?: string;
+  avatarColor?: number;
 };
 
 type PacketBase = {
@@ -80,7 +83,7 @@ export type AlertPacket = PacketBase & {
   ttlHops?: number;
 };
 
-export type GameId = 'mesh-ping' | 'telephone';
+export type GameId = 'mesh-ping' | 'pong' | 'telephone' | 'chess';
 
 export type GameEvent =
   | 'invite'
@@ -91,7 +94,16 @@ export type GameEvent =
   | 'baton'
   | 'round-start'
   | 'stroke'
-  | 'round-finish';
+  | 'round-finish'
+  | 'pong-start'
+  | 'pong-input'
+  | 'pong-state'
+  | 'telephone-prompt'
+  | 'telephone-drawing'
+  | 'telephone-guess'
+  | 'chess-start'
+  | 'chess-move'
+  | 'chess-resign';
 
 export type GamePacket = PacketBase & {
   type: 'game';
@@ -116,6 +128,8 @@ export type Packet =
 export type DeviceIdentity = {
   id: string;
   name: string;
+  avatarIcon?: string;
+  avatarColor?: number;
 };
 
 export type TransportState =
@@ -135,10 +149,10 @@ export interface MeshTransport {
   getIdentity(): DeviceIdentity;
   setDisplayName(name: string): Promise<DeviceIdentity>;
   getPeers(): Promise<Peer[]>;
-  sendPacket(peerId: string, packet: Packet): Promise<void>;
+  sendPacket(peerId: string, packet: WirePacket): Promise<void>;
   onPeerDiscovered(callback: (peer: Peer) => void): Subscription;
   onPeerLost(callback: (peerId: string) => void): Subscription;
-  onPacketReceived(callback: (peerId: string, packet: Packet) => void): Subscription;
+  onPacketReceived(callback: (peerId: string, packet: WirePacket) => void): Subscription;
   onStateChanged(callback: (state: TransportState) => void): Subscription;
   onLog(callback: (message: string) => void): Subscription;
 }

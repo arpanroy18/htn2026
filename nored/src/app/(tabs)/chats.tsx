@@ -1,3 +1,4 @@
+import { useRouterData } from '@/mesh/RouterContext';
 import { router } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
@@ -5,11 +6,19 @@ import { PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress, UnreadBadge } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
-import { formatThreadTime, type ChatThread } from '@/mesh/chatStore';
+import { formatThreadTime, isAlertThreadId, type ChatThread } from '@/mesh/chatStore';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
-function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }) {
+function ThreadRow({
+  thread,
+  inRange,
+  peer,
+}: {
+  thread: ChatThread;
+  inRange: boolean;
+  peer?: { avatarIcon?: string; avatarColor?: number };
+}) {
   const unread = thread.unread > 0;
   const isGroup = thread.kind === 'group';
   return (
@@ -21,7 +30,14 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
         })
       }
       style={styles.row}>
-      <Avatar kind={isGroup ? 'group' : 'dm'} name={thread.name} size={52} />
+      <Avatar
+        color={peer?.avatarColor}
+        icon={peer?.avatarIcon}
+        kind={isGroup ? 'group' : 'dm'}
+        name={thread.name}
+        peerId={isGroup ? undefined : thread.peerId}
+        size={52}
+      />
       <View style={styles.main}>
         <View style={styles.titleRow}>
           <Text numberOfLines={1} style={[styles.name, unread && styles.nameUnread]}>
@@ -48,12 +64,14 @@ function ThreadRow({ thread, inRange }: { thread: ChatThread; inRange: boolean }
 
 export default function ChatsScreen() {
   const { threads } = useChat();
+  const { contacts } = useRouterData();
   const { identity, noredPeers } = useMeshUi();
   const inRange = new Set(
     noredPeers.filter((peer) => peer.identityConfirmed).map((peer) => peer.id),
   );
-  const groups = threads.filter((thread) => thread.kind === 'group');
-  const dms = threads.filter((thread) => thread.kind !== 'group');
+  const groups = threads.filter((thread) => thread.kind === 'group' && !isAlertThreadId(thread.id));
+  const dms = threads.filter((thread) => thread.kind !== 'group' && !isAlertThreadId(thread.id));
+  const visible = groups.length + dms.length;
 
   const groupInRange = (thread: ChatThread) =>
     thread.memberIds.some((id) => id !== identity.id && inRange.has(id));
@@ -69,11 +87,25 @@ export default function ChatsScreen() {
         title="Chats"
       />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {threads.length === 0 ? (
+        {Object.values(contacts).length ? (
+          <>
+            <Text style={styles.groupLabel}>SAVED CONTACTS</Text>
+            <GroupedList>
+              {Object.values(contacts).map((contact) => (
+                <RowPress key={contact.id} style={styles.row} onPress={() => router.push({ pathname: '/chat/[id]', params: { id: contact.id, title: contact.name } })}>
+                  <Avatar name={contact.name} size={38} />
+                  <Text style={styles.name}>{contact.name}</Text>
+                  <Text style={styles.time}>{inRange.has(contact.id) ? 'Nearby' : 'Via mesh'}</Text>
+                </RowPress>
+              ))}
+            </GroupedList>
+          </>
+        ) : null}
+        {visible === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>
-              Tap a Nored phone on Nearby to start a chat, or create a group. Text, photos, and voice notes travel over Bluetooth and queue if nobody is in range.
+              Tap a Nored phone on Nearby to start a chat, save contacts for remote text, or create a group. Photos and voice notes wait for a direct connection.
             </Text>
           </View>
         ) : (
@@ -93,7 +125,12 @@ export default function ChatsScreen() {
                 <Text style={[styles.groupLabel, groups.length ? styles.spaced : null]}>DIRECT</Text>
                 <GroupedList>
                   {dms.map((thread) => (
-                    <ThreadRow inRange={inRange.has(thread.peerId)} key={thread.id} thread={thread} />
+                    <ThreadRow
+                      inRange={inRange.has(thread.peerId)}
+                      key={thread.id}
+                      peer={noredPeers.find((peer) => peer.id === thread.peerId)}
+                      thread={thread}
+                    />
                   ))}
                 </GroupedList>
               </>

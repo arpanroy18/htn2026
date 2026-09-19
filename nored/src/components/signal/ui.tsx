@@ -1,6 +1,9 @@
 import { Children, Fragment, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View, type PressableProps, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
+import { avatarFromSeed, resolveAvatar } from '@/avatar/profile';
+import { AnimalFace } from '@/components/signal/animalFaces';
+import { ChatsIcon } from '@/components/signal/icons';
 import { signal } from '@/theme/signal';
 
 export function OutlinedButton({
@@ -56,15 +59,18 @@ export function IconButton({
   disabled,
   tone = 'outline',
   style,
+  accessibilityLabel,
 }: {
   children: ReactNode;
   onPress?: () => void;
   disabled?: boolean;
   tone?: 'outline' | 'ghost' | 'filled';
   style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string;
 }) {
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}
@@ -139,34 +145,116 @@ export function UnreadBadge({ count }: { count: number }) {
   );
 }
 
-const AVATAR_TONES = [
-  { bg: signal.sky, fg: signal.ink },
-  { bg: signal.mist, fg: signal.white },
-  { bg: signal.deep, fg: signal.white },
-  { bg: signal.blue, fg: signal.white },
-] as const;
+export type AvatarStackMember = {
+  id: string;
+  name: string;
+  peerId?: string;
+  icon?: string;
+  color?: number;
+};
 
-function toneForName(name: string) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  return AVATAR_TONES[hash % AVATAR_TONES.length];
+function StackDisc({
+  children,
+  index,
+  overlap,
+  outer,
+}: {
+  children: ReactNode;
+  index: number;
+  overlap: number;
+  outer: number;
+}) {
+  return (
+    <View
+      style={[
+        styles.avatarStackItem,
+        {
+          borderRadius: outer / 2,
+          height: outer,
+          marginLeft: index === 0 ? 0 : -overlap,
+          width: outer,
+          zIndex: index + 1,
+        },
+      ]}>
+      {children}
+    </View>
+  );
 }
 
-export function Avatar({ name, size = 44, kind = 'dm' }: { name: string; size?: number; kind?: 'dm' | 'group' }) {
-  const initial = name.trim().slice(0, 1).toUpperCase() || '?';
-  const tone = toneForName(name);
+export function AvatarStack({
+  members,
+  size = 36,
+  max = 5,
+}: {
+  members: AvatarStackMember[];
+  size?: number;
+  max?: number;
+}) {
+  if (members.length === 0) return null;
+  const ring = 3;
+  const outer = size + ring * 2;
+  const overlap = Math.round(size * 0.42);
+  const visible = members.slice(0, max);
+  const overflow = members.length - visible.length;
+
+  return (
+    <View style={styles.avatarStack}>
+      {visible.map((member, index) => (
+        <StackDisc index={index} key={member.id} outer={outer} overlap={overlap}>
+          <Avatar
+            color={member.color}
+            icon={member.icon}
+            name={member.name}
+            peerId={member.peerId ?? member.id}
+            size={size}
+          />
+        </StackDisc>
+      ))}
+      {overflow > 0 ? (
+        <StackDisc index={visible.length} outer={outer} overlap={overlap}>
+          <View style={[styles.avatarStackOverflow, { borderRadius: size / 2, height: size, width: size }]}>
+            <Text style={[styles.avatarStackOverflowText, { fontSize: size * 0.32 }]}>+{overflow}</Text>
+          </View>
+        </StackDisc>
+      ) : null}
+    </View>
+  );
+}
+
+export function Avatar({
+  name,
+  peerId,
+  icon,
+  color,
+  size = 44,
+  kind = 'dm',
+}: {
+  name: string;
+  peerId?: string;
+  icon?: string;
+  color?: number;
+  size?: number;
+  kind?: 'dm' | 'group';
+}) {
+  const seed = peerId ?? name;
+  const profile = kind === 'group' ? avatarFromSeed(name) : resolveAvatar(seed, icon, color);
+  const iconSize = size * (kind === 'group' ? 0.46 : 0.64);
   return (
     <View
       style={[
         styles.avatar,
         {
-          backgroundColor: tone.bg,
+          backgroundColor: profile.tone.bg,
           borderRadius: kind === 'group' ? size * 0.32 : size / 2,
           height: size,
           width: size,
         },
       ]}>
-      <Text style={[styles.avatarText, { color: tone.fg, fontSize: size * 0.42 }]}>{initial}</Text>
+      {kind === 'group' ? (
+        <ChatsIcon color={signal.ink} size={iconSize} />
+      ) : (
+        <AnimalFace animal={profile.icon} size={iconSize} />
+      )}
     </View>
   );
 }
@@ -307,7 +395,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: {
+  avatarStack: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  avatarStackItem: {
+    alignItems: 'center',
+    backgroundColor: signal.paper,
+    justifyContent: 'center',
+  },
+  avatarStackOverflow: {
+    alignItems: 'center',
+    backgroundColor: signal.fog,
+    justifyContent: 'center',
+  },
+  avatarStackOverflowText: {
+    color: signal.slate,
     fontWeight: '700',
   },
   group: {
