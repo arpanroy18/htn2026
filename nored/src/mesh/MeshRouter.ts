@@ -3,12 +3,8 @@ import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
 import { alertFromPacket, appendAlert } from './alertStore.ts';
-<<<<<<< Updated upstream
 import { PEER_GRACE_MS } from './peerGrace.ts';
-import { canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
-=======
 import { ALERT_LIVE_MS, canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
->>>>>>> Stashed changes
 import type { Control, ControlFields, Envelope, WirePacket } from './protocol';
 import { SendScheduler } from './scheduler.ts';
 
