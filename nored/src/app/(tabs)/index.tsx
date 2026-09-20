@@ -34,17 +34,15 @@ function peerStatus(peer: Peer) {
 
 function PeerRow({
   peer,
-  dimmed,
   onPress,
   onLongPress,
 }: {
   peer: Peer;
-  dimmed?: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
   return (
-    <RowPress onLongPress={onLongPress} onPress={onPress} style={[styles.peer, dimmed && styles.peerDimmed]}>
+    <RowPress onLongPress={onLongPress} onPress={onPress} style={styles.peer}>
       <Avatar
         color={peer.avatarColor}
         icon={peer.avatarIcon}
@@ -53,7 +51,7 @@ function PeerRow({
         size={44}
       />
       <View style={styles.peerMain}>
-        <Text style={[styles.peerName, dimmed && styles.peerNameDimmed]}>{peer.name}</Text>
+        <Text style={styles.peerName}>{peer.name}</Text>
         <Text style={styles.peerMeta}>{peerStatus(peer)}</Text>
       </View>
       <View style={styles.peerRight}>
@@ -95,10 +93,7 @@ export default function NearbyScreen() {
     () => visibleNoredPeers.filter((peer) => !isBadgePeer(peer.name)),
     [visibleNoredPeers],
   );
-  const peerReachable = (peer: Peer) => !peer.pendingLoss;
-
   const openDm = (peer: Peer) => {
-    if (!peerReachable(peer)) return;
     rememberDm(peer.id, peer.name);
     router.push({
       pathname: '/chat/[id]',
@@ -196,7 +191,6 @@ export default function NearbyScreen() {
               {userPeers.map((peer) => (
                 <PeerRow
                   key={peer.id}
-                  dimmed={!peerReachable(peer)}
                   onLongPress={() => invite(peer)}
                   onPress={() => openDm(peer)}
                   peer={peer}
@@ -215,7 +209,6 @@ export default function NearbyScreen() {
               {badgePeers.map((peer) => (
                 <PeerRow
                   key={peer.id}
-                  dimmed={!peerReachable(peer)}
                   onLongPress={() => invite(peer)}
                   onPress={() => openDm(peer)}
                   peer={peer}
@@ -289,10 +282,8 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
   },
-  peerDimmed: { opacity: 0.55 },
   peerMain: { flex: 1 },
   peerName: { color: signal.ink, fontSize: 16, fontWeight: '600' },
-  peerNameDimmed: { color: signal.slate },
   peerMeta: { color: signal.slate, fontSize: 13, marginTop: 2 },
   peerRight: { alignItems: 'flex-end', gap: 4 },
   signalLabel: { color: signal.slate, fontSize: 11, fontWeight: '600' },
