@@ -73,7 +73,6 @@ export default function NearbyScreen() {
     noredPeers,
     visibleNoredPeers,
     error,
-    logs,
     rescan,
   } = useMeshUi();
   const { openDm: rememberDm } = useChat();
@@ -230,12 +229,6 @@ export default function NearbyScreen() {
             </GroupedList>
           )}
 
-          <View style={styles.log}>
-            <Text style={styles.logTitle}>DEVICE LOG</Text>
-            <Text style={styles.logText}>
-              {logs.length ? logs.slice(0, 3).join('\n') : '[BLE] waiting for native transport'}
-            </Text>
-          </View>
         </ScrollView>
       </Screen>
     </KeyboardAvoidingView>
@@ -308,19 +301,4 @@ const styles = StyleSheet.create({
   peerMeta: { color: signal.slate, fontSize: 13, marginTop: 2 },
   peerRight: { alignItems: 'flex-end', gap: 4 },
   signalLabel: { color: signal.slate, fontSize: 11, fontWeight: '600' },
-  log: {
-    backgroundColor: signal.twilight,
-    borderRadius: 16,
-    marginTop: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  logTitle: { color: signal.fog, fontSize: 11, fontWeight: '600', letterSpacing: 1.3 },
-  logText: {
-    color: signal.fog,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 8,
-  },
 });

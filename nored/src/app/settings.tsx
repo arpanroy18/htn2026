@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ChevronIcon } from '@/components/signal/icons';
@@ -9,7 +9,7 @@ import { useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 
 export default function SettingsScreen() {
-  const { identity } = useMeshUi();
+  const { identity, logs } = useMeshUi();
   const { clearLocalData } = useChat();
 
   return (
@@ -53,6 +53,13 @@ export default function SettingsScreen() {
           }
           style={styles.clearButton}
         />
+
+        <Text style={[styles.label, styles.spaced]}>DEVICE LOG</Text>
+        <View style={styles.log}>
+          <Text style={styles.logText}>
+            {logs.length ? logs.slice(0, 3).join('\n') : '[BLE] waiting for native transport'}
+          </Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -77,4 +84,17 @@ const styles = StyleSheet.create({
   },
   rowLabel: { color: signal.ink, fontSize: 16, fontWeight: '500' },
   clearButton: { marginTop: 10 },
+  spaced: { marginTop: 14 },
+  log: {
+    backgroundColor: signal.twilight,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  logText: {
+    color: signal.fog,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+    fontSize: 11,
+    lineHeight: 16,
+  },
 });
