@@ -434,7 +434,6 @@ export default function GameScreen() {
             <Text style={styles.boardBody}>
               Every phone that wants to play must open this game and join.
             </Text>
-            <View style={styles.placeholder} />
           </View>
         ) : id === 'pong' ? (
           <PongBoard />
@@ -499,12 +498,6 @@ const styles = StyleSheet.create({
   },
   boardTitle: { color: signal.ink, fontSize: 20, fontWeight: '700' },
   boardBody: { color: signal.slate, fontSize: 16, lineHeight: 24, marginTop: 8 },
-  placeholder: {
-    backgroundColor: signal.paper,
-    borderRadius: 16,
-    height: 160,
-    marginTop: 18,
-  },
   empty: {
     backgroundColor: signal.paper,
     borderRadius: 12,
