@@ -6,6 +6,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "driver/rmt_tx.h"
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "nvs_flash.h"
@@ -25,7 +26,7 @@ static const char *TAG = "nored_badge";
 #define MAX_CONNS 2
 #define MAX_NAME 40
 #define MAX_ID 40
-#define MAX_PACKET 2048
+#define MAX_PACKET 4096
 /*
  * Dedup rings. Phones dedup by packet id for the packet's lifetime; the badge keeps two
  * RAM rings instead:
@@ -542,6 +543,75 @@ static void acknowledge_packet(link_t *link, const char *packet_id)
     send_wire_json(link, receipt);
 }
 
+/*
+ * A badge is a real mesh hop, not a transparent repeater. Advance the envelope's TTL
+ * counter and add this badge to the diagnostic path before sending it onward.
+ */
+static bool prepare_forward_payload(const uint8_t *payload, uint16_t len,
+                                    const uint8_t **out, uint16_t *out_len,
+                                    char **allocated)
+{
+    *out = payload;
+    *out_len = len;
+    *allocated = NULL;
+
+    cJSON *root = cJSON_ParseWithLength((const char *)payload, len);
+    if (!root) {
+        ESP_LOGW(TAG, "drop malformed JSON packet");
+        return false;
+    }
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "mesh-data") != 0) {
+        cJSON_Delete(root);
+        return true; /* Legacy application packet: preserve its bytes exactly. */
+    }
+
+    cJSON *hop_count = cJSON_GetObjectItemCaseSensitive(root, "hopCount");
+    cJSON *hop_limit = cJSON_GetObjectItemCaseSensitive(root, "hopLimit");
+    if (!cJSON_IsNumber(hop_count) || !cJSON_IsNumber(hop_limit) ||
+        hop_count->valueint < 0 || hop_limit->valueint < 1 ||
+        hop_count->valueint >= hop_limit->valueint) {
+        ESP_LOGI(TAG, "mesh packet reached its hop limit");
+        cJSON_Delete(root);
+        return false;
+    }
+    cJSON_SetNumberValue(hop_count, hop_count->valueint + 1);
+
+    cJSON *direct_only = cJSON_GetObjectItemCaseSensitive(root, "directOnly");
+    if (direct_only) {
+        cJSON_ReplaceItemInObjectCaseSensitive(root, "directOnly", cJSON_CreateFalse());
+    } else {
+        cJSON_AddFalseToObject(root, "directOnly");
+    }
+
+    cJSON *path = cJSON_GetObjectItemCaseSensitive(root, "path");
+    if (!cJSON_IsArray(path)) {
+        if (path) cJSON_DeleteItemFromObjectCaseSensitive(root, "path");
+        path = cJSON_AddArrayToObject(root, "path");
+        cJSON *packet = cJSON_GetObjectItemCaseSensitive(root, "packet");
+        cJSON *sender = cJSON_GetObjectItemCaseSensitive(packet, "senderId");
+        if (cJSON_IsString(sender)) cJSON_AddItemToArray(path, cJSON_CreateString(sender->valuestring));
+    }
+    cJSON *last = cJSON_GetArrayItem(path, cJSON_GetArraySize(path) - 1);
+    if (!cJSON_IsString(last) || strcmp(last->valuestring, local_id) != 0) {
+        cJSON_AddItemToArray(path, cJSON_CreateString(local_id));
+    }
+
+    char *rendered = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!rendered) return false;
+    size_t rendered_len = strlen(rendered);
+    if (rendered_len >= MAX_PACKET || rendered_len > UINT16_MAX) {
+        ESP_LOGW(TAG, "packet too large after adding route metadata");
+        cJSON_free(rendered);
+        return false;
+    }
+    *out = (const uint8_t *)rendered;
+    *out_len = (uint16_t)rendered_len;
+    *allocated = rendered;
+    return true;
+}
+
 static void forward_packet(link_t *from, const uint8_t *payload, uint16_t len)
 {
     reply_to_hello(from, (const char *)payload);
@@ -560,11 +630,16 @@ static void forward_packet(link_t *from, const uint8_t *payload, uint16_t len)
     acknowledge_packet(from, pkt_id);
     receive_alert((const char *)payload);
 
+    const uint8_t *forward_payload;
+    uint16_t forward_len;
+    char *allocated;
+    if (!prepare_forward_payload(payload, len, &forward_payload, &forward_len, &allocated)) return;
+
     for (int i = 0; i < MAX_CONNS; i++) {
         link_t *dest = &links[i];
         if (!dest->used || dest->conn == from->conn || !dest->tx_notify) continue;
         uint16_t chunk = payload_mtu(dest);
-        uint16_t total = (uint16_t)((len + chunk - 1) / chunk);
+        uint16_t total = (uint16_t)((forward_len + chunk - 1) / chunk);
         if (total < 1) total = 1;
         if (total > 255) {
             ESP_LOGW(TAG, "packet too large for hop");
@@ -572,18 +647,19 @@ static void forward_packet(link_t *from, const uint8_t *payload, uint16_t len)
         }
         for (uint16_t seq = 0; seq < total; seq++) {
             uint16_t start = seq * chunk;
-            uint16_t part = (start + chunk > len) ? (len - start) : chunk;
+            uint16_t part = (start + chunk > forward_len) ? (forward_len - start) : chunk;
             uint8_t frame[256];
             if (part > sizeof(frame) - 3) part = sizeof(frame) - 3;
             frame[0] = PACKET_MAGIC;
             frame[1] = (uint8_t)seq;
             frame[2] = (uint8_t)total;
-            memcpy(frame + 3, payload + start, part);
+            memcpy(frame + 3, forward_payload + start, part);
             notify_bytes(dest->conn, h_tx, frame, (uint16_t)(3 + part));
             vTaskDelay(pdMS_TO_TICKS(8));
         }
-        ESP_LOGI(TAG, "forwarded %u bytes to conn %u", len, dest->conn);
+        ESP_LOGI(TAG, "forwarded %u bytes to conn %u", forward_len, dest->conn);
     }
+    if (allocated) cJSON_free(allocated);
 }
 
 static void ingest_frame(link_t *link, const uint8_t *data, uint16_t len)
