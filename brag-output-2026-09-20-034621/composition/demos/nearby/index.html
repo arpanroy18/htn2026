@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=390, height=844" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f6f6f6; font-family: Inter, system-ui, sans-serif; }
+    #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #f6f6f6; }
+    .status { height: 44px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #1b1b1b; }
+    .header { padding: 8px 24px 12px; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 28px; font-weight: 800; color: #1b1b1b; }
+    .mesh-badge { margin: 0 24px 12px; background: #1b1b1b; color: #fff; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; padding: 8px 14px; border-radius: 999px; display: inline-flex; align-items: center; gap: 8px; }
+    .mesh-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: #2c6bed; }
+    .identity { margin: 0 24px 16px; background: #fff; border: 1px solid #e9e9e9; border-radius: 16px; padding: 16px; display: flex; gap: 14px; align-items: center; }
+    .avatar { width: 52px; height: 52px; border-radius: 50%; background: #2c6bed; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 800; flex: none; }
+    .identity .name { font-size: 20px; font-weight: 700; color: #1b1b1b; }
+    .identity .meta { font-size: 13px; color: #404654; margin-top: 3px; }
+    .section { padding: 0 24px; font-size: 11px; font-weight: 600; letter-spacing: 1.4px; color: #404654; margin: 10px 0 6px; }
+    .list { margin: 0 24px; background: #fff; border: 1px solid #e9e9e9; border-radius: 16px; overflow: hidden; }
+    .peer { display: flex; align-items: center; gap: 12px; padding: 14px; border-bottom: 1px solid #e9e9e9; }
+    .peer:last-child { border-bottom: none; }
+    .peer .av { width: 44px; height: 44px; border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 800; flex: none; }
+    .peer .who { flex: 1; }
+    .peer .nm { font-size: 16px; font-weight: 600; color: #1b1b1b; }
+    .peer .mt { font-size: 13px; color: #404654; margin-top: 2px; }
+    .sig { display: flex; align-items: flex-end; gap: 3px; height: 16px; }
+    .sig i { width: 4px; border-radius: 2px; background: #e9e9e9; display: block; }
+    .sig i:nth-child(1){height:5px;} .sig i:nth-child(2){height:9px;} .sig i:nth-child(3){height:13px;} .sig i:nth-child(4){height:16px;}
+    .sig.on i { background: #2942ff; }
+    .sig.mid i:nth-child(1), .sig.mid i:nth-child(2), .sig.mid i:nth-child(3) { background: #2942ff; }
+    .tabs { position: absolute; bottom: 0; left: 0; right: 0; height: 72px; background: #fff; border-top: 1px solid #e9e9e9; display: flex; }
+    .tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 600; color: #404654; }
+    .tab.on { color: #2942ff; }
+    .tab .ic { width: 22px; height: 22px; border-radius: 6px; background: #e9e9e9; }
+    .tab.on .ic { background: #9dbbf8; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="nearby-demo" data-start="0" data-width="390" data-height="844" data-duration="3.5">
+    <div class="status">9:41</div>
+    <div class="header"><h1>NoRed</h1></div>
+    <div class="mesh-badge" id="badge" style="opacity:0;"><span class="dot"></span>OFFLINE MESH &#8226; 3 PEERS</div>
+    <div class="identity">
+      <div class="avatar">A</div>
+      <div><div class="name">Arpan</div><div class="meta">You &#8226; f3a91c02</div></div>
+    </div>
+    <div class="section">USERS</div>
+    <div class="list">
+      <div class="peer" id="p1" style="opacity:0; transform:translateY(20px);">
+        <div class="av" style="background:#2c6bed;">M</div>
+        <div class="who"><div class="nm">Maya</div><div class="mt">Direct &#8226; a41f9c02</div></div>
+        <div class="sig on"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div class="peer" id="p2" style="opacity:0; transform:translateY(20px);">
+        <div class="av" style="background:#2942ff;">T</div>
+        <div class="who"><div class="nm">Theo</div><div class="mt">1 hop &#8226; 77bd10e4</div></div>
+        <div class="sig mid"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div class="peer" id="p3" style="opacity:0; transform:translateY(20px);">
+        <div class="av" style="background:#3c3744;">B</div>
+        <div class="who"><div class="nm">Badge-04</div><div class="mt">Direct &#8226; c9e277ab</div></div>
+        <div class="sig on"><i></i><i></i><i></i><i></i></div>
+      </div>
+    </div>
+    <div class="tabs">
+      <div class="tab on"><div class="ic"></div>Nearby</div>
+      <div class="tab"><div class="ic"></div>Chats</div>
+      <div class="tab"><div class="ic"></div>Alerts</div>
+      <div class="tab"><div class="ic"></div>Games</div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#badge", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35 }, 0.3);
+    tl.fromTo("#p1", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.4 }, 0.7);
+    tl.fromTo("#p2", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.4 }, 1.3);
+    tl.fromTo("#p3", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.4 }, 1.9);
+    window.__timelines["nearby-demo"] = tl;
+  </script>
+</body>
+</html>

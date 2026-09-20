@@ -33,6 +33,12 @@ export function AlertProvider({ children }: { children: ReactNode }) {
   const announced = useRef<Set<string> | null>(null);
   useEffect(() => { void prepareAlertNotifications(); }, []);
   useEffect(() => {
+    if (!alerts.length) {
+      announced.current = new Set();
+      setReadThrough(0);
+      setIncoming(null);
+      return;
+    }
     if (!announced.current) { announced.current = new Set(alerts.map((alert) => alert.id)); return; }
     const fresh = alerts.filter((alert) => !alert.mine && !announced.current!.has(alert.id));
     if (!fresh.length) return;

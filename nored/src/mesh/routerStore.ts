@@ -12,9 +12,11 @@ export type RouterData = {
   alerts: AlertItem[];
   events: { packetId: string; peerId: string; timestamp: number; action: string }[];
   imported: boolean;
+  /** Local content at or before this time is mesh history only — not shown after clear local data. */
+  alertsClearedAt: number;
 };
 export const emptyData = (): RouterData => ({ packets: {}, seen: {}, contacts: {},
-  chat: { threads: [], messages: {} }, alerts: [], events: [], imported: false });
+  chat: { threads: [], messages: {} }, alerts: [], events: [], imported: false, alertsClearedAt: 0 });
 export interface Persistence {
   load(): Promise<RouterData | null>;
   commit(next: RouterData, previous: RouterData): Promise<void>;
@@ -61,7 +63,7 @@ function rows(data: RouterData) {
   for (const collection of ['packets', 'seen', 'contacts'] as const) {
     for (const [key, value] of Object.entries(data[collection])) result.set(`${collection}:${key}`, JSON.stringify(value));
   }
-  for (const key of ['chat', 'alerts', 'events', 'imported'] as const) result.set(key, JSON.stringify(data[key]));
+  for (const key of ['chat', 'alerts', 'events', 'imported', 'alertsClearedAt'] as const) result.set(key, JSON.stringify(data[key]));
   return result;
 }
 export class SqlPersistence implements Persistence {
@@ -82,7 +84,7 @@ export class SqlPersistence implements Persistence {
       if (colon > 0) {
         const collection = key.slice(0, colon) as 'packets' | 'seen' | 'contacts';
         if (['packets', 'seen', 'contacts'].includes(collection)) data[collection][key.slice(colon + 1)] = JSON.parse(value);
-      } else if (['chat', 'alerts', 'events', 'imported'].includes(key)) {
+      } else if (['chat', 'alerts', 'events', 'imported', 'alertsClearedAt'].includes(key)) {
         Object.assign(data, { [key]: JSON.parse(value) });
       }
     }

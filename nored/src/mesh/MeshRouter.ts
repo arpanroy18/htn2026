@@ -102,7 +102,10 @@ export class MeshRouter {
   async clear() {
     this.generation++;
     this.scheduler.cancel(); this.pending.clear();
-    await this.store.transaction((d) => Object.assign(d, { ...emptyData(), imported: true }));
+    const clearedAt = this.now();
+    await this.store.transaction((d) => {
+      Object.assign(d, { ...emptyData(), imported: true, alertsClearedAt: clearedAt });
+    });
     for (const session of this.sessions.values()) { session.inventoryAt = 0; session.inventoryComplete = false; }
   }
   onApplicationPacket(callback: (packet: Packet, peerId: string) => void) {
@@ -239,6 +242,7 @@ export class MeshRouter {
   private display(d: RouterData, value: Envelope, mine: boolean) {
     const p = value.packet;
     if (p.type === 'text') {
+      if (!mine && p.timestamp <= d.alertsClearedAt) return;
       const threadId = mine ? p.recipientId : p.senderId;
       const name = this.name(threadId);
       d.chat = appendMessage(d.chat, { id: p.id, threadId, senderId: p.senderId,
@@ -246,7 +250,7 @@ export class MeshRouter {
         path: value.path, status: mine ? 'queued' : undefined,
         timestamp: p.timestamp, time: formatMessageClock(p.timestamp) },
         name, !mine && this.activeThread !== threadId);
-    } else if (p.type === 'alert' && (mine || this.listening)) {
+    } else if (p.type === 'alert' && (mine || this.listening) && (mine || p.timestamp > d.alertsClearedAt)) {
       d.alerts = appendAlert(
         d.alerts,
         alertFromPacket({ ...p, hops: value.hopCount }, p.senderName || this.name(p.senderId), mine),
@@ -345,7 +349,9 @@ export class MeshRouter {
       } else if (wire.type === 'text' || wire.type === 'alert') {
         const value = envelope(wire, wire.type === 'text');
         if (isWirePacket(value)) await this.accept(peer, value, false, generation);
-      } else for (const listener of this.mediaListeners) listener(wire, peer);
+      } else if (wire.timestamp > this.store.data.alertsClearedAt) {
+        for (const listener of this.mediaListeners) listener(wire, peer);
+      }
       return;
     }
     // Alerts are accepted from any confirmed peer even before its hello lands: they are
@@ -378,7 +384,7 @@ export class MeshRouter {
       }
       this.record(d, value, peer);
       if (p.senderId === this.identity.id) return;
-      if ((p.type === 'text' || p.type === 'group-sync') && p.groupId) {
+      if ((p.type === 'text' || p.type === 'group-sync') && p.groupId && p.timestamp > d.alertsClearedAt) {
         applicationPacket = { ...p, path: value.path, hops: value.hopCount };
       }
       const groupId = (p.type === 'text' || p.type === 'group-sync') ? p.groupId : undefined;

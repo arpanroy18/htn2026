@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=390, height=844" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f6f6f6; font-family: Inter, system-ui, sans-serif; }
+    #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #f6f6f6; display: flex; flex-direction: column; }
+    .status { height: 44px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; }
+    .chat-header { padding: 8px 20px 14px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #e9e9e9; background: #fff; }
+    .chat-header .av { width: 40px; height: 40px; border-radius: 50%; background: #2c6bed; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+    .chat-header .nm { font-size: 18px; font-weight: 700; color: #1b1b1b; }
+    .chat-header .mt { font-size: 12px; color: #404654; }
+    .messages { flex: 1; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+    .bub { max-width: 78%; padding: 12px 16px; border-radius: 20px; font-size: 16px; line-height: 1.35; }
+    .bub.theirs { background: #fff; border: 1px solid #e9e9e9; color: #1b1b1b; align-self: flex-start; border-bottom-left-radius: 6px; }
+    .bub.mine { background: #2c6bed; color: #fff; align-self: flex-end; border-bottom-right-radius: 6px; }
+    .stamp { align-self: center; background: #fff; border: 1.5px solid #2c6bed; color: #2c6bed; font-size: 13px; font-weight: 600; border-radius: 999px; padding: 8px 16px; margin-top: 8px; }
+    .composer { padding: 12px 16px 28px; background: #fff; border-top: 1px solid #e9e9e9; display: flex; gap: 10px; align-items: center; }
+    .composer input { flex: 1; border: 1px solid #e9e9e9; border-radius: 22px; padding: 12px 16px; font-size: 16px; background: #f6f6f6; color: #1b1b1b; }
+    .send { width: 40px; height: 40px; border-radius: 50%; background: #2c6bed; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .cursor { position: absolute; width: 24px; height: 24px; border-radius: 50%; background: rgba(44,107,237,0.25); border: 2px solid #2c6bed; pointer-events: none; z-index: 10; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="chat-demo" data-start="0" data-width="390" data-height="844" data-duration="3.5">
+    <div class="status">9:41</div>
+    <div class="chat-header">
+      <div class="av">M</div>
+      <div><div class="nm">Maya</div><div class="mt">Direct &#8226; a41f9c02</div></div>
+    </div>
+    <div class="messages">
+      <div class="bub theirs" id="b1" style="opacity:0;">trailhead at dawn?</div>
+      <div class="bub mine" id="b2" style="opacity:0;">on my way &#8212; relaying thru Theo</div>
+      <div class="stamp" id="stamp" style="opacity:0;">Queued</div>
+    </div>
+    <div class="composer">
+      <input type="text" placeholder="Message" readonly />
+      <div class="send" id="sendBtn">&#8593;</div>
+    </div>
+    <div class="cursor" id="cursor" style="opacity:0; left: 200px; top: 720px;"></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#b1", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.35 }, 0.4);
+    tl.fromTo("#cursor", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 1.0);
+    tl.to("#cursor", { left: 330, top: 720, duration: 0.5 }, 1.1);
+    tl.fromTo("#b2", { opacity: 0, y: 16, scale: 0.95 }, { opacity: 1, y: 0, scale: 1, duration: 0.35 }, 1.7);
+    tl.to("#cursor", { opacity: 0, duration: 0.2 }, 2.0);
+    tl.fromTo("#stamp", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.25 }, 2.2);
+    tl.to("#stamp", { innerText: "Relayed", duration: 0.01 }, 2.6);
+    tl.to("#stamp", { innerText: "Seen", duration: 0.01 }, 3.0);
+    tl.call(() => { document.getElementById("stamp").textContent = "Queued \u2192 Relayed \u2192 Seen"; }, null, 3.0);
+    window.__timelines["chat-demo"] = tl;
+  </script>
+</body>
+</html>

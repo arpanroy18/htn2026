@@ -166,6 +166,50 @@ test('alert floods A→B→C through live links with no inventory churn and exac
   assert.deepEqual(n.errors, []);
 });
 
+test('clear local data drops inbox content and blocks mesh catch-up', async () => {
+  const n = await network(3);
+  const groupId = 'group-1';
+  const appPackets = [];
+  n.nodes[1].router.onApplicationPacket((packet) => appPackets.push(packet));
+
+  await n.nodes[0].router.enqueue(alert(n, 0, 'old-alert'));
+  await n.nodes[0].router.enqueue(n.text(0, 1, 'old-dm'));
+  await n.nodes[0].router.enqueue({
+    version: 1,
+    id: 'group-sync-1',
+    senderId: n.nodes[0].id,
+    recipientId: groupId,
+    groupId,
+    hops: 0,
+    ttlHops: 5,
+    type: 'group-sync',
+    timestamp: n.text(0, 1).timestamp,
+    name: 'Field team',
+    members: [
+      { id: n.nodes[0].id, name: 'Phone 0' },
+      { id: n.nodes[1].id, name: 'Phone 1' },
+    ],
+  });
+  await n.advance(61_000);
+  await n.connect(0, 1);
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
+  assert.equal(incoming(n.nodes[1]).length, 1);
+  assert.equal(appPackets.length, 1);
+
+  await n.nodes[1].router.clear();
+  assert.equal(n.nodes[1].store.data.alerts.length, 0);
+  assert.equal(incoming(n.nodes[1]).length, 0);
+  appPackets.length = 0;
+
+  n.disconnect(0, 1);
+  await n.connect(0, 1);
+  await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 0, 'cleared alerts must not refill from mesh');
+  assert.equal(incoming(n.nodes[1]).length, 0, 'cleared DMs must not refill from mesh');
+  assert.equal(appPackets.length, 0, 'cleared groups must not refill from mesh');
+  assert.deepEqual(n.errors, []);
+});
+
 test('stale alerts catch up to a new phone but never flood a badge', async () => {
   const n = await network(3);
   await n.nodes[0].router.enqueue(alert(n, 0, 'old-alert'));

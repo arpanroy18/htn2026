@@ -420,6 +420,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const applyGroupSync = useCallback(
     async (packet: Packet, unread: boolean) => {
       if (!isGroupSyncPacket(packet)) return false;
+      if (packet.timestamp <= meshRouter.store.data.alertsClearedAt) return false;
       const selfId = identity.id;
       if (!packet.members.some((member) => member.id === selfId)) return false;
       await setState((current) => {
@@ -447,7 +448,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           (value) =>
             value.packet.type === 'text' &&
             value.packet.groupId === packet.groupId &&
-            value.packet.senderId !== identity.id,
+            value.packet.senderId !== identity.id &&
+            value.packet.timestamp > meshRouter.store.data.alertsClearedAt,
         );
       for (const value of pending) {
         if ((stateRef.current.messages[packet.groupId] ?? []).some((message) => message.id === value.packet.id)) {

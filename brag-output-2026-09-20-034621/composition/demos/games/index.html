@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=390, height=844" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f6f6f6; font-family: Inter, system-ui, sans-serif; }
+    #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #f6f6f6; }
+    .status { height: 44px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; }
+    .header { padding: 8px 24px 14px; }
+    .header h1 { font-size: 28px; font-weight: 800; color: #1b1b1b; }
+    .list { margin: 0 24px; background: #fff; border: 1px solid #e9e9e9; border-radius: 16px; overflow: hidden; }
+    .row { display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid #e9e9e9; }
+    .row:last-child { border-bottom: none; }
+    .icon { width: 40px; height: 40px; border-radius: 12px; background: #9dbbf8; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 800; color: #1b1b1b; flex: none; }
+    .row .name { font-size: 17px; font-weight: 700; color: #1b1b1b; }
+    .chip { display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 600; background: #ffe08a; color: #1b1b1b; border-radius: 6px; padding: 4px 8px; }
+    .board-wrap { position: absolute; inset: 0; background: #f6f6f6; display: flex; flex-direction: column; opacity: 0; pointer-events: none; }
+    .board-header { padding: 52px 20px 12px; display: flex; align-items: center; gap: 10px; }
+    .back { font-size: 24px; color: #2942ff; }
+    .board-header h2 { font-size: 20px; font-weight: 800; }
+    .board { margin: 0 20px; flex: 1; background: #a5cad5; border-radius: 12px; padding: 8px; display: grid; grid-template-columns: repeat(8, 1fr); gap: 0; }
+    .sq { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+    .sq.light { background: #f6f6f6; }
+    .sq.dark { background: #9dbbf8; }
+    .cursor { position: absolute; width: 24px; height: 24px; border-radius: 50%; background: rgba(44,107,237,0.25); border: 2px solid #2c6bed; z-index: 10; }
+    .tabs { position: absolute; bottom: 0; left: 0; right: 0; height: 72px; background: #fff; border-top: 1px solid #e9e9e9; display: flex; }
+    .tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 600; color: #404654; }
+    .tab.on { color: #2942ff; }
+    .tab .ic { width: 22px; height: 22px; border-radius: 6px; background: #e9e9e9; }
+    .tab.on .ic { background: #9dbbf8; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="games-demo" data-start="0" data-width="390" data-height="844" data-duration="3">
+    <div class="status">9:41</div>
+    <div id="listView">
+      <div class="header"><h1>Games</h1></div>
+      <div class="list">
+        <div class="row" id="g1"><div class="icon">&#9822;</div><div><div class="name">Chess</div><span class="chip">2 players</span></div></div>
+        <div class="row" id="g2"><div class="icon">P</div><div><div class="name">Pong</div><span class="chip">2 players</span></div></div>
+        <div class="row" id="g3"><div class="icon">&#9998;</div><div><div class="name">Telephone</div><span class="chip">3&#8211;8</span></div></div>
+      </div>
+    </div>
+    <div class="board-wrap" id="boardView">
+      <div class="board-header"><span class="back">&#8249;</span><h2>Chess vs Maya</h2></div>
+      <div class="board" id="board"></div>
+    </div>
+    <div class="cursor" id="cursor" style="opacity:0; left: 80px; top: 200px;"></div>
+    <div class="tabs">
+      <div class="tab"><div class="ic"></div>Nearby</div>
+      <div class="tab"><div class="ic"></div>Chats</div>
+      <div class="tab"><div class="ic"></div>Alerts</div>
+      <div class="tab on"><div class="ic"></div>Games</div>
+    </div>
+  </div>
+  <script>
+    const board = document.getElementById("board");
+    const pieces = ["\u265C","\u265E","\u265D","\u265B","\u265A","\u265D","\u265E","\u265C",
+      "\u265F","\u265F","\u265F","\u265F","\u265F","\u265F","\u265F","\u265F",
+      "","","","","","","","",
+      "","","","","","","","",
+      "","","","","","","","",
+      "","","","","","","","",
+      "\u2659","\u2659","\u2659","\u2659","\u2659","\u2659","\u2659","\u2659",
+      "\u2656","\u2658","\u2657","\u2655","\u2654","\u2657","\u2658","\u2656"];
+    pieces.forEach((p, i) => {
+      const sq = document.createElement("div");
+      sq.className = "sq " + ((Math.floor(i/8) + i%8) % 2 ? "dark" : "light");
+      sq.textContent = p;
+      board.appendChild(sq);
+    });
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#g1", { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.3 }, 0.2);
+    tl.fromTo("#g2", { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.3 }, 0.4);
+    tl.fromTo("#g3", { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.3 }, 0.6);
+    tl.fromTo("#cursor", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 0.9);
+    tl.to("#cursor", { left: 70, top: 175, duration: 0.4 }, 1.0);
+    tl.to("#listView", { opacity: 0, duration: 0.25 }, 1.5);
+    tl.fromTo("#boardView", { opacity: 0 }, { opacity: 1, duration: 0.35 }, 1.6);
+    tl.to("#cursor", { left: 180, top: 420, duration: 0.5 }, 1.8);
+    tl.to(board.children[52], { y: -48, duration: 0.35, ease: "power2.out" }, 2.2);
+    window.__timelines["games-demo"] = tl;
+  </script>
+</body>
+</html>
