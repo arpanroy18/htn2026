@@ -11,22 +11,22 @@ const items = [
   {
     id: 'bluetooth',
     title: 'Bluetooth',
-    body: 'Advertise and scan so nearby phones can form a mesh without Wi-Fi or cell.',
+    body: 'Bluetooth is required to connect to other Nored devices',
   },
   {
     id: 'mic',
     title: 'Microphone',
-    body: 'Record voice notes in the composer. Audio never leaves the device except as a message you send.',
+    body: '',
   },
   {
     id: 'photos',
     title: 'Photos',
-    body: 'Pick an image. It will be compressed later before it is chunked over BLE.',
+    body: '',
   },
   {
     id: 'notifications',
     title: 'Notifications',
-    body: 'Local banners for emergency broadcasts. There is no push server.',
+    body: 'Local banners for emergency broadcasts',
   },
 ];
 
@@ -44,23 +44,19 @@ export default function OnboardingScreen() {
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
       <ScrollView contentContainerStyle={styles.body}>
-        <Text style={styles.title}>Stay reachable offline</Text>
-        <Text style={styles.lede}>
-          Nored talks over Bluetooth only. Grant these on this phone so Nearby, voice, images, and alerts can light up when they are implemented.
-        </Text>
+        <Text style={styles.title}>Permissions</Text>
         {items.map((item) => {
           const on = !!allowed[item.id];
           return (
             <View key={item.id} style={styles.card}>
               <Text style={styles.name}>{item.title}</Text>
-              <Text style={styles.bodyText}>{item.body}</Text>
+              {item.body && <Text style={styles.bodyText}>{item.body}</Text>}
               <RowPress onPress={() => void toggle(item.id, on)} style={styles.allow}>
-                <Text style={styles.allowText}>{on ? 'Marked allowed' : 'Allow'}</Text>
+                <Text style={styles.allowText}>{on ? 'On' : 'Off'}</Text>
               </RowPress>
             </View>
           );
         })}
-        <OutlinedButton label="Continue" onPress={() => router.back()} />
       </ScrollView>
     </SafeAreaView>
   );
