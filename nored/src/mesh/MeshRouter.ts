@@ -3,8 +3,12 @@ import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
 import { alertFromPacket, appendAlert } from './alertStore.ts';
+<<<<<<< Updated upstream
 import { PEER_GRACE_MS } from './peerGrace.ts';
 import { canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
+=======
+import { ALERT_LIVE_MS, canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
+>>>>>>> Stashed changes
 import type { Control, ControlFields, Envelope, WirePacket } from './protocol';
 import { SendScheduler } from './scheduler.ts';
 
@@ -159,6 +163,13 @@ export class MeshRouter {
   }
   private control(peer: string, fields: ControlFields): Control {
     return { version: 1, senderId: this.identity.id, recipientId: peer, ...fields } as Control;
+  }
+  private badgePeer(session: Session) {
+    const name = session.peer.name.trim().toLowerCase();
+    return name.startsWith('nored badge') || name.startsWith('nored-badge');
+  }
+  private liveAlert(packet: { type: string; timestamp: number }) {
+    return packet.type === 'alert' && this.now() - packet.timestamp < ALERT_LIVE_MS;
   }
   private async hello(peer: string, reply: boolean) {
     const session = this.sessions.get(peer);
@@ -396,13 +407,17 @@ export class MeshRouter {
       const peers = [...this.sessions.entries()].sort(([a], [b]) => Number(b === p.recipientId) - Number(a === p.recipientId));
       for (const [peer, session] of peers) {
         if (record.receipts.includes(peer) || peer === p.senderId || (value.directOnly && peer !== p.recipientId)) continue;
+        const live = this.liveAlert(p);
+        // Badges are a live display. Catching up hours of stored alerts when a new phone
+        // joins (or the badge reconnects) would replay every past emergency on the screen.
+        if (p.type === 'alert' && !live && this.badgePeer(session)) continue;
         const legacy = !session.ready && this.now() - session.started >= 2000;
         if (!legacy && !session.ready) continue;
-        // Alerts flood as soon as the handshake completes: a duplicate costs the peer three
-        // frames, while waiting for its inventory can cost a 30s re-sync if a page was lost.
-        // Other traffic waits for the inventory, but not forever.
+        // Live alerts flood as soon as the handshake completes: a duplicate costs the peer
+        // three frames, while waiting for its inventory can cost a 30s re-sync if a page was
+        // lost. Historical alerts and other traffic wait for the inventory, but not forever.
         const synced = session.inventoryComplete || this.now() - session.started >= 5000;
-        if (!legacy && p.type !== 'alert' && !synced) continue;
+        if (!legacy && !live && !synced) continue;
         if (legacy && (p.type === 'delivery-ack' || (p.type !== 'alert' && peer !== p.recipientId))) continue;
         const key = `${peer}|${p.id}`, attempt = this.pending.get(key);
         if (this.busy.has(key) || (attempt && this.now() - attempt.at < Math.min(30_000, 3000 * 2 ** Math.min(attempt.attempts - 1, 4)))) continue;

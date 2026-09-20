@@ -12,6 +12,10 @@ export const ALERT_MAX_BODY = 280;
 export const ALERT_TTL_HOPS = MAX_HOP_LIMIT;
 export const ALERT_TTL_MS = 6 * 3_600_000;
 export const ALERT_RATE_LIMIT_MS = 5000;
+// Live emergencies still flood (including to badges) inside this window. Older stored
+// alerts are inbox catch-up only — replaying them onto a badge when someone joins
+// would flash every past alert as if it just happened.
+export const ALERT_LIVE_MS = 60_000;
 export const TEXT_TTL_HOPS = 5;
 export type DeliveryAck = {
   version: 1; type: 'delivery-ack'; id: string; senderId: string;

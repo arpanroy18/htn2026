@@ -37,9 +37,12 @@ async function network(count = 3) {
     nodes.push({ id, store, persistence, transport, router: new MeshRouter(store, transport, () => clock, () => {}) });
   }
   const settle = async () => { for (let i = 0; i < 30; i++) await turn(); };
-  const connect = async (a, b) => {
+  const connect = async (a, b, names = {}) => {
     links.add(`${nodes[a].id}|${nodes[b].id}`); links.add(`${nodes[b].id}|${nodes[a].id}`);
-    await Promise.all([nodes[a].router.encounter({ id: nodes[b].id, name: `Phone ${b}`, nored: true, identityConfirmed: true, lastSeen: clock }), nodes[b].router.encounter({ id: nodes[a].id, name: `Phone ${a}`, nored: true, identityConfirmed: true, lastSeen: clock })]);
+    await Promise.all([
+      nodes[a].router.encounter({ id: nodes[b].id, name: names[b] ?? `Phone ${b}`, nored: true, identityConfirmed: true, lastSeen: clock }),
+      nodes[b].router.encounter({ id: nodes[a].id, name: names[a] ?? `Phone ${a}`, nored: true, identityConfirmed: true, lastSeen: clock }),
+    ]);
     await settle();
   };
   const disconnect = (a, b) => {
@@ -154,6 +157,31 @@ test('alert floods A→B→C through live links with no inventory churn and exac
   await n.advance(31_000);
   assert.equal(alertFrames(n).length, 2, 'receipts stop retries; periodic inventory does not resend');
   for (const node of n.nodes) assert.equal(node.store.data.alerts.length, 1);
+  assert.deepEqual(n.errors, []);
+});
+
+test('stale alerts catch up to a new phone but never flood a badge', async () => {
+  const n = await network(3);
+  await n.nodes[0].router.enqueue(alert(n, 0, 'old-alert'));
+  await n.advance(61_000);
+  await n.connect(0, 1);
+  assert.equal(n.nodes[1].store.data.alerts.length, 1, 'phone inbox still receives missed alerts');
+  await n.connect(0, 2, { 2: 'Nored Badge' });
+  assert.equal(n.nodes[2].store.data.alerts.length, 0, 'badge is not a history display');
+  assert.equal(alertFrames(n, 'old-alert').filter((f) => f.to === n.nodes[2].id).length, 0);
+  // The new phone must not turn around and dump that backlog onto the badge either.
+  await n.connect(1, 2, { 2: 'Nored Badge' });
+  assert.equal(n.nodes[2].store.data.alerts.length, 0);
+  assert.equal(alertFrames(n, 'old-alert').filter((f) => f.to === n.nodes[2].id).length, 0);
+  assert.deepEqual(n.errors, []);
+});
+
+test('a live alert still floods a badge without waiting for inventory', async () => {
+  const n = await network(2);
+  n.drop((_a, _b, p) => p.type === 'mesh-inventory');
+  await n.connect(0, 1, { 1: 'Nored Badge' });
+  await n.nodes[0].router.enqueue(alert(n, 0)); await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
   assert.deepEqual(n.errors, []);
 });
 
