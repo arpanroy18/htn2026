@@ -34,6 +34,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONObject
@@ -76,19 +77,37 @@ private data class PeerRecord(
   var avatarColor: Int? = null,
 )
 
-private data class WriteJob(
+private class WriteJob(
   val data: ByteArray,
   val packet: Boolean,
-)
+  val token: Int = 0,
+  val index: Int = 0,
+) {
+  var attempts = 0
+}
 
-private data class SendJob(
+// A packet can travel over either link we may hold with a peer: a write to the peer's RX
+// characteristic over our client GATT, or an indication on our TX characteristic to the
+// peer's central. The route is chosen when the job reaches the head of the queue (never
+// captured at enqueue time), so a link that died while the job waited is skipped instead
+// of costing a timeout, and frames are cut to the MTU of the route actually used.
+private sealed class SendRoute {
+  data class Write(val address: String) : SendRoute()
+  data class Notify(val address: String) : SendRoute()
+}
+
+private class SendJob(
   val peerId: String,
-  val frames: List<ByteArray>,
-  var index: Int,
+  val payload: ByteArray,
   val promise: Promise,
-  var address: String?,
-  var serverDevice: BluetoothDevice?,
-)
+  val token: Int,
+) {
+  var frames: List<ByteArray> = emptyList()
+  var index = 0
+  var route: SendRoute? = null
+  var writeFailed = false
+  var notifyFailed = false
+}
 
 private data class FrameAssembler(
   val total: Int,
@@ -119,7 +138,7 @@ class NoredBluetoothModule : Module() {
   private var txCharacteristic: BluetoothGattCharacteristic? = null
   private var sending = false
   private var sendTimeout: Runnable? = null
-  private var ignoredServerNotificationCallbacks = 0
+  private var sendToken = 0
   private val identityNotifyQueue = ArrayDeque<BluetoothDevice>()
   private var identityNotifyInFlight = false
   private var identityPushPending = false
@@ -153,6 +172,9 @@ class NoredBluetoothModule : Module() {
     Function("getIdentity") { identityMap() }
     Function("getPeers") { peers.values.sortedByDescending { it.lastSeen }.map { peerMap(it) } }
 
+    // Every piece of connection and send state below is touched only on the main thread.
+    // GATT callbacks arrive on binder threads and are re-posted there (see onMain), so
+    // the module functions must run there too.
     AsyncFunction("setDisplayName") { rawName: String ->
       val name = normalizedDisplayName(rawName)
         ?: throw CodedException("ERR_INVALID_NAME", "Display name must be 1 to 40 UTF-8 bytes", null)
@@ -161,13 +183,13 @@ class NoredBluetoothModule : Module() {
         if (sending) identityPushPending = true else publishIdentityUpdate()
       }
       identityMap()
-    }
+    }.runOnQueue(Queues.MAIN)
 
-    AsyncFunction("start") { startScanning() }
-    AsyncFunction("stop") { stopScanning() }
+    AsyncFunction("start") { startScanning() }.runOnQueue(Queues.MAIN)
+    AsyncFunction("stop") { stopScanning() }.runOnQueue(Queues.MAIN)
     AsyncFunction("sendPacket") { peerId: String, packet: String, promise: Promise ->
-      mainHandler.post { beginSend(peerId, packet, promise) }
-    }
+      beginSend(peerId, packet, promise)
+    }.runOnQueue(Queues.MAIN)
 
     OnActivityEntersForeground {
       if (started) {
@@ -182,6 +204,46 @@ class NoredBluetoothModule : Module() {
   }
 
   private fun preferences() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+  /** GATT callbacks arrive on binder threads; serialise all state changes on main. */
+  private fun onMain(block: () -> Unit) {
+    if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
+  }
+
+  /**
+   * Slots consumed by live and pending client links. An address sits in both `gatts` and
+   * `connecting` while its connect is pending; counting it twice made three simultaneous
+   * connects look like a full budget of six.
+   */
+  private fun linkBudgetUsed(): Int = (gatts.keys + connecting).toSet().size
+
+  private fun writeAddress(peerId: String): String? {
+    val candidates = LinkedHashSet<String>()
+    peers[peerId]?.address?.let(candidates::add)
+    addressToPeerId.forEach { (address, id) -> if (id == peerId) candidates.add(address) }
+    return candidates.firstOrNull { address ->
+      gatts[address]?.getService(SERVICE_UUID)?.getCharacteristic(RX_UUID) != null
+    }
+  }
+
+  private fun notifyDevice(peerId: String): BluetoothDevice? {
+    if (txCharacteristic == null || gattServer == null) return null
+    return serverDevices.values.firstOrNull { device ->
+      addressToPeerId[device.address] == peerId && subscribedAddresses.contains(device.address)
+    }
+  }
+
+  private fun hasLiveLink(peerId: String): Boolean = writeAddress(peerId) != null || notifyDevice(peerId) != null
+
+  /**
+   * Tell JS a confirmed peer's link state changed, so the router can retry queued
+   * traffic the moment a link comes back rather than waiting out its backoff.
+   */
+  private fun emitLinkStateIfKnown(address: String) {
+    val peerId = addressToPeerId[address] ?: return
+    val peer = peers[peerId] ?: return
+    if (peer.confirmedIdentity) emitPeer(peer)
+  }
 
   private fun stableHash(input: String): UInt {
     var hash = 0u
@@ -532,6 +594,7 @@ class NoredBluetoothModule : Module() {
     clientMtuByAddress.clear()
     serverMtuByAddress.clear()
     identityNotifyQueue.clear()
+    mainHandler.removeCallbacks(identityNotifyTimeout)
     identityNotifyInFlight = false
     assemblers.clear()
     peers.keys.toList().forEach(::emitPeerLost)
@@ -633,7 +696,7 @@ class NoredBluetoothModule : Module() {
       emitPeer(record)
     }
     if (isNored && !gatts.containsKey(address) && !serverDevices.containsKey(address) && connecting.add(address)) {
-      if (gatts.size >= MAX_CONNECTIONS) {
+      if (linkBudgetUsed() > MAX_CONNECTIONS) {
         connecting.remove(address)
         return
       }
@@ -683,17 +746,20 @@ class NoredBluetoothModule : Module() {
     }
   }
 
+  // Always a direct connect with a timeout. autoConnect=true never times out, so it held a
+  // `gatts` slot and the `connecting` flag forever; and iPhones rotate their random address,
+  // so a background autoConnect to a stale address could never succeed. Scanning keeps
+  // rediscovering the peer under its current address, which is what actually reconnects.
   @SuppressLint("MissingPermission")
-  private fun connect(device: BluetoothDevice, autoConnect: Boolean = false) {
+  private fun connect(device: BluetoothDevice) {
     try {
       log("info", "[CONNECTION] connecting ${device.address}")
-      val gatt = device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+      val gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
       gatts[device.address] = gatt
-      if (autoConnect) return
       val timeout = Runnable {
         if (!connecting.remove(device.address)) return@Runnable
         connectionTimeouts.remove(device.address)
-        gatts.remove(device.address)
+        if (gatts[device.address] === gatt) gatts.remove(device.address)
         try {
           gatt.disconnect()
           gatt.close()
@@ -718,7 +784,7 @@ class NoredBluetoothModule : Module() {
     // reconnect and let scanning rediscover the peer when a slot frees up.
     if (!gatts.containsKey(address) &&
       !connecting.contains(address) &&
-      gatts.size + connecting.size >= MAX_CONNECTIONS
+      linkBudgetUsed() >= MAX_CONNECTIONS
     ) {
       reconnectAttempts.remove(address)
       return
@@ -732,9 +798,9 @@ class NoredBluetoothModule : Module() {
       if (!started) return@Runnable
       if (gatts.containsKey(address) || connecting.contains(address)) return@Runnable
       if (serverDevices.containsKey(address)) return@Runnable
-      if (gatts.size >= MAX_CONNECTIONS) return@Runnable
+      if (linkBudgetUsed() >= MAX_CONNECTIONS) return@Runnable
       if (!connecting.add(address)) return@Runnable
-      connect(device, autoConnect = attempt >= 1)
+      connect(device)
     }
     reconnectRunnables[address] = retry
     mainHandler.postDelayed(retry, delay)
@@ -748,84 +814,61 @@ class NoredBluetoothModule : Module() {
     val address = device.address
     if (!started) return
     if (gatts.containsKey(address) || connecting.contains(address)) return
-    if (gatts.size >= MAX_CONNECTIONS) return
+    if (linkBudgetUsed() >= MAX_CONNECTIONS) return
     if (!connecting.add(address)) return
     connect(device)
   }
 
+  /**
+   * A client link whose ATT transaction never completes is dead: Android will not start
+   * the next write on it, so tear it down now and let the reconnect path replace it.
+   */
+  @SuppressLint("MissingPermission")
+  private fun dropClientLink(address: String) {
+    val gatt = gatts.remove(address) ?: return
+    connecting.remove(address)
+    connectionTimeouts.remove(address)?.let(mainHandler::removeCallbacks)
+    clientMtuByAddress.remove(address)
+    writeQueues.remove(address)
+    writeBusy.remove(address)
+    val device = gatt.device
+    try {
+      gatt.disconnect()
+      gatt.close()
+    } catch (_: Exception) {}
+    log("warn", "[CONNECTION] dropped unresponsive link $address")
+    emitLinkStateIfKnown(address)
+    if (started) scheduleReconnect(device)
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun dropServerLink(address: String) {
+    subscribedAddresses.remove(address)
+    indicateAddresses.remove(address)
+    val device = serverDevices[address] ?: return
+    try { gattServer?.cancelConnection(device) } catch (_: Exception) {}
+    log("warn", "[CONNECTION] dropped unresponsive central $address")
+    emitLinkStateIfKnown(address)
+  }
+
   private val gattCallback = object : BluetoothGattCallback() {
-    @SuppressLint("MissingPermission")
-    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-      val address = gatt.device.address
-      connectionTimeouts.remove(address)?.let(mainHandler::removeCallbacks)
-      if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-        connecting.remove(address)
-        gatts[address] = gatt
-        reconnectAttempts.remove(address)
-        reconnectRunnables.remove(address)?.let(mainHandler::removeCallbacks)
-        log("info", "[CONNECTION] connected $address")
-        startAdvertiser()
-        if (!gatt.requestMtu(185)) gatt.discoverServices()
-      } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
-        connecting.remove(address)
-        gatts.remove(address)
-        clientMtuByAddress.remove(address)
-        writeQueues.remove(address)
-        writeBusy.remove(address)
-        val device = gatt.device
-        try { gatt.close() } catch (_: Exception) {}
-        log("info", "[CONNECTION] disconnected $address status=$status")
-        startAdvertiser()
-        if (started) scheduleReconnect(device)
-      }
+    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) = onMain {
+      clientConnectionChanged(gatt, status, newState)
     }
 
-    @SuppressLint("MissingPermission")
-    override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-      log("info", "[CONNECTION] MTU $mtu status=$status")
-      if (status == BluetoothGatt.GATT_SUCCESS) {
-        clientMtuByAddress[gatt.device.address] = mtu
-      }
-      gatt.discoverServices()
+    override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) = onMain {
+      clientMtuChanged(gatt, mtu, status)
     }
 
-    override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
-      if (status == BluetoothGatt.GATT_SUCCESS) {
-        applyRssi(gatt.device.address, rssi)
-      }
+    override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) = onMain {
+      if (status == BluetoothGatt.GATT_SUCCESS) applyRssi(gatt.device.address, rssi)
     }
 
-    @SuppressLint("MissingPermission")
-    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-      if (status != BluetoothGatt.GATT_SUCCESS) {
-        log("error", "[ERROR] service discovery failed status=$status")
-        gatt.disconnect()
-        return
-      }
-      val service = gatt.getService(SERVICE_UUID)
-      val tx = service?.getCharacteristic(TX_UUID)
-      val identity = service?.getCharacteristic(IDENTITY_UUID)
-      if (service == null || tx == null || identity == null) {
-        log("error", "[ERROR] Nored GATT service is incomplete")
-        gatt.disconnect()
-        return
-      }
-      gatt.setCharacteristicNotification(tx, true)
-      val descriptor = tx.getDescriptor(CCCD_UUID)
-      if (descriptor == null) {
-        readIdentity(gatt, identity)
-      } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        gatt.writeDescriptor(descriptor, cccdEnableValue(tx))
-      } else {
-        @Suppress("DEPRECATION")
-        descriptor.value = cccdEnableValue(tx)
-        @Suppress("DEPRECATION")
-        gatt.writeDescriptor(descriptor)
-      }
+    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) = onMain {
+      clientServicesDiscovered(gatt, status)
     }
 
-    @SuppressLint("MissingPermission")
-    override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+    override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) = onMain {
       if (descriptor.uuid == CCCD_UUID && descriptor.characteristic.uuid == TX_UUID) {
         val identity = gatt.getService(SERVICE_UUID)?.getCharacteristic(IDENTITY_UUID)
         if (identity != null) readIdentity(gatt, identity)
@@ -837,7 +880,7 @@ class NoredBluetoothModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       value: ByteArray,
       status: Int,
-    ) {
+    ) = onMain {
       if (characteristic.uuid == IDENTITY_UUID && status == BluetoothGatt.GATT_SUCCESS) {
         receiveIdentity(gatt, value)
       }
@@ -849,10 +892,12 @@ class NoredBluetoothModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       status: Int,
     ) {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU &&
-        characteristic.uuid == IDENTITY_UUID && status == BluetoothGatt.GATT_SUCCESS
-      ) {
-        receiveIdentity(gatt, characteristic.value ?: return)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
+      val value = characteristic.value ?: return
+      onMain {
+        if (characteristic.uuid == IDENTITY_UUID && status == BluetoothGatt.GATT_SUCCESS) {
+          receiveIdentity(gatt, value)
+        }
       }
     }
 
@@ -860,56 +905,16 @@ class NoredBluetoothModule : Module() {
       gatt: BluetoothGatt,
       characteristic: BluetoothGattCharacteristic,
       status: Int,
-    ) {
-      if (characteristic.uuid != RX_UUID) return
-      val address = gatt.device.address
-      if (gatts[address] !== gatt) return
-      val queue = writeQueues[address]
-      val job = queue?.peek()
-      if (status != BluetoothGatt.GATT_SUCCESS) {
-        log("error", "[ERROR] write failed status=$status")
-        queue?.poll()
-        writeBusy[address] = false
-        if (job?.packet == true) {
-          val send = sendQueue.peek()
-          if (send?.serverDevice != null) {
-            send.address = null
-            sending = false
-            log("warn", "[MSG] write failed, retrying over notify")
-            pumpSend()
-          } else {
-            failCurrentSend("Write failed")
-          }
-        } else {
-          log("error", "[ERROR] identity write failed status=$status")
-          mainHandler.postDelayed({ enqueueWrite(address, identityJson(), packet = false) }, 400L)
-        }
-        drainWrite(address)
-        return
-      }
-      queue?.poll()
-      writeBusy[address] = false
-      if (job?.packet == true) {
-        finishCurrentFrame()
-      } else {
-        log("info", "[DISCOVERY] local identity exchanged")
-        subscribeIdentityNotifications(gatt)
-        requestRssi(gatt)
-      }
-      drainWrite(address)
+    ) = onMain {
+      clientWriteCompleted(gatt, characteristic, status)
     }
 
     override fun onCharacteristicChanged(
       gatt: BluetoothGatt,
       characteristic: BluetoothGattCharacteristic,
       value: ByteArray,
-    ) {
-      if (characteristic.uuid == TX_UUID) {
-        val peerId = addressToPeerId[gatt.device.address] ?: gatt.device.address
-        ingestFrame(peerId, value)
-      } else if (characteristic.uuid == IDENTITY_UUID) {
-        receiveIdentity(gatt, value, exchangeIdentity = false)
-      }
+    ) = onMain {
+      clientValueChanged(gatt, characteristic, value)
     }
 
     @Deprecated("Deprecated in Android 13")
@@ -917,40 +922,133 @@ class NoredBluetoothModule : Module() {
       gatt: BluetoothGatt,
       characteristic: BluetoothGattCharacteristic,
     ) {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && characteristic.uuid == TX_UUID) {
-        val peerId = addressToPeerId[gatt.device.address] ?: gatt.device.address
-        ingestFrame(peerId, characteristic.value ?: return)
-      } else if (
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU &&
-        characteristic.uuid == IDENTITY_UUID
-      ) {
-        receiveIdentity(gatt, characteristic.value ?: return, exchangeIdentity = false)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
+      val value = characteristic.value ?: return
+      onMain { clientValueChanged(gatt, characteristic, value) }
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun clientConnectionChanged(gatt: BluetoothGatt, status: Int, newState: Int) {
+    val address = gatt.device.address
+    if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+      connectionTimeouts.remove(address)?.let(mainHandler::removeCallbacks)
+      connecting.remove(address)
+      gatts[address] = gatt
+      reconnectAttempts.remove(address)
+      reconnectRunnables.remove(address)?.let(mainHandler::removeCallbacks)
+      log("info", "[CONNECTION] connected $address")
+      startAdvertiser()
+      if (!gatt.requestMtu(185)) gatt.discoverServices()
+    } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
+      try { gatt.close() } catch (_: Exception) {}
+      // A late callback from a link we already replaced must not tear down its successor.
+      if (gatts[address] !== gatt) return
+      connectionTimeouts.remove(address)?.let(mainHandler::removeCallbacks)
+      connecting.remove(address)
+      gatts.remove(address)
+      clientMtuByAddress.remove(address)
+      writeQueues.remove(address)
+      writeBusy.remove(address)
+      log("info", "[CONNECTION] disconnected $address status=$status")
+      writeLinkLost(address)
+      emitLinkStateIfKnown(address)
+      startAdvertiser()
+      if (started) scheduleReconnect(gatt.device)
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun clientMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+    log("info", "[CONNECTION] MTU $mtu status=$status")
+    if (status == BluetoothGatt.GATT_SUCCESS) {
+      clientMtuByAddress[gatt.device.address] = mtu
+    }
+    gatt.discoverServices()
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun clientServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+    if (status != BluetoothGatt.GATT_SUCCESS) {
+      log("error", "[ERROR] service discovery failed status=$status")
+      gatt.disconnect()
+      return
+    }
+    val service = gatt.getService(SERVICE_UUID)
+    val tx = service?.getCharacteristic(TX_UUID)
+    val identity = service?.getCharacteristic(IDENTITY_UUID)
+    if (service == null || tx == null || identity == null) {
+      log("error", "[ERROR] Nored GATT service is incomplete")
+      gatt.disconnect()
+      return
+    }
+    gatt.setCharacteristicNotification(tx, true)
+    val descriptor = tx.getDescriptor(CCCD_UUID)
+    if (descriptor == null) {
+      readIdentity(gatt, identity)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      gatt.writeDescriptor(descriptor, cccdEnableValue(tx))
+    } else {
+      @Suppress("DEPRECATION")
+      descriptor.value = cccdEnableValue(tx)
+      @Suppress("DEPRECATION")
+      gatt.writeDescriptor(descriptor)
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun clientWriteCompleted(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+    if (characteristic.uuid != RX_UUID) return
+    val address = gatt.device.address
+    if (gatts[address] !== gatt) return
+    val job = writeQueues[address]?.poll()
+    writeBusy[address] = false
+    if (job == null) {
+      drainWrite(address)
+      return
+    }
+    if (job.packet) {
+      // Only the frame we are actually waiting on may advance the queue; a response for a
+      // frame that already timed out (and whose job moved on) is ignored.
+      val send = sendQueue.peek()
+      val current = sending && send != null && send.route == SendRoute.Write(address) &&
+        send.token == job.token && send.index == job.index
+      if (current) {
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+          advanceFrame()
+        } else {
+          log("warn", "[MSG] write failed status=$status")
+          abandonRoute()
+        }
       }
+    } else if (status == BluetoothGatt.GATT_SUCCESS) {
+      log("info", "[DISCOVERY] local identity exchanged")
+      subscribeIdentityNotifications(gatt)
+      requestRssi(gatt)
+    } else {
+      log("error", "[ERROR] identity write failed status=$status")
+      mainHandler.postDelayed({
+        if (gatts[address] === gatt) enqueueWrite(address, identityJson(), packet = false)
+      }, 400L)
+    }
+    drainWrite(address)
+  }
+
+  private fun clientValueChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+    if (characteristic.uuid == TX_UUID) {
+      val peerId = addressToPeerId[gatt.device.address] ?: gatt.device.address
+      ingestFrame(peerId, value)
+    } else if (characteristic.uuid == IDENTITY_UUID) {
+      receiveIdentity(gatt, value, exchangeIdentity = false)
     }
   }
 
   private val serverCallback = object : BluetoothGattServerCallback() {
-    override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-      if (newState == BluetoothProfile.STATE_CONNECTED) {
-        serverDevices[device.address] = device
-        reconnectAttempts.remove(device.address)
-        reconnectRunnables.remove(device.address)?.let(mainHandler::removeCallbacks)
-        log("info", "[CONNECTION] central connected ${device.address}")
-        startAdvertiser()
-        mainHandler.post { connectBackIfNeeded(device) }
-      } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-        serverDevices.remove(device.address)
-        subscribedAddresses.remove(device.address)
-        indicateAddresses.remove(device.address)
-        identitySubscribedAddresses.remove(device.address)
-        serverMtuByAddress.remove(device.address)
-        log("info", "[CONNECTION] central disconnected ${device.address}")
-        startAdvertiser()
-        if (started) scheduleReconnect(device)
-      }
+    override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) = onMain {
+      serverConnectionChanged(device, newState)
     }
 
-    override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+    override fun onMtuChanged(device: BluetoothDevice, mtu: Int) = onMain {
       serverMtuByAddress[device.address] = mtu
       log("info", "[CONNECTION] server MTU $mtu ${device.address}")
     }
@@ -993,8 +1091,18 @@ class NoredBluetoothModule : Module() {
         if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
         return
       }
-      if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-      handleIncoming(device, value)
+      if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+      // Peers frame to ATT_MTU-3 so a prepared (long) write never carries a Nored frame;
+      // acknowledging it above keeps the link alive, but its parts are not reassembled.
+      if (preparedWrite) return
+      onMain { handleIncoming(device, value) }
+    }
+
+    // Without a response here a client that did send a long write waits out the 30s ATT
+    // timeout and the whole link drops.
+    @SuppressLint("MissingPermission")
+    override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
+      gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
     }
 
     @SuppressLint("MissingPermission")
@@ -1007,63 +1115,95 @@ class NoredBluetoothModule : Module() {
       offset: Int,
       value: ByteArray?,
     ) {
-      if (descriptor.uuid == CCCD_UUID) {
-        val enabled = cccdEnabled(value)
-        when (descriptor.characteristic.uuid) {
-          TX_UUID -> {
-            if (enabled) {
-              subscribedAddresses.add(device.address)
-              if (value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)) {
-                indicateAddresses.add(device.address)
-              } else {
-                indicateAddresses.remove(device.address)
-              }
-            } else {
-              subscribedAddresses.remove(device.address)
-              indicateAddresses.remove(device.address)
-            }
-          }
-          IDENTITY_UUID -> if (enabled) {
-            identitySubscribedAddresses.add(device.address)
-            identityNotifyQueue.add(device)
-            pumpIdentityUpdates()
-          } else {
-            identitySubscribedAddresses.remove(device.address)
-          }
-        }
-        if (enabled) serverDevices[device.address] = device
-      }
       if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+      if (descriptor.uuid != CCCD_UUID) return
+      onMain { serverSubscriptionChanged(device, descriptor.characteristic.uuid, value) }
     }
 
-    override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-      if (identityNotifyInFlight) {
-        identityNotifyInFlight = false
-        identityNotifyQueue.poll()
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-          log("warn", "[DISCOVERY] display name update notify failed status=$status")
-        }
-        pumpIdentityUpdates()
-        pumpSend()
-        return
-      }
-      if (ignoredServerNotificationCallbacks > 0) {
-        ignoredServerNotificationCallbacks -= 1
-        return
-      }
-      if (status == BluetoothGatt.GATT_SUCCESS) {
-        finishCurrentFrame()
-      } else {
-        val send = sendQueue.peek()
-        if (send?.address != null) {
-          send.serverDevice = null
-          sending = false
-          log("warn", "[MSG] notify failed, retrying over write")
-          pumpSend()
+    override fun onNotificationSent(device: BluetoothDevice, status: Int) = onMain {
+      serverNotificationSent(device, status)
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun serverConnectionChanged(device: BluetoothDevice, newState: Int) {
+    val address = device.address
+    if (newState == BluetoothProfile.STATE_CONNECTED) {
+      serverDevices[address] = device
+      reconnectAttempts.remove(address)
+      reconnectRunnables.remove(address)?.let(mainHandler::removeCallbacks)
+      log("info", "[CONNECTION] central connected $address")
+      startAdvertiser()
+      connectBackIfNeeded(device)
+    } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+      serverDevices.remove(address)
+      subscribedAddresses.remove(address)
+      indicateAddresses.remove(address)
+      identitySubscribedAddresses.remove(address)
+      serverMtuByAddress.remove(address)
+      identityNotifyQueue.removeAll { it.address == address }
+      log("info", "[CONNECTION] central disconnected $address")
+      notifyLinkLost(address)
+      emitLinkStateIfKnown(address)
+      startAdvertiser()
+      if (started) scheduleReconnect(device)
+    }
+  }
+
+  private fun serverSubscriptionChanged(device: BluetoothDevice, characteristic: UUID, value: ByteArray?) {
+    val enabled = cccdEnabled(value)
+    val address = device.address
+    when (characteristic) {
+      TX_UUID -> {
+        if (enabled) {
+          subscribedAddresses.add(address)
+          if (value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)) {
+            indicateAddresses.add(address)
+          } else {
+            indicateAddresses.remove(address)
+          }
         } else {
-          failCurrentSend("Notify failed")
+          subscribedAddresses.remove(address)
+          indicateAddresses.remove(address)
+          notifyLinkLost(address)
         }
+        emitLinkStateIfKnown(address)
       }
+      IDENTITY_UUID -> if (enabled) {
+        identitySubscribedAddresses.add(address)
+        identityNotifyQueue.add(device)
+        pumpIdentityUpdates()
+      } else {
+        identitySubscribedAddresses.remove(address)
+      }
+    }
+    if (enabled) serverDevices[address] = device
+  }
+
+  private fun serverNotificationSent(device: BluetoothDevice, status: Int) {
+    if (identityNotifyInFlight) {
+      mainHandler.removeCallbacks(identityNotifyTimeout)
+      identityNotifyInFlight = false
+      identityNotifyQueue.poll()
+      if (status != BluetoothGatt.GATT_SUCCESS) {
+        log("warn", "[DISCOVERY] display name update notify failed status=$status")
+      }
+      pumpIdentityUpdates()
+      pumpSend()
+      if (identityPushPending && !sending && !identityNotifyInFlight) {
+        identityPushPending = false
+        publishIdentityUpdate()
+      }
+      return
+    }
+    val job = sendQueue.peek() ?: return
+    val route = job.route
+    if (!sending || route !is SendRoute.Notify || route.address != device.address) return
+    if (status == BluetoothGatt.GATT_SUCCESS) {
+      advanceFrame()
+    } else {
+      log("warn", "[MSG] notify failed status=$status")
+      abandonRoute()
     }
   }
 
@@ -1183,6 +1323,10 @@ class NoredBluetoothModule : Module() {
   }
 
   private fun publishIdentityUpdate() {
+    if (identityNotifyInFlight) {
+      identityPushPending = true
+      return
+    }
     identityNotifyQueue.clear()
     identitySubscribedAddresses.forEach { address ->
       serverDevices[address]?.let(identityNotifyQueue::add)
@@ -1210,7 +1354,9 @@ class NoredBluetoothModule : Module() {
   // without re-flooding already confirmed links.
   @SuppressLint("MissingPermission")
   private fun refreshUnconfirmedIdentities() {
-    if (!started || sending) return
+    // Rebuilding identityNotifyQueue under an in-flight notify would desync the head that
+    // serverNotificationSent polls off.
+    if (!started || sending || identityNotifyInFlight) return
     gatts.keys.forEach { address ->
       val id = addressToPeerId[address] ?: address
       if (peers[id]?.confirmedIdentity == true) return@forEach
@@ -1256,7 +1402,21 @@ class NoredBluetoothModule : Module() {
       identityNotifyQueue.poll()
       log("warn", "[DISCOVERY] display name update notify could not be queued")
       pumpIdentityUpdates()
+      return
     }
+    mainHandler.removeCallbacks(identityNotifyTimeout)
+    mainHandler.postDelayed(identityNotifyTimeout, 3_000L)
+  }
+
+  // pumpSend waits on identityNotifyInFlight; an onNotificationSent that never arrives
+  // (central gone mid-notify) must not freeze every packet send behind it.
+  private val identityNotifyTimeout = Runnable {
+    if (!identityNotifyInFlight) return@Runnable
+    identityNotifyInFlight = false
+    identityNotifyQueue.poll()
+    log("warn", "[DISCOVERY] identity notify timed out")
+    pumpIdentityUpdates()
+    pumpSend()
   }
 
   private fun beginSend(peerId: String, packet: String, promise: Promise) {
@@ -1264,37 +1424,12 @@ class NoredBluetoothModule : Module() {
       promise.reject("ERR_STOPPED", "Bluetooth is not running", null)
       return
     }
-    val peer = peers[peerId]
-    val clientAddress = peer?.address?.takeIf { gatts.containsKey(it) }
-    val serverDevice = serverDevices.values.firstOrNull { addressToPeerId[it.address] == peerId }
-      ?: peer?.address?.let { serverDevices[it] }
-    val canNotify = serverDevice != null && subscribedAddresses.contains(serverDevice.address)
-    if (clientAddress == null && !canNotify) {
+    if (!hasLiveLink(peerId)) {
       promise.reject("ERR_NOT_CONNECTED", "Peer is not connected over Bluetooth.", null)
       return
     }
-    val mtu = if (clientAddress != null) {
-      clientMtuByAddress[clientAddress] ?: 23
-    } else {
-      serverDevice?.address?.let { serverMtuByAddress[it] } ?: 23
-    }
-    val maxPayload = max(1, mtu - 6)
-    val frames = try {
-      makeFrames(packet, maxPayload)
-    } catch (error: Exception) {
-      promise.reject("ERR_PACKET", error.message, error)
-      return
-    }
-    sendQueue.add(
-      SendJob(
-        peerId = peerId,
-        frames = frames,
-        index = 0,
-        promise = promise,
-        address = clientAddress,
-        serverDevice = if (canNotify) serverDevice else null,
-      ),
-    )
+    sendToken += 1
+    sendQueue.add(SendJob(peerId, packet.toByteArray(StandardCharsets.UTF_8), promise, sendToken))
     pumpSend()
   }
 
@@ -1302,62 +1437,97 @@ class NoredBluetoothModule : Module() {
   private fun pumpSend() {
     if (sending || identityNotifyInFlight) return
     val job = sendQueue.peek() ?: return
+    if (job.route == null) {
+      val address = if (job.writeFailed) null else writeAddress(job.peerId)
+      val device = if (address == null && !job.notifyFailed) notifyDevice(job.peerId) else null
+      val route: SendRoute
+      val mtu: Int
+      when {
+        address != null -> {
+          route = SendRoute.Write(address)
+          mtu = clientMtuByAddress[address] ?: 23
+        }
+        device != null -> {
+          route = SendRoute.Notify(device.address)
+          mtu = serverMtuByAddress[device.address] ?: 23
+        }
+        else -> {
+          failCurrentSend("Peer is not connected over Bluetooth.")
+          return
+        }
+      }
+      val frames = makeFrames(job.payload, max(1, mtu - 6)) ?: run {
+        failCurrentSend("Message is too large for Bluetooth")
+        return
+      }
+      job.route = route
+      job.frames = frames
+      job.index = 0
+    }
+    val route = job.route ?: return
     if (job.index >= job.frames.size) {
       finishCurrentSend(true, null)
       return
     }
     val frame = job.frames[job.index]
-    sending = true
-    val address = job.address
-    if (address != null) {
-      enqueueWrite(address, frame, packet = true)
-      return
-    }
-    if (job.serverDevice != null && txCharacteristic != null) {
-      val device = job.serverDevice
-      val tx = txCharacteristic
-      val confirm = true
-      val notified = try {
-        if (device == null || tx == null) {
-          false
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-          gattServer?.notifyCharacteristicChanged(device, tx, confirm, frame) ==
-            BluetoothStatusCodes.SUCCESS
-        } else {
-          @Suppress("DEPRECATION")
-          tx.value = frame
-          @Suppress("DEPRECATION")
-          gattServer?.notifyCharacteristicChanged(device, tx, confirm) == true
+    when (route) {
+      is SendRoute.Write -> {
+        if (gatts[route.address]?.getService(SERVICE_UUID)?.getCharacteristic(RX_UUID) == null) {
+          abandonRoute()
+          return
         }
-      } catch (_: Exception) {
-        false
+        sending = true
+        armSendTimeout(job.token, job.index)
+        enqueueWrite(route.address, frame, packet = true, token = job.token, index = job.index)
       }
-      if (notified) {
-        armSendTimeout()
-        return
+      is SendRoute.Notify -> {
+        val device = serverDevices[route.address]?.takeIf { subscribedAddresses.contains(route.address) }
+        val tx = txCharacteristic
+        val server = gattServer
+        if (device == null || tx == null || server == null) {
+          abandonRoute()
+          return
+        }
+        sending = true
+        val queued = try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            server.notifyCharacteristicChanged(device, tx, true, frame) == BluetoothStatusCodes.SUCCESS
+          } else {
+            @Suppress("DEPRECATION")
+            tx.value = frame
+            @Suppress("DEPRECATION")
+            server.notifyCharacteristicChanged(device, tx, true)
+          }
+        } catch (_: Exception) {
+          false
+        }
+        if (queued) {
+          armSendTimeout(job.token, job.index)
+        } else {
+          log("warn", "[MSG] indicate could not be queued")
+          abandonRoute()
+        }
       }
-      log("warn", "[MSG] notify path failed, retrying over write")
-      job.serverDevice = null
     }
-    failCurrentSend("Peer is not connected over Bluetooth.")
   }
 
-  private fun armSendTimeout() {
-    sendTimeout?.let(mainHandler::removeCallbacks)
+  private fun armSendTimeout(token: Int, index: Int) {
+    clearSendTimeout()
     val timeout = Runnable {
-      if (!sending) return@Runnable
-      val job = sendQueue.peek()
-      if (job?.address != null && job.serverDevice != null) {
-        job.address = null
-        sending = false
-        log("warn", "[MSG] write timed out, retrying over notify")
-        pumpSend()
-        return@Runnable
+      val job = sendQueue.peek() ?: return@Runnable
+      if (!sending || job.token != token || job.index != index) return@Runnable
+      log("warn", "[MSG] frame timed out")
+      // A frame that never completes means the link is dead: Android will not start the
+      // next operation on it either, so tear it down and let the reconnect path replace it.
+      when (val route = job.route) {
+        is SendRoute.Write -> dropClientLink(route.address)
+        is SendRoute.Notify -> dropServerLink(route.address)
+        null -> {}
       }
-      failCurrentSend("Bluetooth send timed out")
+      abandonRoute()
     }
     sendTimeout = timeout
-    mainHandler.postDelayed(timeout, 8_000L)
+    mainHandler.postDelayed(timeout, 6_000L)
   }
 
   private fun clearSendTimeout() {
@@ -1365,7 +1535,7 @@ class NoredBluetoothModule : Module() {
     sendTimeout = null
   }
 
-  private fun finishCurrentFrame() {
+  private fun advanceFrame() {
     clearSendTimeout()
     sending = false
     val job = sendQueue.peek() ?: return
@@ -1375,6 +1545,36 @@ class NoredBluetoothModule : Module() {
     } else {
       pumpSend()
     }
+  }
+
+  /**
+   * The current route stopped working (link lost, write error, or timeout). Mark it dead
+   * for this job and let pumpSend pick the other route or fail fast. The packet restarts
+   * from frame 0 on the new route: the receiver resets its assembler on seq 0, and the two
+   * routes may have different MTUs.
+   */
+  private fun abandonRoute() {
+    clearSendTimeout()
+    sending = false
+    val job = sendQueue.peek() ?: return
+    when (job.route) {
+      is SendRoute.Write -> job.writeFailed = true
+      is SendRoute.Notify -> job.notifyFailed = true
+      null -> {}
+    }
+    job.route = null
+    if (!job.writeFailed || !job.notifyFailed) log("warn", "[MSG] switching Bluetooth path")
+    pumpSend()
+  }
+
+  private fun writeLinkLost(address: String) {
+    val job = sendQueue.peek() ?: return
+    if (job.route == SendRoute.Write(address)) abandonRoute()
+  }
+
+  private fun notifyLinkLost(address: String) {
+    val job = sendQueue.peek() ?: return
+    if (job.route == SendRoute.Notify(address)) abandonRoute()
   }
 
   private fun failCurrentSend(message: String) {
@@ -1408,9 +1608,9 @@ class NoredBluetoothModule : Module() {
     }
   }
 
-  private fun enqueueWrite(address: String, data: ByteArray, packet: Boolean) {
+  private fun enqueueWrite(address: String, data: ByteArray, packet: Boolean, token: Int = 0, index: Int = 0) {
     val queue = writeQueues.getOrPut(address) { ArrayDeque() }
-    queue.add(WriteJob(data, packet))
+    queue.add(WriteJob(data, packet, token, index))
     drainWrite(address)
   }
 
@@ -1418,8 +1618,15 @@ class NoredBluetoothModule : Module() {
   private fun drainWrite(address: String) {
     if (writeBusy[address] == true) return
     val job = writeQueues[address]?.peek() ?: return
-    val gatt = gatts[address] ?: return
-    val rx = gatt.getService(SERVICE_UUID)?.getCharacteristic(RX_UUID) ?: return
+    val rx = gatts[address]?.getService(SERVICE_UUID)?.getCharacteristic(RX_UUID)
+    val gatt = gatts[address]
+    if (gatt == null || rx == null) {
+      // The link (or its service table) is gone; nothing queued here can complete.
+      writeQueues.remove(address)
+      writeBusy.remove(address)
+      writeLinkLost(address)
+      return
+    }
     writeBusy[address] = true
     val queued = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
       gatt.writeCharacteristic(rx, job.data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothGatt.GATT_SUCCESS
@@ -1430,21 +1637,33 @@ class NoredBluetoothModule : Module() {
       @Suppress("DEPRECATION")
       gatt.writeCharacteristic(rx)
     }
-    if (!queued) {
-      writeBusy[address] = false
-      writeQueues[address]?.poll()
-      if (job.packet) failCurrentSend("Write could not be queued")
-      else log("error", "[ERROR] local identity write could not be queued")
-    } else if (job.packet) {
-      armSendTimeout()
+    if (queued) return
+    writeBusy[address] = false
+    // Android allows one GATT operation per link at a time; an identity read or CCCD write
+    // in flight makes this return busy. Retry briefly before giving up on the frame.
+    job.attempts += 1
+    if (job.attempts < 5) {
+      mainHandler.postDelayed({ drainWrite(address) }, 150L)
+      return
     }
+    writeQueues[address]?.poll()
+    if (job.packet) {
+      val send = sendQueue.peek()
+      if (sending && send != null && send.route == SendRoute.Write(address) && send.token == job.token && send.index == job.index) {
+        log("warn", "[MSG] write could not be queued")
+        abandonRoute()
+      }
+    } else {
+      log("error", "[ERROR] local identity write could not be queued")
+    }
+    drainWrite(address)
   }
 
-  private fun makeFrames(packet: String, maxPayload: Int): List<ByteArray> {
-    val payload = packet.toByteArray(StandardCharsets.UTF_8)
+  /** null when the packet needs more than the 255 frames the one-byte sequence allows. */
+  private fun makeFrames(payload: ByteArray, maxPayload: Int): List<ByteArray>? {
     val size = max(1, maxPayload)
     val total = max(1, ceil(payload.size / size.toDouble()).toInt())
-    if (total > 255) throw CodedException("ERR_PACKET", "Message is too large for Bluetooth", null)
+    if (total > 255) return null
     return (0 until total).map { index ->
       val start = index * size
       val end = min(payload.size, start + size)
@@ -1557,6 +1776,7 @@ class NoredBluetoothModule : Module() {
       "lastSeen" to peer.lastSeen,
       "nored" to peer.nored,
       "identityConfirmed" to peer.confirmedIdentity,
+      "connected" to hasLiveLink(peer.id),
     )
     sanitizeRssi(peer.rssi)?.let { map["rssi"] = it }
     if (peer.avatarIcon != null) {

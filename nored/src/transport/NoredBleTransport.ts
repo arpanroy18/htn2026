@@ -13,6 +13,8 @@ import type {
   TransportState,
 } from './MeshTransport';
 
+const SEND_GUARD_MS = 60_000;
+
 function normalizePeerId(id: string) {
   return id.trim().toLowerCase();
 }
@@ -73,10 +75,21 @@ class NoredBleTransport implements MeshTransport {
   }
 
   async sendPacket(peerId: string, packet: WirePacket): Promise<void> {
-    await NoredBluetooth.sendPacket(
-      normalizePeerId(peerId),
-      JSON.stringify(packet),
-    );
+    // The scheduler runs one native send at a time for the whole mesh, so a promise the
+    // native side never settles would freeze every peer. Native bounds each frame at 6s
+    // and a packet at 255 frames; this only catches a lost promise (module reload, etc.).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const guard = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Bluetooth send timed out.')), SEND_GUARD_MS);
+    });
+    try {
+      await Promise.race([
+        NoredBluetooth.sendPacket(normalizePeerId(peerId), JSON.stringify(packet)),
+        guard,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   onPeerDiscovered(callback: (peer: Peer) => void): Subscription {

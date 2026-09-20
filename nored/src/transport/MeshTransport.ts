@@ -6,6 +6,8 @@ export type Peer = {
   lastSeen: number;
   nored?: boolean;
   identityConfirmed?: boolean;
+  /** Native link state: a GATT client write path or subscribed central currently exists. */
+  connected?: boolean;
   /** Set in JS when native reports peer lost; kept visible during grace period. */
   pendingLoss?: boolean;
   replacesId?: string;

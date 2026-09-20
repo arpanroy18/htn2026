@@ -5,6 +5,8 @@ export type Peer = {
   lastSeen: number;
   nored?: boolean;
   identityConfirmed?: boolean;
+  /** True while a usable BLE link (GATT client write or subscribed central) exists. */
+  connected?: boolean;
   replacesId?: string;
   avatarIcon?: string;
   avatarColor?: number;

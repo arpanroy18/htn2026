@@ -125,7 +125,19 @@ export class MeshRouter {
     }
     this.cancelDisconnect(peer.id);
     const old = this.sessions.get(peer.id);
-    if (old) { old.peer = peer; return; }
+    if (old) {
+      const restored = peer.connected === true && old.peer.connected !== true;
+      old.peer = peer;
+      // Native reports the link the moment it is usable again. Sends that failed while it
+      // was down are sitting in exponential backoff (up to 30s); drop that and retry now,
+      // and re-hello at once if the handshake never completed on the previous link.
+      if (restored) {
+        for (const key of this.pending.keys()) if (key.startsWith(`${peer.id}|`)) this.pending.delete(key);
+        if (!old.ready) old.helloAt = 0;
+        this.changed();
+      }
+      return;
+    }
     this.sessions.set(peer.id, { peer, ready: false, started: this.now(), helloAt: 0, inventoryAt: 0, inventoryComplete: false });
     this.log(`[SYNC] connected ${peer.id}`);
     await this.hello(peer.id, false);
