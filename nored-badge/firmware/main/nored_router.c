@@ -70,6 +70,7 @@ static char identity_json[192];
 static rmt_channel_handle_t led_channel;
 static rmt_encoder_handle_t led_encoder;
 static QueueHandle_t alert_queue;
+static uint8_t gatt_rx_buf[MAX_PACKET + 4];
 
 typedef struct {
     nored_alert_severity_t severity;
@@ -639,21 +640,20 @@ static int gatt_access(uint16_t conn_handle, uint16_t attr_handle,
 
     if (attr_handle == h_rx && ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-        uint8_t buf[220];
-        if (len > sizeof(buf)) len = sizeof(buf);
-        int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, len, &len);
+        if (len >= sizeof(gatt_rx_buf)) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        int rc = ble_hs_mbuf_to_flat(ctxt->om, gatt_rx_buf, len, &len);
         if (rc != 0) return BLE_ATT_ERR_UNLIKELY;
 
-        if (len >= 3 && buf[0] == PACKET_MAGIC) {
-            if (link) ingest_frame(link, buf, len);
+        if (len >= 3 && gatt_rx_buf[0] == PACKET_MAGIC) {
+            if (link) ingest_frame(link, gatt_rx_buf, len);
             return 0;
         }
 
-        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = 0;
+        gatt_rx_buf[len] = 0;
         char id[MAX_ID] = {0};
         char name[MAX_NAME + 1] = {0};
-        if (link && json_string_field((char *)buf, "id", id, sizeof(id))) {
-            json_string_field((char *)buf, "name", name, sizeof(name));
+        if (link && json_string_field((char *)gatt_rx_buf, "id", id, sizeof(id))) {
+            json_string_field((char *)gatt_rx_buf, "name", name, sizeof(name));
             strncpy(link->id, id, MAX_ID - 1);
             strncpy(link->name, name[0] ? name : "Nored", MAX_NAME);
             ESP_LOGI(TAG, "peer %s (%s) on conn %u", link->name, link->id, conn_handle);
