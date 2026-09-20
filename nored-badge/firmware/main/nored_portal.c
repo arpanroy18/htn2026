@@ -1,6 +1,7 @@
 #include "nored_portal.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_coexist.h"
@@ -15,7 +16,8 @@
 
 static const char *TAG = "nored_portal";
 
-static bool (*g_broadcast)(const char *severity, const char *body, char *err, size_t err_len);
+static bool (*g_broadcast)(const char *severity, const char *body, int64_t client_ms,
+                           char *err, size_t err_len);
 static httpd_handle_t g_server;
 
 static const char PAGE_HEAD[] =
@@ -26,7 +28,8 @@ static const char PAGE_HEAD[] =
     "<h1 style=\"margin:0 0 8px\">Share to Nored</h1>";
 static const char PAGE_TAIL[] =
     "<p style=\"color:#555\">You're on this badge. Type a message and it goes out over Bluetooth to nearby Nored phones.</p>"
-    "<form method=post action=/broadcast>"
+    "<form method=post action=/broadcast onsubmit=\"this.ts.value=Date.now()\">"
+    "<input type=hidden name=ts>"
     "<textarea name=body maxlength=280 required rows=5 "
     "style=\"width:100%;font-size:16px;box-sizing:border-box\" "
     "placeholder=\"What should everyone nearby know?\"></textarea>"
@@ -121,11 +124,16 @@ static esp_err_t post_handler(httpd_req_t *req)
         strncpy(severity, "HELP", sizeof(severity) - 1);
     }
 
+    char ts_buf[24] = {0};
+    int64_t client_ms = 0;
+    form_field(buf, "ts", ts_buf, sizeof(ts_buf));
+    if (ts_buf[0]) client_ms = strtoll(ts_buf, NULL, 10);
+
     char err[96] = {0};
     if (!g_broadcast) {
         return send_page(req, "Sharing is not ready yet.");
     }
-    if (!g_broadcast(severity, body, err, sizeof(err))) {
+    if (!g_broadcast(severity, body, client_ms, err, sizeof(err))) {
         return send_page(req, err[0] ? err : "Could not share.");
     }
     return send_page(req, err[0] ? err : "Shared. Nearby Nored phones will see it.");
@@ -254,7 +262,7 @@ static void register_uri(httpd_handle_t server, const char *uri, httpd_method_t 
 }
 
 bool nored_portal_start(bool (*broadcast)(const char *severity, const char *body,
-                                          char *err, size_t err_len))
+                                          int64_t client_ms, char *err, size_t err_len))
 {
     g_broadcast = broadcast;
 

@@ -524,7 +524,7 @@ void nored_display_alert_history(const nored_alert_history_item_t *items, size_t
     }
 
     char page_label[24];
-    snprintf(page_label, sizeof(page_label), "%u/%u  B: next",
+    snprintf(page_label, sizeof(page_label), "%u/%u  A: page",
              (unsigned)(page + 1), (unsigned)page_count);
     draw_text_centered(224, page_label, 1, COLOR_MUTED, COLOR_PANEL);
     display_unlock();
