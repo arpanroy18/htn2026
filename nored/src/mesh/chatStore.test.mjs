@@ -145,6 +145,24 @@ describe('chatStore delivery and unread state', () => {
     const cleared = clearStaleTranscriptPending(state);
     assert.equal(cleared.messages.peer[0].transcriptStatus, undefined);
   });
+
+  it('clears orphaned pending translation status on relaunch', () => {
+    const audio = message({
+      id: 'voice',
+      kind: 'audio',
+      body: 'Voice message',
+      transcript: 'Bonjour',
+      transcriptStatus: 'ready',
+      translationStatus: 'pending',
+    });
+    const state = {
+      threads: [],
+      messages: { peer: [audio] },
+    };
+    const cleared = clearStaleTranscriptPending(state);
+    assert.equal(cleared.messages.peer[0].translationStatus, undefined);
+    assert.equal(cleared.messages.peer[0].transcriptStatus, 'ready');
+  });
 });
 
 describe('chatStore groups', () => {

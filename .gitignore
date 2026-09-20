@@ -105,3 +105,7 @@ nored/app.local.json
 /nored-badge/firmware/sdkconfig.old
 /nored-badge/firmware/managed_components/
 /nored-badge/firmware/dependencies.lock
+
+# Whisper model weights (fetch via npm run models:fetch in nored/)
+nored/assets/models/
+!nored/assets/models/.gitkeep

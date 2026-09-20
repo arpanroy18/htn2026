@@ -21,12 +21,14 @@
     "expo-image-manipulator": "~57.0.19",
     "expo-image-picker": "~57.0.19",
     "expo-linking": "~57.0.10",
+    "expo-localization": "~57.0.2",
     "expo-router": "~57.0.22",
     "expo-splash-screen": "~57.0.9",
     "expo-sqlite": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "expo-symbols": "~57.0.3",
     "expo-system-ui": "~57.0.4",
+    "expo-translate-text": "^0.3.0",
     "expo-web-browser": "~57.0.3",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -57,7 +59,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --experimental-strip-types src/mesh/*.test.mjs src/games/*.test.mjs src/transcription/*.test.mjs",
-    "models:fetch": "mkdir -p assets/models && curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin -o assets/models/ggml-tiny.bin",
+    "models:fetch": "mkdir -p assets/models && curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin -o assets/models/ggml-base-q5_1.bin",
     "ios:device": "expo run:ios --device aadyaphone"
   },
   "private": true

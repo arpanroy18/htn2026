@@ -4,6 +4,12 @@ export type WavPcm16 = {
   channels: number;
 };
 
+export function wavDurationSeconds(bytes: Uint8Array): number {
+  const { pcm, sampleRate } = extractPcm16FromWav(bytes);
+  if (!sampleRate) return 0;
+  return pcm.byteLength / 2 / sampleRate;
+}
+
 function readChunkId(bytes: Uint8Array, offset: number) {
   if (offset + 4 > bytes.length) return '';
   return String.fromCharCode(

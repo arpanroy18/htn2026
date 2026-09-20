@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractPcm16FromWav } from './extractPcm16FromWav.ts';
+import { extractPcm16FromWav, wavDurationSeconds } from './extractPcm16FromWav.ts';
 
 function writeUint32LE(view, offset, value) {
   view.setUint32(offset, value, true);
@@ -49,4 +49,9 @@ test('extractPcm16FromWav returns mono PCM bytes', () => {
 test('extractPcm16FromWav rejects short audio', () => {
   const wav = makeMonoWav(100);
   assert.throws(() => extractPcm16FromWav(wav), /too short/i);
+});
+
+test('wavDurationSeconds measures clip length', () => {
+  const threeSeconds = makeMonoWav(16_000 * 3);
+  assert.equal(wavDurationSeconds(threeSeconds), 3);
 });

@@ -85,16 +85,18 @@ Acceptance:
 - [ ] 60s voice note transfers <30s phone-to-phone at <5m.
 
 ### 3.6 On-Device AI: Transcription + Translation
-- Runs fully offline, no network calls.
-- Transcribe voice messages to text on receive (and pre-send preview).
-- Translate: auto-detect + render to recipient locale, original kept side-by-side.
-- Model target: Whisper-tiny / small quantized (CoreML / TFLite / ONNX), lazy-downloaded pre-event, cached on device.
-- Fallback: if model missing or low-RAM, show audio-only with `transcript unavailable` badge.
+- Runs fully offline after one-time setup, no network calls at tap-time.
+- Transcribe voice messages to text on user request via a "See transcription" control below each voice note.
+- Translate transcript to the viewer's device locale (EN, FR, or HI) inline after transcription when languages differ. Translation is viewer-local and not sent over the mesh.
+- Transcription model: `ggml-base-q5_1.bin` (whisper.cpp, quantized base), fetched on the developer machine via `npm run models:fetch` in `nored/`, bundled at build time (gitignored).
+- Translation: `expo-translate-text` (Apple Translation on iOS 18+, Google ML Kit on Android). Language packs must be downloaded once while online before airplane-mode demos.
+- Dev setup: Expo Go and simulators are unsupported; teammates need `npm install`, `npm run models:fetch`, and a physical-device dev-client build — see `nored/README.md` § New developer setup (transcription).
+- Fallback: if transcription or translation fails, show `Transcript unavailable` or `Translation unavailable` with retry.
 - Privacy: raw audio never leaves device except as user-sent message.
 
 Acceptance:
 - [ ] 15s voice note transcribes <5s on-device, airplane mode on.
-- [ ] EN <-> ES/FR translation renders inline without internet.
+- [ ] EN <-> FR / HI translation renders inline without internet.
 
 ## 4. Mesh / Transport
 

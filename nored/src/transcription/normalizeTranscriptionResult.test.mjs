@@ -32,4 +32,12 @@ test('normalizeTranscriptionResult rejects aborted or empty results', () => {
     null,
   );
   assert.equal(normalizeTranscriptionResult(null), null);
+  assert.equal(
+    normalizeTranscriptionResult({
+      result: '(speaking foreign language)',
+      language: 'en',
+      isAborted: false,
+    }),
+    null,
+  );
 });

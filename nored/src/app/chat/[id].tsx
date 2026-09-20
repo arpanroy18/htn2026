@@ -30,6 +30,7 @@ import { useMeshUi } from '@/mesh/MeshUiContext';
 import { ALERT_THREAD_PREFIX, isAlertThreadId, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
 import { MAX_VOICE_SECONDS } from '@/mesh/mediaFiles';
 import { pickPhotoAsync } from '@/mesh/photoPicker';
+import { languageCodeAbbrev } from '@/transcription/viewerLocale';
 import { signal } from '@/theme/signal';
 
 // Gesture nav bar on Android sits right on top of the composer, so add a little
@@ -162,15 +163,61 @@ function TranscriptRow({
   onPress: () => void;
 }) {
   const status = message.transcriptStatus;
+  const translationStatus = message.translationStatus;
 
   const transcriptAlign = mine ? styles.transcriptBelowMine : styles.transcriptBelowTheirs;
   const transcriptTextAlign = mine ? styles.transcriptTextMine : undefined;
 
   if (status === 'ready' && message.transcript) {
+    const showTranslation =
+      translationStatus === 'ready' &&
+      message.translation &&
+      message.translation !== message.transcript;
+    const canRetryTranslation =
+      translationStatus === 'unavailable' || translationStatus === 'skipped';
+
     return (
-      <Text style={[styles.transcriptText, transcriptAlign, transcriptTextAlign]}>
-        {message.transcript}
-      </Text>
+      <View style={[styles.transcriptBlock, transcriptAlign]}>
+        <Text style={[styles.transcriptText, transcriptTextAlign]}>{message.transcript}</Text>
+        {translationStatus === 'pending' ? (
+          <Text style={[styles.transcriptMeta, transcriptTextAlign]}>Translating…</Text>
+        ) : null}
+        {showTranslation ? (
+          <>
+            <Text style={[styles.translationLabel, transcriptTextAlign]}>Translated</Text>
+            <Text style={[styles.translationText, transcriptTextAlign]}>
+              {message.translation}
+            </Text>
+          </>
+        ) : null}
+        {canRetryTranslation ? (
+          <Pressable
+            accessibilityLabel="Retry translation"
+            accessibilityRole="button"
+            onPress={onPress}
+            style={styles.transcriptAction}>
+            <Text style={[styles.transcriptMeta, transcriptTextAlign]}>
+              {translationStatus === 'skipped'
+                ? 'See translation'
+                : 'Translation unavailable · Tap to retry'}
+            </Text>
+            {__DEV__ && message.translationError ? (
+              <Text style={[styles.transcriptDebug, transcriptTextAlign]}>
+                {message.translationError}
+              </Text>
+            ) : null}
+          </Pressable>
+        ) : null}
+        {__DEV__ ? (
+          <Text style={[styles.transcriptDebug, transcriptTextAlign]}>
+            {message.transcriptLanguage
+              ? `Detected: ${languageCodeAbbrev(message.transcriptLanguage)}`
+              : 'Detected: ???'}
+            {message.translatedTo ? ` · Target: ${languageCodeAbbrev(message.translatedTo)}` : ''}
+            {message.translationStatus ? ` · ${message.translationStatus}` : ''}
+          </Text>
+        ) : null}
+      </View>
     );
   }
 
@@ -818,11 +865,21 @@ const styles = StyleSheet.create({
   audioDuration: { color: signal.slate, fontSize: 11 },
   transcriptBelowTheirs: { alignSelf: 'flex-start', marginLeft: 2 },
   transcriptBelowMine: { alignSelf: 'flex-end', marginRight: 2 },
+  transcriptBlock: { gap: 2, marginTop: 2, maxWidth: 260 },
   transcriptTextMine: { textAlign: 'right' },
   transcriptAction: { marginTop: 2 },
   transcriptActionText: { color: signal.blue, fontSize: 12, fontWeight: '600' },
   transcriptMeta: { color: signal.slate, fontSize: 12, marginTop: 2 },
-  transcriptText: { color: signal.slate, fontSize: 13, lineHeight: 18, marginTop: 2 },
+  transcriptText: { color: signal.slate, fontSize: 13, lineHeight: 18 },
+  translationLabel: {
+    color: signal.slate,
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+    opacity: 0.75,
+    textTransform: 'uppercase',
+  },
+  translationText: { color: signal.ink, fontSize: 13, fontStyle: 'italic', lineHeight: 18 },
   transcriptDebug: { color: signal.slate, fontSize: 11, lineHeight: 15, marginTop: 2 },
   metaRow: { alignItems: 'center', flexDirection: 'row', gap: 5, marginLeft: 4, marginTop: 4 },
   metaRowMine: { marginLeft: 0, marginRight: 4 },

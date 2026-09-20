@@ -10,7 +10,7 @@ Offline Bluetooth mesh chat built with Expo.
    npm install
    ```
 
-2. Fetch the on-device Whisper model (~75 MB, required for voice transcription)
+2. Fetch the on-device Whisper model (~57 MB, required for voice transcription)
 
    ```bash
    npm run models:fetch
@@ -47,7 +47,7 @@ Offline Bluetooth mesh chat built with Expo.
    npx expo start
    ```
 
-Voice notes show a **See transcription** control below the player. Transcription runs fully on-device after you tap it.
+Voice notes show a **See transcription** control below the player. Tapping it transcribes on-device, then translates to your phone's language (English, French, or Hindi) when needed.
 
 ## New developer setup (transcription)
 
@@ -62,22 +62,30 @@ If someone else clones the repo on a new laptop, transcription is **not** ready 
 
 **What is not in git**
 
-- `assets/models/ggml-tiny.bin` (~75 MB) — run `npm run models:fetch` before building.
+- `assets/models/ggml-base-q5_1.bin` (~57 MB) — run `npm run models:fetch` before building.
 
 **Native npm packages** (installed by `npm install`, but require a native rebuild):
 
 - `whisper.rn` — on-device Whisper
 - `react-native-audio-converter` — converts voice-note `.m4a` to WAV before inference
+- `expo-translate-text` — EN/FR/HI translation via Apple Translation (iOS 18+) or Google ML Kit (Android)
+- `expo-localization` — reads device locale for translation target
 - `buffer` — polyfill used by whisper.rn
 
 **Expo Go will not work** for transcription (custom native modules + bundled model). Use a dev client built with `expo run:ios`.
 
 **Simulator will not work** for transcription — use a physical iPhone.
 
+**Translation language packs**
+
+Before an airplane-mode demo, download translation languages while online: **Settings → Apps → Translate → Languages** — get **English**, **French**, and **Hindi**. Packs download on first translate (~30 MB each). Android downloads ML Kit packs on first translation.
+
+iOS programmatic translation requires **iOS 18+**.
+
 **Verify the model before building**
 
 ```bash
-ls -lh assets/models/ggml-tiny.bin
+ls -lh assets/models/ggml-base-q5_1.bin
 ```
 
 **Pick a different device name**
@@ -89,7 +97,7 @@ npx expo run:ios --device "Your iPhone Name"
 
 ## Scripts
 
-- `npm run models:fetch` — download `ggml-tiny.bin` into `assets/models/` (on your Mac, before building)
+- `npm run models:fetch` — download `ggml-base-q5_1.bin` into `assets/models/` (on your Mac, before building)
 - `npm run ios:device` — build and install on wired **aadyaphone**
 - `npm test` — run mesh and transcription unit tests
 - `npm run lint` — ESLint

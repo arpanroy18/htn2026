@@ -61,7 +61,17 @@ import {
 } from './mediaFiles';
 import { useRouterService, useRouterData } from './RouterContext';
 import { clearLegacyHistory } from './persistence';
-import { transcribeVoiceNote } from '@/transcription/WhisperService';
+import { translateTranscript } from '@/transcription/TranslationService';
+import { chooseTranslationStrategy } from '@/transcription/translationPlan';
+import {
+  getViewerLocale,
+  normalizeLanguageCode,
+  sameLanguage,
+} from '@/transcription/viewerLocale';
+import {
+  transcribeVoiceNote,
+  whisperTranslateAudioToEnglish,
+} from '@/transcription/WhisperService';
 import {
   MEDIA_CHUNK_BYTES,
   MEDIA_REASSEMBLY_TIMEOUT_MS,
@@ -1066,7 +1076,140 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         (item) => item.id === messageId,
       );
       if (!message || message.kind !== 'audio' || !message.localUri) return;
-      if (message.transcriptStatus === 'pending' || message.transcriptStatus === 'ready') {
+
+      const viewerLocale = getViewerLocale();
+      const translationComplete =
+        message.translationStatus === 'ready' && message.translatedTo === viewerLocale;
+      if (message.transcriptStatus === 'ready' && message.transcript && translationComplete) {
+        return;
+      }
+      if (message.transcriptStatus === 'pending' || message.translationStatus === 'pending') {
+        return;
+      }
+
+      const applyTranslation = async (
+        transcript: string,
+        options?: {
+          fileUri?: string;
+          whisperTranslation?: string;
+          sourceLocale?: string;
+        },
+      ) => {
+        const sourceLocale =
+          normalizeLanguageCode(options?.sourceLocale) ??
+          normalizeLanguageCode(message.transcriptLanguage) ??
+          undefined;
+
+        if (
+          sourceLocale &&
+          sameLanguage(sourceLocale, viewerLocale) &&
+          !options?.whisperTranslation
+        ) {
+          await setState((current) =>
+            patchMessage(current, threadId, messageId, {
+              translation: undefined,
+              translationStatus: 'skipped',
+              translatedTo: undefined,
+              translationError: undefined,
+            }),
+          );
+          return;
+        }
+
+        await setState((current) =>
+          patchMessage(current, threadId, messageId, {
+            translationStatus: 'pending',
+            translation: undefined,
+            translatedTo: undefined,
+            translationError: undefined,
+          }),
+        );
+
+        const strategy = chooseTranslationStrategy({
+          transcript,
+          viewerLocale,
+          sourceLocale,
+          whisperTranslation: options?.whisperTranslation,
+          hasAudioFile: Boolean(options?.fileUri),
+        });
+
+        if (strategy === 'whisper-precomputed' && options?.whisperTranslation) {
+          await setState((current) =>
+            patchMessage(current, threadId, messageId, {
+              translation: options.whisperTranslation,
+              translationStatus: 'ready',
+              translatedTo: 'en',
+              translationError: undefined,
+              ...(sourceLocale ? { transcriptLanguage: sourceLocale } : {}),
+            }),
+          );
+          return;
+        }
+
+        if (strategy === 'whisper-audio') {
+          const whisperEnglish = await whisperTranslateAudioToEnglish(
+            options.fileUri,
+            sourceLocale,
+          );
+          if (epoch !== meshRouter.epoch) return;
+          if (whisperEnglish && whisperEnglish.trim() !== transcript.trim()) {
+            await setState((current) =>
+              patchMessage(current, threadId, messageId, {
+                translation: whisperEnglish.trim(),
+                translationStatus: 'ready',
+                translatedTo: 'en',
+                translationError: undefined,
+                transcriptLanguage: sourceLocale,
+              }),
+            );
+            return;
+          }
+        }
+
+        const translation = await translateTranscript(transcript, viewerLocale, sourceLocale);
+        if (epoch !== meshRouter.epoch) return;
+
+        const detectedLanguage =
+          translation.detectedSourceLanguage ??
+          translation.result?.sourceLocale ??
+          sourceLocale;
+
+        if (translation.skipped) {
+          await setState((current) =>
+            patchMessage(current, threadId, messageId, {
+              translation: undefined,
+              translationStatus: 'skipped',
+              translatedTo: undefined,
+              translationError: undefined,
+              ...(detectedLanguage ? { transcriptLanguage: detectedLanguage } : {}),
+            }),
+          );
+          return;
+        }
+
+        if (translation.result) {
+          await setState((current) =>
+            patchMessage(current, threadId, messageId, {
+              translation: translation.result!.text,
+              translationStatus: 'ready',
+              translatedTo: translation.result!.targetLocale,
+              translationError: undefined,
+              ...(detectedLanguage ? { transcriptLanguage: detectedLanguage } : {}),
+            }),
+          );
+          return;
+        }
+
+        await setState((current) =>
+          patchMessage(current, threadId, messageId, {
+            translationStatus: 'unavailable',
+            translationError: translation.error,
+          }),
+        );
+      };
+
+      if (message.transcriptStatus === 'ready' && message.transcript) {
+        await applyTranslation(message.transcript, { fileUri: message.localUri });
         return;
       }
 
@@ -1076,30 +1219,43 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           transcript: undefined,
           transcriptLanguage: undefined,
           transcriptError: undefined,
+          translation: undefined,
+          translationStatus: undefined,
+          translatedTo: undefined,
+          translationError: undefined,
         }),
       );
 
       const outcome = await transcribeVoiceNote(message.localUri);
       if (epoch !== meshRouter.epoch) return;
 
-      if (outcome.result) {
+      if (!outcome.result) {
         await setState((current) =>
           patchMessage(current, threadId, messageId, {
-            transcript: outcome.result!.text,
-            transcriptLanguage: outcome.result!.language,
-            transcriptStatus: 'ready',
-            transcriptError: undefined,
+            transcriptStatus: 'unavailable',
+            transcriptError: outcome.error,
           }),
         );
         return;
       }
 
+      const detectedTranscriptLanguage =
+        normalizeLanguageCode(outcome.result!.language) ?? undefined;
+
       await setState((current) =>
         patchMessage(current, threadId, messageId, {
-          transcriptStatus: 'unavailable',
-          transcriptError: outcome.error,
+          transcript: outcome.result!.text,
+          transcriptLanguage: detectedTranscriptLanguage,
+          transcriptStatus: 'ready',
+          transcriptError: undefined,
         }),
       );
+
+      await applyTranslation(outcome.result.text, {
+        fileUri: message.localUri,
+        whisperTranslation: outcome.whisperTranslation,
+        sourceLocale: detectedTranscriptLanguage,
+      });
     },
     [meshRouter, setState],
   );
