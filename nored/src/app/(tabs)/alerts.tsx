@@ -1,8 +1,8 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { AlertsIcon, PlusIcon } from '@/components/signal/icons';
+import { PlusIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Avatar, Chip, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
@@ -37,9 +37,7 @@ function AlertRow({ item }: { item: AlertItem }) {
 }
 
 export default function AlertsScreen() {
-  const { alerts, listening, setListening, setAlertsFocused } = useAlerts();
-  const pinned = alerts.filter((item) => item.pinned);
-  const inbox = alerts.filter((item) => !item.pinned);
+  const { alerts, setAlertsFocused } = useAlerts();
 
   useFocusEffect(
     useCallback(() => {
@@ -59,52 +57,18 @@ export default function AlertsScreen() {
         title="Alerts"
       />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        <View style={styles.channel}>
-          <View style={styles.channelTop}>
-            <View style={styles.channelIcon}>
-              <AlertsIcon color={signal.ink} size={20} />
-            </View>
-            <View style={styles.channelCopy}>
-              <Text style={styles.channelTitle}>EMERGENCY</Text>
-            </View>
-            <Switch
-              ios_backgroundColor={signal.fog}
-              onValueChange={setListening}
-              thumbColor={signal.white}
-              trackColor={{ false: signal.fog, true: signal.blue }}
-              value={listening}
-            />
-          </View>
-          <Text style={styles.channelBody}>
-            Floods to every reachable node. Bypasses mute, pins here, and carries up to 280 characters plus an optional location.
-          </Text>
-        </View>
-
-        {pinned.length ? (
-          <>
-            <Text style={styles.section}>Pinned</Text>
-            <GroupedList style={styles.pinnedGroup}>
-              {pinned.map((item) => (
-                <AlertRow item={item} key={item.id} />
-              ))}
-            </GroupedList>
-          </>
-        ) : null}
-
-        {alerts.length === 0 || inbox.length > 0 ? (
-          <Text style={[styles.section, styles.spaced]}>Inbox</Text>
-        ) : null}
+        <Text style={styles.section}>Inbox</Text>
         {alerts.length === 0 ? (
           <Text style={styles.empty}>
             No alerts yet. Tap + to broadcast to every reachable phone on the mesh.
           </Text>
-        ) : inbox.length > 0 ? (
+        ) : (
           <GroupedList>
-            {inbox.map((item) => (
+            {alerts.map((item) => (
               <AlertRow item={item} key={item.id} />
             ))}
           </GroupedList>
-        ) : null}
+        )}
       </ScrollView>
     </Screen>
   );
@@ -112,32 +76,12 @@ export default function AlertsScreen() {
 
 const styles = StyleSheet.create({
   body: { gap: 8, paddingBottom: 36, paddingHorizontal: 24 },
-  channel: {
-    backgroundColor: signal.sky,
-    borderRadius: 16,
-    marginBottom: 6,
-    padding: 20,
-  },
-  channelTop: { alignItems: 'center', flexDirection: 'row', gap: 12 },
-  channelIcon: {
-    alignItems: 'center',
-    backgroundColor: signal.white,
-    borderRadius: 12,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  channelCopy: { flex: 1 },
-  channelTitle: { color: signal.ink, fontSize: 22, fontWeight: '800', lineHeight: 26 },
-  channelBody: { color: signal.slate, fontSize: 14, lineHeight: 20, marginTop: 12 },
   section: {
     color: signal.ink,
     fontSize: 18,
     fontWeight: '700',
     marginTop: 6,
   },
-  spaced: { marginTop: 18 },
-  pinnedGroup: { backgroundColor: signal.mist, borderColor: 'transparent' },
   row: {
     alignItems: 'flex-start',
     flexDirection: 'row',

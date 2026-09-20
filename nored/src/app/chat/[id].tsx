@@ -429,9 +429,7 @@ export default function ChatScreen() {
 
   const subtitle = useMemo(() => {
     if (isAlertThread) {
-      return inRange
-        ? 'Comments stay on this alert · not a new broadcast'
-        : 'No phones in range · comments will queue';
+      return 'Comments stay on this alert';
     }
     if (isGroup) {
       const total = Math.max(memberIds.length, 1);
@@ -502,6 +500,7 @@ export default function ChatScreen() {
       keyboardVerticalOffset={headerHeight}
       style={[
         styles.safe,
+        isAlertThread && styles.safeAlert,
         // Android is edge-to-edge, so adjustResize never shrinks the window and
         // KeyboardAvoidingView has nothing to react to. Lift the content manually.
         Platform.OS === 'android' && { paddingBottom: keyboardHeight },
@@ -533,7 +532,7 @@ export default function ChatScreen() {
             </View>
           </View>
         ) : (
-          <View style={styles.threadBar}>
+          <View style={[styles.threadBar, isAlertThread && styles.threadBarAlert]}>
             <Text style={styles.subtitle}>{subtitle}</Text>
           </View>
         )}
@@ -557,11 +556,9 @@ export default function ChatScreen() {
               <Text style={styles.alertCardBody}>{alertItem.body}</Text>
             </View>
           ) : null}
-          {rows.length === 0 ? (
+          {rows.length === 0 && !isAlertThread ? (
             <Text style={styles.empty}>
-              {isAlertThread
-                ? 'Comments on this alert reach nearby phones without sending a new alert.'
-                : isGroup
+              {isGroup
                 ? inRange
                   ? 'Group is live on the mesh. Send a text.'
                   : 'No members in range. You can still type — it will queue.'
@@ -729,6 +726,7 @@ export default function ChatScreen() {
 
 const styles = StyleSheet.create({
   safe: { backgroundColor: signal.paper, flex: 1 },
+  safeAlert: { backgroundColor: signal.white },
   flex: { flex: 1 },
   threadBar: {
     alignItems: 'center',
@@ -740,6 +738,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
   },
+  threadBarAlert: { backgroundColor: signal.white },
   subtitle: { color: signal.slate, flex: 1, fontSize: 13, lineHeight: 18, marginRight: 12 },
   groupHeader: {
     alignItems: 'center',
@@ -785,8 +784,10 @@ const styles = StyleSheet.create({
   emergencyLabelOn: { color: signal.white },
   messages: { flexGrow: 1, gap: 2, padding: 20, paddingBottom: 12 },
   alertCard: {
-    backgroundColor: signal.mist,
+    backgroundColor: signal.white,
+    borderColor: signal.fog,
     borderRadius: 16,
+    borderWidth: 1,
     gap: 8,
     marginBottom: 12,
     padding: 16,

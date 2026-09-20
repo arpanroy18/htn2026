@@ -80,8 +80,8 @@ export default function ChatsScreen() {
     <Screen>
       <ScreenHeader
         action={
-          <IconButton onPress={() => router.push('/new-group')} tone="outline">
-            <PlusIcon color={signal.blue} size={18} />
+          <IconButton onPress={() => router.push('/new-group')} tone="filled">
+            <PlusIcon color={signal.white} size={18} />
           </IconButton>
         }
         title="Chats"

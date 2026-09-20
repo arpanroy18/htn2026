@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { GamesIcon } from '@/components/signal/icons';
+import { ChessIcon, GamesIcon, PongIcon, TelephoneIcon } from '@/components/signal/icons';
 import { Chip, MistButton, OutlinedButton } from '@/components/signal/ui';
 import { mockGames } from '@/data/mock';
 import { ChessBoard } from '@/games/ChessBoard';
@@ -25,6 +25,12 @@ import { signal } from '@/theme/signal';
 import type { GameId } from '@/transport';
 
 const DRAWING_COLORS = [signal.deep, signal.blue, signal.twilight, signal.mist];
+
+const GAME_ICONS: Record<string, (props: { color: string; size: number }) => React.JSX.Element> = {
+  chess: ChessIcon,
+  pong: PongIcon,
+  telephone: TelephoneIcon,
+};
 
 function PlayerAction({
   label,
@@ -342,16 +348,17 @@ export default function GameScreen() {
     else setInvitedIds((current) => [...new Set([...current, peerId])]);
   };
 
+  const HeroIcon = GAME_ICONS[id ?? ''] ?? GamesIcon;
+
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
       <Stack.Screen options={{ title: game?.name ?? 'Game' }} />
       <ScrollView contentContainerStyle={styles.body} scrollEnabled={scrollEnabled}>
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
-            <GamesIcon color={signal.ink} size={24} />
+            <HeroIcon color={signal.white} size={24} />
           </View>
           <Text style={styles.title}>{game?.name ?? 'Unknown game'}</Text>
-          <Text style={styles.lede}>{game?.blurb}</Text>
           <View style={styles.chips}>
             <Chip label={game?.players ?? 'Nearby'} tone="mist" />
             <Chip label="Nearby Bluetooth" />
@@ -461,7 +468,7 @@ const styles = StyleSheet.create({
   hero: { backgroundColor: signal.sky, borderRadius: 16, padding: 24 },
   heroIcon: {
     alignItems: 'center',
-    backgroundColor: signal.white,
+    backgroundColor: signal.blue,
     borderRadius: 12,
     height: 44,
     justifyContent: 'center',
@@ -469,7 +476,6 @@ const styles = StyleSheet.create({
     width: 44,
   },
   title: { color: signal.ink, fontSize: 32, fontWeight: '800', lineHeight: 37 },
-  lede: { color: signal.slate, fontSize: 16, lineHeight: 24, marginTop: 10, maxWidth: 480 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
   board: {
     backgroundColor: signal.white,

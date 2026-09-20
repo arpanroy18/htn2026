@@ -24,27 +24,15 @@ export default function SettingsScreen() {
             size={64}
           />
           <Text style={styles.name}>{identity.name}</Text>
-          <Text style={styles.meta}>No account · Device ID {identity.id.slice(0, 8)}</Text>
+          <Text style={styles.meta}>Device ID {identity.id.slice(0, 8)}</Text>
         </View>
 
         <Text style={styles.label}>ACCOUNT</Text>
         <GroupedList>
-          <RowPress onPress={() => router.replace('/(tabs)')} style={styles.row}>
-            <Text style={styles.rowLabel}>Rename on Nearby</Text>
-            <ChevronIcon color={signal.slate} size={12} />
-          </RowPress>
           <RowPress onPress={() => router.push('/onboarding')} style={styles.row}>
             <Text style={styles.rowLabel}>Permissions</Text>
             <ChevronIcon color={signal.slate} size={12} />
           </RowPress>
-        </GroupedList>
-
-        <Text style={[styles.label, styles.spaced]}>STORAGE</Text>
-        <GroupedList>
-          <View style={styles.rowStatic}>
-            <Text style={styles.rowLabel}>Local JSON</Text>
-            <Text style={styles.rowValue}>Chats saved on device</Text>
-          </View>
         </GroupedList>
 
         <OutlinedButton
@@ -78,22 +66,15 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingVertical: 12,
   },
-  name: { color: signal.ink, fontSize: 22, fontWeight: '800', marginTop: 12 },
-  meta: { color: signal.slate, fontSize: 13, marginTop: 4 },
+  name: { color: signal.ink, fontSize: 22, fontWeight: '800', marginTop: 12, textAlign: 'center' },
+  meta: { color: signal.slate, fontSize: 13, marginTop: 4, textAlign: 'center' },
   label: { color: signal.slate, fontSize: 11, fontWeight: '600', letterSpacing: 1.4, marginBottom: 2 },
-  spaced: { marginTop: 14 },
   row: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
     padding: 16,
   },
-  rowStatic: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 16,
-  },
   rowLabel: { color: signal.ink, fontSize: 16, fontWeight: '500' },
-  rowValue: { color: signal.slate, fontSize: 13 },
   clearButton: { marginTop: 10 },
 });

@@ -12,8 +12,8 @@ import {
 } from 'react-native';
 
 import { Screen, ScreenHeader } from '@/components/signal/screen';
-import { GearIcon, SignalBars } from '@/components/signal/icons';
-import { Avatar, GroupedList, IconButton, OutlinedButton, RowPress } from '@/components/signal/ui';
+import { GearIcon, RefreshIcon, SignalBars } from '@/components/signal/icons';
+import { Avatar, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
 import { hopLabel, isValidRssi, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
@@ -36,11 +36,13 @@ function PeerRow({
   dimmed,
   onPress,
   onLongPress,
+  showSignal = true,
 }: {
   peer: Peer;
   dimmed?: boolean;
   onPress: () => void;
   onLongPress: () => void;
+  showSignal?: boolean;
 }) {
   return (
     <RowPress onLongPress={onLongPress} onPress={onPress} style={[styles.peer, dimmed && styles.peerDimmed]}>
@@ -55,10 +57,12 @@ function PeerRow({
         <Text style={[styles.peerName, dimmed && styles.peerNameDimmed]}>{peer.name}</Text>
         <Text style={styles.peerMeta}>{peerStatus(peer)}</Text>
       </View>
-      <View style={styles.peerRight}>
-        <SignalBars color={signal.deep} level={levelFor(peer.rssi)} mutedColor={signal.fog} size={16} />
-        <Text style={styles.signalLabel}>{signalLabel(peer.rssi)}</Text>
-      </View>
+      {showSignal ? (
+        <View style={styles.peerRight}>
+          <SignalBars color={signal.deep} level={levelFor(peer.rssi)} mutedColor={signal.fog} size={16} />
+          <Text style={styles.signalLabel}>{signalLabel(peer.rssi)}</Text>
+        </View>
+      ) : null}
     </RowPress>
   );
 }
@@ -138,9 +142,18 @@ export default function NearbyScreen() {
       <Screen>
         <ScreenHeader
           action={
-            <IconButton onPress={() => router.push('/settings')} tone="ghost">
-              <GearIcon color={signal.slate} size={24} />
-            </IconButton>
+            <View style={styles.headerActions}>
+              <IconButton disabled={rescanning} onPress={() => void onRescan()} tone="ghost">
+                {rescanning ? (
+                  <ActivityIndicator color={signal.slate} size="small" />
+                ) : (
+                  <RefreshIcon color={signal.slate} size={22} />
+                )}
+              </IconButton>
+              <IconButton onPress={() => router.push('/settings')} tone="ghost">
+                <GearIcon color={signal.slate} size={24} />
+              </IconButton>
+            </View>
           }
           title="Nearby"
         />
@@ -180,10 +193,7 @@ export default function NearbyScreen() {
 
           <View style={styles.sectionHead}>
             <Text style={styles.sectionTitle}>In range</Text>
-            <View style={styles.scanRow}>
-              {state === 'running' && <ActivityIndicator color={signal.deep} size="small" />}
-              <Text style={styles.scanText}>{statusCopy(state)}</Text>
-            </View>
+            <Text style={styles.scanText}>{statusCopy(state)}</Text>
           </View>
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -245,17 +255,11 @@ export default function NearbyScreen() {
                   onLongPress={() => invite(peer)}
                   onPress={() => invite(peer)}
                   peer={peer}
+                  showSignal={false}
                 />
               ))}
             </GroupedList>
           )}
-
-          <Text style={styles.hint}>Tap a Nored phone to send Bluetooth text. Hold to invite into a group.</Text>
-
-          <View style={styles.actions}>
-            <OutlinedButton disabled={rescanning} label={rescanning ? 'Scanning…' : 'Rescan'} onPress={onRescan} style={styles.actionBtn} />
-            <OutlinedButton label="New group" onPress={() => router.push('/new-group')} style={styles.actionBtn} />
-          </View>
 
           <View style={styles.log}>
             <Text style={styles.logTitle}>DEVICE LOG</Text>
@@ -272,6 +276,7 @@ export default function NearbyScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   body: { gap: 10, paddingBottom: 36, paddingHorizontal: 24 },
+  headerActions: { alignItems: 'center', flexDirection: 'row', gap: 4 },
   identity: {
     alignItems: 'center',
     backgroundColor: signal.white,
@@ -302,8 +307,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   sectionTitle: { color: signal.ink, fontSize: 22, fontWeight: '800', lineHeight: 27 },
-  scanRow: { alignItems: 'center', flexDirection: 'row', gap: 6, paddingBottom: 3 },
-  scanText: { color: signal.slate, fontSize: 13 },
+  scanText: { color: signal.slate, fontSize: 13, paddingBottom: 3 },
   error: { color: signal.ink, fontSize: 14, lineHeight: 21 },
   groupLabel: {
     color: signal.slate,
@@ -335,9 +339,6 @@ const styles = StyleSheet.create({
   peerMeta: { color: signal.slate, fontSize: 13, marginTop: 2 },
   peerRight: { alignItems: 'flex-end', gap: 4 },
   signalLabel: { color: signal.slate, fontSize: 11, fontWeight: '600' },
-  hint: { color: signal.slate, fontSize: 13, marginTop: 6 },
-  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 4 },
-  actionBtn: { flex: 1, paddingHorizontal: 12 },
   log: {
     backgroundColor: signal.twilight,
     borderRadius: 16,

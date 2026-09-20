@@ -1,11 +1,17 @@
 import { router } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ChevronIcon } from '@/components/signal/icons';
+import { ChessIcon, ChevronIcon, PongIcon, TelephoneIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Chip, GroupedList, RowPress } from '@/components/signal/ui';
 import { mockGames } from '@/data/mock';
 import { signal } from '@/theme/signal';
+
+const GAME_ICONS: Record<string, (props: { color: string; size: number }) => React.JSX.Element> = {
+  chess: ChessIcon,
+  pong: PongIcon,
+  telephone: TelephoneIcon,
+};
 
 export default function GamesScreen() {
   return (
@@ -13,22 +19,27 @@ export default function GamesScreen() {
       <ScreenHeader title="Games" />
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
         <GroupedList>
-          {mockGames.map((game) => (
-            <RowPress
-              key={game.id}
-              onPress={() => router.push({ pathname: '/game/[id]', params: { id: game.id } })}
-              style={styles.row}>
-              <View style={styles.rowMain}>
-                <Text style={styles.name}>{game.name}</Text>
-                <Text style={styles.blurb}>{game.blurb}</Text>
-                <View style={styles.meta}>
-                  <Chip label={game.players} tone="mist" />
-                  <Chip label="Offline" />
+          {mockGames.map((game) => {
+            const GameIcon = GAME_ICONS[game.id];
+            return (
+              <RowPress
+                key={game.id}
+                onPress={() => router.push({ pathname: '/game/[id]', params: { id: game.id } })}
+                style={styles.row}>
+                <View style={styles.icon}>
+                  {GameIcon ? <GameIcon color={signal.white} size={20} /> : null}
                 </View>
-              </View>
-              <ChevronIcon color={signal.slate} size={12} />
-            </RowPress>
-          ))}
+                <View style={styles.rowMain}>
+                  <Text style={styles.name}>{game.name}</Text>
+                  <View style={styles.meta}>
+                    <Chip label={game.players} tone="mist" />
+                    <Chip label="Offline" />
+                  </View>
+                </View>
+                <ChevronIcon color={signal.slate} size={12} />
+              </RowPress>
+            );
+          })}
         </GroupedList>
       </ScrollView>
     </Screen>
@@ -43,8 +54,15 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 16,
   },
+  icon: {
+    alignItems: 'center',
+    backgroundColor: signal.blue,
+    borderRadius: 12,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
   rowMain: { flex: 1 },
   name: { color: signal.ink, fontSize: 17, fontWeight: '700' },
-  blurb: { color: signal.slate, fontSize: 14, lineHeight: 20, marginTop: 6 },
   meta: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
 });
