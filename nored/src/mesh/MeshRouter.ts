@@ -3,7 +3,7 @@ import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
 import { alertFromPacket, appendAlert } from './alertStore.ts';
-import { PEER_GRACE_MS } from './peerGrace.ts';
+import { SESSION_GRACE_MS } from './peerGrace.ts';
 import { ALERT_LIVE_MS, canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
 import type { Control, ControlFields, Envelope, WirePacket } from './protocol';
 import { SendScheduler } from './scheduler.ts';
@@ -135,7 +135,7 @@ export class MeshRouter {
     const timer = setTimeout(() => {
       this.disconnectTimers.delete(id);
       this.disconnect(id);
-    }, PEER_GRACE_MS);
+    }, SESSION_GRACE_MS);
     this.disconnectTimers.set(id, timer);
   }
   disconnect(id: string) {

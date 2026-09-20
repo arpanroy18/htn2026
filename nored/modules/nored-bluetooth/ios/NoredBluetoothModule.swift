@@ -529,6 +529,9 @@ public final class NoredBluetoothModule: Module {
     if keepAliveTicks.isMultiple(of: 4) {
       pollRemoteRssi()
     }
+    if (keepAliveTicks + 2).isMultiple(of: 4) {
+      refreshUnconfirmedIdentities()
+    }
     touchConnectedPeers()
     adoptConnectedPeripherals()
   }
@@ -568,6 +571,23 @@ public final class NoredBluetoothModule: Module {
       guard var peer = peers[peerId] else { continue }
       peer.lastSeen = now
       peers[peerId] = peer
+    }
+  }
+
+  // A BLE link can come up while the initial identity exchange is dropped, leaving a peer
+  // connected but never `confirmedIdentity` — the UI hides those. Re-push our identity to
+  // any connected-but-unconfirmed peer on a slow cadence so the exchange eventually lands.
+  private func refreshUnconfirmedIdentities() {
+    guard started, !sending else { return }
+    for link in clientLinks.values {
+      let hardwareId = link.peripheral.identifier.uuidString.lowercased()
+      let id = link.peerId ?? hardwareIdToPeerId[hardwareId] ?? hardwareId
+      if peers[id]?.confirmedIdentity == true { continue }
+      writeLocalIdentity(to: link.peripheral)
+    }
+    let centralNeedsIdentity = centralByPeerId.contains { peers[$0.key]?.confirmedIdentity != true }
+    if centralNeedsIdentity {
+      publishIdentityUpdate()
     }
   }
 
@@ -996,6 +1016,14 @@ public final class NoredBluetoothModule: Module {
 
   private func scheduleReconnect(_ peripheral: CBPeripheral, using manager: CBCentralManager) {
     reconnectWork.removeValue(forKey: peripheral.identifier)?.cancel()
+    // Never let reconnect attempts starve the connection budget: if every slot is spoken
+    // for by live links or pending connects, a fresh nearby peer can't get in. Drop this
+    // reconnect and let scanning rediscover the peer when a slot frees up.
+    if clientLinks[peripheral.identifier] == nil,
+       clientLinks.count + connectingHardware.count >= maxConnections {
+      reconnectAttempts.removeValue(forKey: peripheral.identifier)
+      return
+    }
     let attempt = reconnectAttempts[peripheral.identifier] ?? 0
     if attempt >= 10 { return }
     reconnectAttempts[peripheral.identifier] = attempt + 1

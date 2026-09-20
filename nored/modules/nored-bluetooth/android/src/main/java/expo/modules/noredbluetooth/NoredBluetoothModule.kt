@@ -576,6 +576,9 @@ class NoredBluetoothModule : Module() {
       if (keepAliveTicks % 4 == 0) {
         pollRemoteRssi()
       }
+      if ((keepAliveTicks + 2) % 4 == 0) {
+        refreshUnconfirmedIdentities()
+      }
       mainHandler.postDelayed(this, 5_000L)
     }
   }
@@ -710,6 +713,16 @@ class NoredBluetoothModule : Module() {
   private fun scheduleReconnect(device: BluetoothDevice) {
     val address = device.address
     reconnectRunnables.remove(address)?.let(mainHandler::removeCallbacks)
+    // Never let reconnect attempts starve the connection budget: if every slot is spoken
+    // for by live links or pending connects, a fresh nearby peer can't get in. Drop this
+    // reconnect and let scanning rediscover the peer when a slot frees up.
+    if (!gatts.containsKey(address) &&
+      !connecting.contains(address) &&
+      gatts.size + connecting.size >= MAX_CONNECTIONS
+    ) {
+      reconnectAttempts.remove(address)
+      return
+    }
     val attempt = reconnectAttempts[address] ?: 0
     if (attempt >= 10) return
     reconnectAttempts[address] = attempt + 1
@@ -725,6 +738,19 @@ class NoredBluetoothModule : Module() {
     }
     reconnectRunnables[address] = retry
     mainHandler.postDelayed(retry, delay)
+  }
+
+  // When a central connects to our GATT server we can't read its identity from the server
+  // role, so connect back as a client to run the two-way identity exchange (and read RSSI).
+  // Without this, peers that reach us server-side stay unconfirmed and hidden in the UI.
+  @SuppressLint("MissingPermission")
+  private fun connectBackIfNeeded(device: BluetoothDevice) {
+    val address = device.address
+    if (!started) return
+    if (gatts.containsKey(address) || connecting.contains(address)) return
+    if (gatts.size >= MAX_CONNECTIONS) return
+    if (!connecting.add(address)) return
+    connect(device)
   }
 
   private val gattCallback = object : BluetoothGattCallback() {
@@ -911,6 +937,7 @@ class NoredBluetoothModule : Module() {
         reconnectRunnables.remove(device.address)?.let(mainHandler::removeCallbacks)
         log("info", "[CONNECTION] central connected ${device.address}")
         startAdvertiser()
+        mainHandler.post { connectBackIfNeeded(device) }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         serverDevices.remove(device.address)
         subscribedAddresses.remove(device.address)
@@ -1175,6 +1202,30 @@ class NoredBluetoothModule : Module() {
       log("info", "[DISCOVERY] publishing display name to ${identityNotifyQueue.size} subscriber(s)")
       pumpIdentityUpdates()
     }
+  }
+
+  // A BLE link can come up while the initial identity exchange is dropped, leaving a peer
+  // connected but never `confirmedIdentity` — the UI hides those. Re-push our identity only
+  // to connected-but-unconfirmed peers on a slow cadence so the exchange eventually lands
+  // without re-flooding already confirmed links.
+  @SuppressLint("MissingPermission")
+  private fun refreshUnconfirmedIdentities() {
+    if (!started || sending) return
+    gatts.keys.forEach { address ->
+      val id = addressToPeerId[address] ?: address
+      if (peers[id]?.confirmedIdentity == true) return@forEach
+      enqueueWrite(address, identityJson(), packet = false)
+    }
+    val unconfirmedSubscribers = identitySubscribedAddresses.filter { address ->
+      val id = addressToPeerId[address] ?: address
+      peers[id]?.confirmedIdentity != true
+    }
+    if (unconfirmedSubscribers.isEmpty()) return
+    identityNotifyQueue.clear()
+    unconfirmedSubscribers.forEach { address ->
+      serverDevices[address]?.let(identityNotifyQueue::add)
+    }
+    if (identityNotifyQueue.isNotEmpty()) pumpIdentityUpdates()
   }
 
   @SuppressLint("MissingPermission")
