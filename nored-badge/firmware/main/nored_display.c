@@ -13,6 +13,8 @@
 #include "freertos/semphr.h"
 
 #include "font8x8_basic.h"
+#include "nored_portal.h"
+#include "qrcodegen.h"
 
 #define TAG "nored_disp"
 
@@ -28,6 +30,7 @@
 #define STRIPE_ROWS     30
 #define BODY_SCALE      2
 #define LABEL_SCALE     2
+#define HISTORY_ITEMS_PER_PAGE 2
 
 #define RGB565(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
 
@@ -43,7 +46,16 @@ static const uint16_t COLOR_MUTED = RGB565(170, 180, 200);
 
 static esp_lcd_panel_handle_t panel;
 static SemaphoreHandle_t transfer_done;
+static SemaphoreHandle_t display_mutex;
 static uint16_t stripe[LCD_W * STRIPE_ROWS];
+
+#define QR_MAX 29
+static uint8_t qr_cached[QR_MAX * QR_MAX];
+static int qr_size;
+static int qr_scale;
+static int qr_x0;
+static int qr_y0;
+static bool qr_ready;
 
 static bool on_color_transfer_done(esp_lcd_panel_io_handle_t panel_io,
                                    esp_lcd_panel_io_event_data_t *event_data,
@@ -194,15 +206,20 @@ static void sanitize_ascii(char *text)
     }
 }
 
+static const char *severity_name(nored_alert_severity_t severity)
+{
+    if (severity == NORED_ALERT_HELP) {
+        return "HELP";
+    }
+    if (severity == NORED_ALERT_DANGER) {
+        return "DANGER";
+    }
+    return "INFO";
+}
+
 static void severity_label(nored_alert_severity_t severity, char *out, size_t out_len)
 {
-    const char *label = "INFO";
-    if (severity == NORED_ALERT_HELP) {
-        label = "HELP";
-    } else if (severity == NORED_ALERT_DANGER) {
-        label = "DANGER";
-    }
-    snprintf(out, out_len, "%s ALERT", label);
+    snprintf(out, out_len, "%s ALERT", severity_name(severity));
 }
 
 static void severity_colors(nored_alert_severity_t severity, uint16_t *bg, uint16_t *fg)
@@ -294,11 +311,75 @@ static void draw_wrapped_body(int x, int y, int max_h, const char *body, int sca
     }
 }
 
+static bool display_lock(void)
+{
+    return display_mutex &&
+           xSemaphoreTake(display_mutex, pdMS_TO_TICKS(1000)) == pdTRUE;
+}
+
+static void display_unlock(void)
+{
+    xSemaphoreGive(display_mutex);
+}
+
+static void cache_qr(const char *text)
+{
+    enum { QR_VERSION = 3 };
+    uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION)];
+    uint8_t temp[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION)];
+    if (!qrcodegen_encodeText(text, temp, qr, qrcodegen_Ecc_LOW, 1, QR_VERSION,
+                              qrcodegen_Mask_AUTO, true)) {
+        ESP_LOGW(TAG, "qr encode failed");
+        return;
+    }
+
+    qr_size = qrcodegen_getSize(qr);
+    if (qr_size <= 0 || qr_size > QR_MAX) {
+        ESP_LOGW(TAG, "qr size unsupported: %d", qr_size);
+        return;
+    }
+    qr_scale = 148 / qr_size;
+    if (qr_scale < 2) qr_scale = 2;
+    int pixels = qr_size * qr_scale;
+    qr_x0 = (LCD_W - pixels) / 2;
+    qr_y0 = 44;
+
+    for (int y = 0; y < qr_size; y++) {
+        for (int x = 0; x < qr_size; x++) {
+            qr_cached[y * qr_size + x] =
+                qrcodegen_getModule(qr, x, y) ? 1 : 0;
+        }
+    }
+    qr_ready = true;
+}
+
+static void draw_cached_qr(void)
+{
+    if (!qr_ready) return;
+
+    int pixels = qr_size * qr_scale;
+    fill_rect(qr_x0 - 8, qr_y0 - 8, pixels + 16, pixels + 16, COLOR_WHITE);
+    for (int y = 0; y < qr_size; y++) {
+        for (int x = 0; x < qr_size; x++) {
+            uint16_t color =
+                qr_cached[y * qr_size + x] ? COLOR_BLACK : COLOR_WHITE;
+            for (int dy = 0; dy < qr_scale; dy++) {
+                for (int dx = 0; dx < qr_scale; dx++) {
+                    stripe[dy * pixels + x * qr_scale + dx] = color;
+                }
+            }
+        }
+        draw_bitmap_sync(qr_x0, qr_y0 + y * qr_scale,
+                         qr_x0 + pixels, qr_y0 + (y + 1) * qr_scale, stripe);
+    }
+}
+
 bool nored_display_init(void)
 {
     transfer_done = xSemaphoreCreateBinary();
-    if (!transfer_done) {
-        ESP_LOGE(TAG, "transfer semaphore allocation failed");
+    display_mutex = xSemaphoreCreateMutex();
+    if (!transfer_done || !display_mutex) {
+        ESP_LOGE(TAG, "display semaphore allocation failed");
         return false;
     }
 
@@ -350,23 +431,27 @@ bool nored_display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
     ESP_LOGI(TAG, "ST7789 ready");
+    cache_qr(NORED_AP_QR);
     nored_display_idle();
     return true;
 }
 
 void nored_display_idle(void)
 {
-    if (!panel) {
+    if (!panel || !display_lock()) {
         return;
     }
     fill_rect(0, 0, LCD_W, LCD_H, COLOR_PANEL);
-    draw_text_centered(84, "Nored Badge", LABEL_SCALE, COLOR_WHITE, COLOR_PANEL);
-    draw_text_centered(120, "Mesh relay ready", BODY_SCALE, COLOR_MUTED, COLOR_PANEL);
+    draw_text_centered(12, "Nored Badge", LABEL_SCALE, COLOR_WHITE, COLOR_PANEL);
+    draw_cached_qr();
+    draw_text_centered(200, "Scan to join Nored", BODY_SCALE, COLOR_MUTED, COLOR_PANEL);
+    draw_text_centered(220, "then share a message", BODY_SCALE, COLOR_MUTED, COLOR_PANEL);
+    display_unlock();
 }
 
 void nored_display_alert(nored_alert_severity_t severity, const char *sender, const char *body)
 {
-    if (!panel) {
+    if (!panel || !display_lock()) {
         return;
     }
 
@@ -392,4 +477,55 @@ void nored_display_alert(nored_alert_severity_t severity, const char *sender, co
     draw_text_centered(10, banner, LABEL_SCALE, banner_fg, banner_bg);
     draw_text(12, 48, from_line, BODY_SCALE, COLOR_INK, COLOR_BODY_BG);
     draw_wrapped_body(12, 80, LCD_H - 88, safe_body, body_scale, COLOR_INK, COLOR_BODY_BG);
+    display_unlock();
+}
+
+void nored_display_alert_history(const nored_alert_history_item_t *items, size_t item_count,
+                                 size_t page, size_t page_count)
+{
+    if (!panel || !display_lock()) {
+        return;
+    }
+
+    fill_rect(0, 0, LCD_W, LCD_H, COLOR_PANEL);
+    draw_text(10, 8, "Alert history", LABEL_SCALE, COLOR_WHITE, COLOR_PANEL);
+
+    if (!items || item_count == 0) {
+        draw_text_centered(108, "No alerts yet", BODY_SCALE, COLOR_MUTED, COLOR_PANEL);
+        display_unlock();
+        return;
+    }
+
+    if (item_count > HISTORY_ITEMS_PER_PAGE) {
+        item_count = HISTORY_ITEMS_PER_PAGE;
+    }
+
+    for (size_t i = 0; i < item_count; i++) {
+        int card_y = 34 + (int)i * 94;
+        uint16_t card_bg;
+        uint16_t card_fg;
+        severity_colors(items[i].severity, &card_bg, &card_fg);
+        fill_rect(10, card_y, LCD_W - 20, 86, card_bg);
+
+        char safe_sender[sizeof(items[i].sender)];
+        char header[48];
+        strncpy(safe_sender, items[i].sender[0] ? items[i].sender : "Unknown",
+                sizeof(safe_sender) - 1);
+        safe_sender[sizeof(safe_sender) - 1] = 0;
+        sanitize_ascii(safe_sender);
+        snprintf(header, sizeof(header), "%s | From: %.21s",
+                 severity_name(items[i].severity), safe_sender);
+        draw_text(18, card_y + 7, header, 1, card_fg, card_bg);
+        fill_rect(18, card_y + 20, LCD_W - 36, 1, card_fg);
+
+        const char *body = items[i].body[0] ? items[i].body : "(no message)";
+        int body_scale = strlen(body) > 36 ? 1 : BODY_SCALE;
+        draw_wrapped_body(18, card_y + 28, 50, body, body_scale, card_fg, card_bg);
+    }
+
+    char page_label[24];
+    snprintf(page_label, sizeof(page_label), "%u/%u  B: next",
+             (unsigned)(page + 1), (unsigned)page_count);
+    draw_text_centered(224, page_label, 1, COLOR_MUTED, COLOR_PANEL);
+    display_unlock();
 }

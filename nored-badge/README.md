@@ -41,6 +41,8 @@ Reflashing is experimental. Back up anything you care about. See the official [c
 - Two phone connections (GATT peripheral only)
 - After both phones write identity JSON, each is notified with the **other** phone’s identity
 - Forwards `0x4E` packet frames between those two links
+- Stores the latest 16 alerts in memory. Press **B** to open/advance through two alerts
+  per page in arrival order; use the arrows to page and **A** or **Home** to exit.
 
 ```sh
 . ~/.espressif/tools/activate_idf_v5.5.3.sh

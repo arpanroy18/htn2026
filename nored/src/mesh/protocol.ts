@@ -39,6 +39,7 @@ export type WirePacket = Packet | Envelope | Control;
 export const wireBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9:_-]{1,160}$/.test(v) && !Object.prototype.hasOwnProperty.call(Object.prototype, v);
 const time = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+const displayName = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= 40;
 const path = (v: unknown): v is string[] =>
   Array.isArray(v) && v.length > 0 && v.length <= MAX_HOP_LIMIT + 1 && v.every(id);
 export const canonicalId = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v);
@@ -54,7 +55,8 @@ export function isWirePacket(value: unknown): value is WirePacket {
         (p.messagePath === undefined || path(p.messagePath)) :
         (p.type === 'text' || p.type === 'alert' || p.type === 'group-sync') &&
         p.id.length <= 128 && isPacket(p) &&
-        (p.type !== 'alert' || p.body.length <= ALERT_MAX_BODY)) &&
+        (p.type !== 'alert' || (p.body.length <= ALERT_MAX_BODY &&
+          (p.senderName === undefined || displayName(p.senderName))))) &&
       time(v.expiresAt) && v.expiresAt > p.timestamp &&
       v.expiresAt - p.timestamp <= DAY &&
       Number.isInteger(v.hopCount) && Number.isInteger(v.hopLimit) &&
@@ -72,7 +74,8 @@ export function isWirePacket(value: unknown): value is WirePacket {
       Array.isArray(v.ids) && v.ids.length <= 50 && v.ids.every(id);
   }
   return isPacket(v) && id(v.id) && id(v.senderId) && id(v.recipientId) && time(v.timestamp) &&
-    (v.type !== 'alert' || v.body.length <= ALERT_MAX_BODY) &&
+    (v.type !== 'alert' || (v.body.length <= ALERT_MAX_BODY &&
+      (v.senderName === undefined || displayName(v.senderName)))) &&
     wireBytes(v) <= MAX_WIRE_BYTES;
 }
 

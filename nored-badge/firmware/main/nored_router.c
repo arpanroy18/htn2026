@@ -4,11 +4,13 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "driver/rmt_tx.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 
 #include "nimble/nimble_port.h"
@@ -20,6 +22,8 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 #include "nored_display.h"
+#include "nored_buttons.h"
+#include "nored_portal.h"
 
 static const char *TAG = "nored_badge";
 
@@ -44,6 +48,12 @@ static const char *TAG = "nored_badge";
 #define LED_RESOLUTION_HZ 10000000
 #define MAX_ALERT_BODY NORED_ALERT_MAX_BODY
 #define ALERT_QUEUE_DEPTH 8
+#define ALERT_HISTORY_CAP 16
+#define ALERTS_PER_PAGE 2
+#define PEER_NAME_CACHE_CAP 16
+#define ALERT_TTL_MS (6LL * 3600LL * 1000LL)
+#define ALERT_RATE_LIMIT_MS 5000
+#define MESH_JSON_CAP 1600
 
 /*
  * Canonical Nored UUIDs (same strings as the phone app):
@@ -71,6 +81,7 @@ static char identity_json[192];
 static rmt_channel_handle_t led_channel;
 static rmt_encoder_handle_t led_encoder;
 static QueueHandle_t alert_queue;
+static SemaphoreHandle_t history_mutex;
 static uint8_t gatt_rx_buf[MAX_PACKET + 4];
 
 typedef struct {
@@ -78,6 +89,11 @@ typedef struct {
     char sender[MAX_NAME + 1];
     char body[MAX_ALERT_BODY + 1];
 } alert_event_t;
+
+typedef struct {
+    char id[MAX_ID];
+    char name[MAX_NAME + 1];
+} peer_name_entry_t;
 
 typedef struct {
     uint16_t conn;
@@ -100,8 +116,22 @@ static char seen_ids[SEEN_CAP][MAX_ID];
 static uint8_t seen_head;
 static char alert_seen_ids[ALERT_SEEN_CAP][MAX_ID];
 static uint8_t alert_seen_head;
+static nored_alert_history_item_t alert_history[ALERT_HISTORY_CAP];
+static uint8_t alert_history_head;
+static uint8_t alert_history_count;
+static bool history_view_active;
+static uint8_t history_page;
+static peer_name_entry_t peer_name_cache[PEER_NAME_CACHE_CAP];
+static uint8_t peer_name_cache_head;
 /* Inventory reply: header + up to 48 quoted ids (~2.2 KB); static so the host task stack stays small. */
 static char inventory_json[2560];
+static char mesh_json[MESH_JSON_CAP];
+static int64_t unix_ms_at_sync;
+static int64_t timer_ms_at_sync;
+static uint32_t last_origin_ms;
+static char pending_body[MAX_ALERT_BODY + 1];
+static char pending_severity[8];
+static bool pending_alert;
 
 static const rmt_symbol_word_t ws2812_zero = {
     .level0 = 1,
@@ -171,6 +201,113 @@ static void led_show_ready(void)
     led_write(pixels);
 }
 
+static size_t history_page_count(void)
+{
+    return alert_history_count == 0
+               ? 1
+               : (alert_history_count + ALERTS_PER_PAGE - 1) / ALERTS_PER_PAGE;
+}
+
+static void remember_alert(const alert_event_t *alert)
+{
+    if (!history_mutex ||
+        xSemaphoreTake(history_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "could not lock alert history");
+        return;
+    }
+
+    uint8_t index;
+    if (alert_history_count < ALERT_HISTORY_CAP) {
+        index = (alert_history_head + alert_history_count) % ALERT_HISTORY_CAP;
+        alert_history_count++;
+    } else {
+        index = alert_history_head;
+        alert_history_head = (alert_history_head + 1) % ALERT_HISTORY_CAP;
+    }
+
+    alert_history[index].severity = alert->severity;
+    strncpy(alert_history[index].sender, alert->sender,
+            sizeof(alert_history[index].sender) - 1);
+    alert_history[index].sender[sizeof(alert_history[index].sender) - 1] = 0;
+    strncpy(alert_history[index].body, alert->body,
+            sizeof(alert_history[index].body) - 1);
+    alert_history[index].body[sizeof(alert_history[index].body) - 1] = 0;
+    history_view_active = false;
+    history_page = 0;
+    xSemaphoreGive(history_mutex);
+}
+
+static void show_history_page(int page_delta, bool open_if_closed)
+{
+    nored_alert_history_item_t page_items[ALERTS_PER_PAGE] = {0};
+    size_t item_count = 0;
+    size_t page_count = 1;
+    size_t page = 0;
+
+    if (!history_mutex ||
+        xSemaphoreTake(history_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return;
+    }
+
+    page_count = history_page_count();
+    if (!history_view_active) {
+        if (!open_if_closed) {
+            xSemaphoreGive(history_mutex);
+            return;
+        }
+        history_page = 0;
+        history_view_active = true;
+    } else if (page_delta != 0) {
+        int next = (int)history_page + page_delta;
+        if (next >= 0 && next < (int)page_count) {
+            history_page = (uint8_t)next;
+        }
+    }
+    page = history_page;
+
+    size_t first = page * ALERTS_PER_PAGE;
+    for (size_t i = 0; i < ALERTS_PER_PAGE && first + i < alert_history_count; i++) {
+        size_t index = (alert_history_head + first + i) % ALERT_HISTORY_CAP;
+        page_items[item_count++] = alert_history[index];
+    }
+    xSemaphoreGive(history_mutex);
+
+    nored_display_alert_history(page_items, item_count, page, page_count);
+}
+
+static void show_home(void)
+{
+    if (history_mutex &&
+        xSemaphoreTake(history_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        history_view_active = false;
+        history_page = 0;
+        xSemaphoreGive(history_mutex);
+    }
+    nored_display_idle();
+}
+
+static void button_task(void *param)
+{
+    (void)param;
+    nored_buttons_t press;
+    while (true) {
+        if (nored_buttons_poll(&press)) {
+            if (press.home) {
+                show_home();
+            } else if (press.b) {
+                show_history_page(1, true);
+            } else if (press.right || press.down) {
+                show_history_page(1, false);
+            } else if (press.left || press.up) {
+                show_history_page(-1, false);
+            } else if (press.a) {
+                show_history_page(1, false);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+}
+
 static void alert_task(void *param)
 {
     (void)param;
@@ -178,6 +315,7 @@ static void alert_task(void *param)
     while (true) {
         if (xQueueReceive(alert_queue, &alert, portMAX_DELAY) != pdTRUE) continue;
 
+        remember_alert(&alert);
         nored_display_alert(alert.severity, alert.sender, alert.body);
 
         uint8_t red = 20;
@@ -220,6 +358,18 @@ static void init_alert_leds(void)
     alert_queue = xQueueCreate(ALERT_QUEUE_DEPTH, sizeof(alert_event_t));
     ESP_ERROR_CHECK(alert_queue ? ESP_OK : ESP_ERR_NO_MEM);
     BaseType_t created = xTaskCreate(alert_task, "alert", 4096, NULL, 4, NULL);
+    ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+}
+
+static void init_alert_history_buttons(void)
+{
+    history_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(history_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!nored_buttons_init()) {
+        ESP_LOGW(TAG, "button init failed; alert history unavailable");
+        return;
+    }
+    BaseType_t created = xTaskCreate(button_task, "buttons", 3072, NULL, 3, NULL);
     ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
@@ -425,6 +575,164 @@ static void send_wire_json(link_t *dest, const char *json)
     }
 }
 
+static void send_to_all_links(const char *json)
+{
+    for (int i = 0; i < MAX_CONNS; i++) {
+        if (links[i].used && links[i].tx_notify) {
+            send_wire_json(&links[i], json);
+        }
+    }
+}
+
+static bool json_int64_field(const char *json, const char *key, int64_t *out)
+{
+    char pattern[24];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ') p++;
+
+    bool negative = false;
+    if (*p == '-') {
+        negative = true;
+        p++;
+    }
+    if (*p < '0' || *p > '9') return false;
+
+    int64_t value = 0;
+    while (*p >= '0' && *p <= '9') {
+        value = value * 10 + (*p - '0');
+        p++;
+    }
+    *out = negative ? -value : value;
+    return true;
+}
+
+static void note_unix_ms(int64_t unix_ms)
+{
+    if (unix_ms < 1700000000000LL) return;
+    unix_ms_at_sync = unix_ms;
+    timer_ms_at_sync = esp_timer_get_time() / 1000;
+}
+
+static int64_t now_unix_ms(void)
+{
+    if (unix_ms_at_sync == 0) return 0;
+    return unix_ms_at_sync + (esp_timer_get_time() / 1000 - timer_ms_at_sync);
+}
+
+static void json_escape(char *dst, size_t dst_len, const char *src)
+{
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)src;
+         *p && n + 2 < dst_len; p++) {
+        char c = (char)*p;
+        if (c == '"' || c == '\\') {
+            if (n + 3 >= dst_len) break;
+            dst[n++] = '\\';
+            dst[n++] = c;
+        } else if ((unsigned char)c < 32) {
+            dst[n++] = ' ';
+        } else {
+            dst[n++] = c;
+        }
+    }
+    dst[n] = 0;
+}
+
+static bool origin_alert_now(const char *severity, const char *body)
+{
+    int64_t timestamp = now_unix_ms();
+    if (timestamp == 0) return false;
+
+    uint8_t raw[16];
+    char alert_id[MAX_ID];
+    esp_fill_random(raw, sizeof(raw));
+    snprintf(alert_id, sizeof(alert_id),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+             raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
+
+    char escaped[MAX_ALERT_BODY * 2 + 1];
+    json_escape(escaped, sizeof(escaped), body);
+    int wrote = snprintf(
+        mesh_json, sizeof(mesh_json),
+        "{\"version\":1,\"type\":\"mesh-data\",\"hopCount\":1,\"hopLimit\":10,"
+        "\"directOnly\":false,\"expiresAt\":%lld,"
+        "\"packet\":{\"version\":1,\"id\":\"%s\",\"senderId\":\"%s\",\"senderName\":\"%s\","
+        "\"recipientId\":\"emergency-broadcast\",\"type\":\"alert\","
+        "\"timestamp\":%lld,\"body\":\"%s\",\"severity\":\"%s\","
+        "\"hops\":1,\"ttlHops\":10}}",
+        (long long)(timestamp + ALERT_TTL_MS), alert_id, local_id, local_name,
+        (long long)timestamp, escaped, severity);
+    if (wrote < 0 || wrote >= (int)sizeof(mesh_json)) return false;
+
+    seen_packet(alert_id);
+    seen_alert(alert_id);
+
+    alert_event_t alert = {0};
+    alert.severity = NORED_ALERT_INFO;
+    if (strcmp(severity, "HELP") == 0) {
+        alert.severity = NORED_ALERT_HELP;
+    } else if (strcmp(severity, "DANGER") == 0) {
+        alert.severity = NORED_ALERT_DANGER;
+    }
+    strncpy(alert.sender, local_name, sizeof(alert.sender) - 1);
+    strncpy(alert.body, body, sizeof(alert.body) - 1);
+    if (alert_queue) xQueueSend(alert_queue, &alert, 0);
+
+    send_to_all_links(mesh_json);
+    ESP_LOGI(TAG, "originated portal alert %s", alert_id);
+    return true;
+}
+
+static void flush_pending_alert(void)
+{
+    if (pending_alert && now_unix_ms() != 0 &&
+        origin_alert_now(pending_severity, pending_body)) {
+        pending_alert = false;
+    }
+}
+
+static bool portal_broadcast(const char *severity, const char *body,
+                             char *err, size_t err_len)
+{
+    char trimmed[MAX_ALERT_BODY + 1];
+    size_t n = 0;
+    for (const char *p = body; *p && n < MAX_ALERT_BODY; p++) {
+        if (*p != '\r') trimmed[n++] = *p;
+    }
+    while (n > 0 && (trimmed[n - 1] == ' ' || trimmed[n - 1] == '\n')) n--;
+    trimmed[n] = 0;
+    if (n == 0) {
+        snprintf(err, err_len, "Type a message first.");
+        return false;
+    }
+
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (last_origin_ms && now - last_origin_ms < ALERT_RATE_LIMIT_MS) {
+        snprintf(err, err_len, "Wait a few seconds and try again.");
+        return false;
+    }
+    last_origin_ms = now;
+
+    strncpy(pending_severity, severity, sizeof(pending_severity) - 1);
+    strncpy(pending_body, trimmed, sizeof(pending_body) - 1);
+    pending_alert = true;
+
+    if (now_unix_ms() == 0) {
+        snprintf(err, err_len, "Queued until a Nored phone is in range.");
+        return true;
+    }
+    if (!origin_alert_now(severity, trimmed)) {
+        snprintf(err, err_len, "Could not build the alert.");
+        return false;
+    }
+    pending_alert = false;
+    return true;
+}
+
 static uint32_t inventory_session;
 
 /* Completes the phone handshake: hello reply, then one inventory page listing what we hold.
@@ -456,6 +764,7 @@ static void send_hello_reply(link_t *link)
     snprintf(inventory_json + pos, sizeof(inventory_json) - pos, "]}");
     send_wire_json(link, inventory_json);
     ESP_LOGI(TAG, "mesh session ready with %s", link->id);
+    flush_pending_alert();
 }
 
 static void reply_to_hello(link_t *link, const char *payload)
@@ -477,6 +786,29 @@ static const char *alert_json_root(const char *payload)
     return packet ? packet : payload;
 }
 
+static void remember_peer_name(const char *id, const char *name)
+{
+    if (!id || !id[0] || !name || !name[0]) return;
+
+    int slot = -1;
+    for (int i = 0; i < PEER_NAME_CACHE_CAP; i++) {
+        if (strcmp(peer_name_cache[i].id, id) == 0) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && peer_name_cache[i].id[0] == 0) slot = i;
+    }
+    if (slot < 0) {
+        slot = peer_name_cache_head;
+        peer_name_cache_head = (peer_name_cache_head + 1) % PEER_NAME_CACHE_CAP;
+    }
+
+    strncpy(peer_name_cache[slot].id, id, sizeof(peer_name_cache[slot].id) - 1);
+    peer_name_cache[slot].id[sizeof(peer_name_cache[slot].id) - 1] = 0;
+    strncpy(peer_name_cache[slot].name, name, sizeof(peer_name_cache[slot].name) - 1);
+    peer_name_cache[slot].name[sizeof(peer_name_cache[slot].name) - 1] = 0;
+}
+
 static void peer_name_for_id(const char *id, char *out, size_t out_len)
 {
     if (!out_len) return;
@@ -489,7 +821,14 @@ static void peer_name_for_id(const char *id, char *out, size_t out_len)
             return;
         }
     }
-    strncpy(out, id, out_len - 1);
+    for (int i = 0; i < PEER_NAME_CACHE_CAP; i++) {
+        if (strcmp(peer_name_cache[i].id, id) == 0 && peer_name_cache[i].name[0]) {
+            strncpy(out, peer_name_cache[i].name, out_len - 1);
+            out[out_len - 1] = 0;
+            return;
+        }
+    }
+    strncpy(out, "Unknown", out_len - 1);
     out[out_len - 1] = 0;
 }
 
@@ -515,7 +854,12 @@ static void receive_alert(const char *payload)
     }
 
     char sender_id[MAX_ID] = {0};
-    if (json_string_field(json, "senderId", sender_id, sizeof(sender_id))) {
+    char sender_name[MAX_NAME + 1] = {0};
+    json_string_field(json, "senderId", sender_id, sizeof(sender_id));
+    if (json_string_field(json, "senderName", sender_name, sizeof(sender_name))) {
+        strncpy(alert.sender, sender_name, sizeof(alert.sender) - 1);
+        remember_peer_name(sender_id, sender_name);
+    } else if (sender_id[0]) {
         peer_name_for_id(sender_id, alert.sender, sizeof(alert.sender));
     } else {
         strncpy(alert.sender, "Unknown", sizeof(alert.sender) - 1);
@@ -614,6 +958,12 @@ static bool prepare_forward_payload(const uint8_t *payload, uint16_t len,
 
 static void forward_packet(link_t *from, const uint8_t *payload, uint16_t len)
 {
+    int64_t timestamp = 0;
+    if (json_int64_field((const char *)payload, "timestamp", &timestamp)) {
+        note_unix_ms(timestamp);
+    }
+    flush_pending_alert();
+
     reply_to_hello(from, (const char *)payload);
     if (strstr((const char *)payload, "\"type\":\"mesh-hello\"") ||
         strstr((const char *)payload, "\"type\":\"mesh-inventory\"") ||
@@ -732,6 +1082,9 @@ static int gatt_access(uint16_t conn_handle, uint16_t attr_handle,
             json_string_field((char *)gatt_rx_buf, "name", name, sizeof(name));
             strncpy(link->id, id, MAX_ID - 1);
             strncpy(link->name, name[0] ? name : "Nored", MAX_NAME);
+            link->id[MAX_ID - 1] = 0;
+            link->name[MAX_NAME] = 0;
+            remember_peer_name(link->id, link->name);
             ESP_LOGI(TAG, "peer %s (%s) on conn %u", link->name, link->id, conn_handle);
         }
         return 0;
@@ -880,7 +1233,11 @@ void app_main(void)
     if (!nored_display_init()) {
         ESP_LOGW(TAG, "display init failed; LEDs only");
     }
+    init_alert_history_buttons();
     init_alert_leds();
+    if (!nored_portal_start(portal_broadcast)) {
+        ESP_LOGW(TAG, "Wi-Fi share portal failed; BLE relay still runs");
+    }
     ESP_ERROR_CHECK(nimble_port_init());
 
     ble_hs_cfg.sync_cb = on_sync;

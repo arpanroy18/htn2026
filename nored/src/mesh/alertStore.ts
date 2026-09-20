@@ -46,6 +46,7 @@ export function severityTone(severity: Severity): SeverityTone {
 export function makeAlertPacket(input: {
   id?: string;
   senderId: string;
+  senderName?: string;
   body: string;
   severity: Severity;
   hasLocation?: boolean;
@@ -56,6 +57,7 @@ export function makeAlertPacket(input: {
     version: 1,
     id: input.id ?? createId(),
     senderId: input.senderId,
+    senderName: input.senderName?.trim().slice(0, 40),
     recipientId: EMERGENCY_BROADCAST_ID,
     type: 'alert',
     timestamp: Date.now(),

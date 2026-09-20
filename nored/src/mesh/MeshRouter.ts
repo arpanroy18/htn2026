@@ -247,7 +247,10 @@ export class MeshRouter {
         timestamp: p.timestamp, time: formatMessageClock(p.timestamp) },
         name, !mine && this.activeThread !== threadId);
     } else if (p.type === 'alert' && (mine || this.listening)) {
-      d.alerts = appendAlert(d.alerts, alertFromPacket({ ...p, hops: value.hopCount }, this.name(p.senderId), mine));
+      d.alerts = appendAlert(
+        d.alerts,
+        alertFromPacket({ ...p, hops: value.hopCount }, p.senderName || this.name(p.senderId), mine),
+      );
     }
   }
   async enqueue(packet: TextPacket | AlertPacket | GroupSyncPacket) {
