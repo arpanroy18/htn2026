@@ -1,6 +1,9 @@
 import type { AlertPacket } from '@/transport';
 
 import { createId, formatThreadTime } from './chatStore.ts';
+import { ALERT_MAX_BODY, ALERT_RATE_LIMIT_MS, ALERT_TTL_HOPS, EMERGENCY_BROADCAST_ID } from './protocol.ts';
+
+export { ALERT_MAX_BODY, ALERT_RATE_LIMIT_MS, ALERT_TTL_HOPS, EMERGENCY_BROADCAST_ID };
 
 export type Severity = 'INFO' | 'HELP' | 'DANGER';
 
@@ -18,13 +21,19 @@ export type AlertItem = {
   mine?: boolean;
 };
 
-export const ALERT_RATE_LIMIT_MS = 5000;
-export const ALERT_TTL_HOPS = 10;
-export const EMERGENCY_BROADCAST_ID = 'emergency-broadcast';
-
 export function isAlertPinned(severity: Severity) {
   return severity === 'DANGER' || severity === 'HELP';
 }
+
+// One severity → UX table shared by the phone (notification, vibration, pin) and mirrored by
+// the badge (LED colour, banner). INFO informs; HELP and DANGER interrupt.
+export const severityPresentation: Record<Severity, {
+  title: string; vibration: number[]; sound: boolean; urgent: boolean;
+}> = {
+  INFO: { title: 'Info alert', vibration: [], sound: false, urgent: false },
+  HELP: { title: 'Help needed', vibration: [0, 250, 150, 250], sound: true, urgent: true },
+  DANGER: { title: 'DANGER', vibration: [0, 400, 150, 400, 150, 400], sound: true, urgent: true },
+};
 
 export type SeverityTone = 'yellow' | 'orange' | 'red';
 
@@ -50,11 +59,11 @@ export function makeAlertPacket(input: {
     recipientId: EMERGENCY_BROADCAST_ID,
     type: 'alert',
     timestamp: Date.now(),
-    body: input.body,
+    body: input.body.trim().slice(0, ALERT_MAX_BODY),
     severity: input.severity,
     hasLocation: input.hasLocation,
     hops: input.hops ?? 0,
-    ttlHops: input.ttlHops ?? ALERT_TTL_HOPS,
+    ttlHops: Math.min(ALERT_TTL_HOPS, input.ttlHops ?? ALERT_TTL_HOPS),
   };
 }
 

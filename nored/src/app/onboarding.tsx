@@ -4,6 +4,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { OutlinedButton, RowPress } from '@/components/signal/ui';
+import { prepareAlertNotifications } from '@/mesh/alertNotifier';
 import { signal } from '@/theme/signal';
 
 const items = [
@@ -31,6 +32,14 @@ const items = [
 
 export default function OnboardingScreen() {
   const [allowed, setAllowed] = useState<Record<string, boolean>>({});
+  const toggle = async (id: string, on: boolean) => {
+    if (id === 'notifications' && !on) {
+      const granted = await prepareAlertNotifications();
+      setAllowed((current) => ({ ...current, [id]: granted }));
+      return;
+    }
+    setAllowed((current) => ({ ...current, [id]: !on }));
+  };
 
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
@@ -45,7 +54,7 @@ export default function OnboardingScreen() {
             <View key={item.id} style={styles.card}>
               <Text style={styles.name}>{item.title}</Text>
               <Text style={styles.bodyText}>{item.body}</Text>
-              <RowPress onPress={() => setAllowed((current) => ({ ...current, [item.id]: !on }))} style={styles.allow}>
+              <RowPress onPress={() => void toggle(item.id, on)} style={styles.allow}>
                 <Text style={styles.allowText}>{on ? 'Marked allowed' : 'Allow'}</Text>
               </RowPress>
             </View>

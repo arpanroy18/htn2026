@@ -2,6 +2,9 @@
 
 #include <stdbool.h>
 
+/* Mirrors ALERT_MAX_BODY in nored/src/mesh/protocol.ts (SPECS §3.2: 280-char payload). */
+#define NORED_ALERT_MAX_BODY 280
+
 typedef enum {
     NORED_ALERT_INFO,
     NORED_ALERT_HELP,

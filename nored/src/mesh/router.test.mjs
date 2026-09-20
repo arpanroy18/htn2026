@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { MeshRouter } from './MeshRouter.ts';
 import { RouterStore, SqlPersistence } from './routerStore.ts';
-import { envelope, DAY, isWirePacket, wireBytes } from './protocol.ts';
+import { envelope, DAY, isWirePacket, priority, wireBytes } from './protocol.ts';
 import { importHistory, validateLegacyHistory } from './migration.ts';
 import { SendScheduler } from './scheduler.ts';
 
@@ -137,6 +137,88 @@ test('broadcast relays once, preserves timestamp, carries while display disabled
   await n.connect(0, 2); assert.equal(n.nodes[2].store.data.alerts.length, 1);
 });
 
+const alert = (n, a, id = 'alert-1', severity = 'DANGER') => ({ ...n.text(a, a, id), type: 'alert', recipientId: 'emergency-broadcast', body: 'Help', severity });
+const alertFrames = (n, id = 'alert-1') => n.frames.filter((f) => (f.packet.type === 'mesh-data' && f.packet.packet.id === id) || (f.packet.type === 'alert' && f.packet.id === id));
+
+test('alert floods A→B→C through live links with no inventory churn and exactly one copy per hop', async () => {
+  const n = await network(3); await n.connect(0, 1); await n.connect(1, 2);
+  const controlBefore = n.frames.filter((f) => f.packet.type === 'mesh-inventory').length;
+  await n.nodes[0].router.enqueue(alert(n, 0)); await n.settle();
+  assert.equal(n.nodes[2].store.data.alerts.length, 1, 'C receives via relay B without any timer tick');
+  assert.equal(n.nodes[2].store.data.alerts[0].hops, 2);
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
+  assert.equal(n.nodes[0].store.data.alerts[0].mine, true);
+  const hops = alertFrames(n);
+  assert.deepEqual(hops.map((f) => [f.from, f.to]), [[n.nodes[0].id, n.nodes[1].id], [n.nodes[1].id, n.nodes[2].id]], 'never echoed back to the previous hop');
+  assert.equal(n.frames.filter((f) => f.packet.type === 'mesh-inventory').length, controlBefore, 'a new packet does not trigger inventory re-sends');
+  await n.advance(31_000);
+  assert.equal(alertFrames(n).length, 2, 'receipts stop retries; periodic inventory does not resend');
+  for (const node of n.nodes) assert.equal(node.store.data.alerts.length, 1);
+  assert.deepEqual(n.errors, []);
+});
+
+test('alert forwards to a fresh peer before its inventory arrives; duplicates never surface twice', async () => {
+  const n = await network(3);
+  n.drop((_a, _b, p) => p.type === 'mesh-inventory');
+  await n.connect(0, 1);
+  await n.nodes[0].router.enqueue(alert(n, 0)); await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 1, 'no inventory needed for alerts');
+  await n.nodes[0].router.enqueue(n.text(0, 1, 'later-text')); await n.settle();
+  assert.equal(incoming(n.nodes[1]).length, 0, 'ordinary traffic still waits for the inventory');
+  n.drop(() => false);
+  // A new neighbour gets the alert at once; a duplicate copy from it neither surfaces nor echoes.
+  await n.connect(2, 1);
+  assert.equal(n.nodes[2].store.data.alerts.length, 1);
+  const sentToC = () => alertFrames(n).filter((f) => f.from === n.nodes[1].id && f.to === n.nodes[2].id).length;
+  assert.equal(sentToC(), 1);
+  const copy = envelope(alert(n, 0)); copy.hopCount = 1;
+  await n.nodes[1].router.receive(n.nodes[2].id, copy); await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
+  assert.equal(n.nodes[2].store.data.alerts.length, 1);
+  assert.ok(n.nodes[1].store.data.packets['alert-1'].receipts.includes(n.nodes[2].id), 'duplicate marks the sender as a holder');
+  await n.advance(31_000);
+  assert.equal(sentToC(), 1, 'no re-send to a peer that already proved it holds the alert');
+  assert.deepEqual(n.errors, []);
+});
+
+test('alert wire contract: every severity outranks text, inventory and media; body is capped', async () => {
+  const n = await network(2);
+  const rank = (p) => priority(envelope(p));
+  for (const severity of ['INFO', 'HELP', 'DANGER']) {
+    assert.ok(rank(alert(n, 0, 'x', severity)) < rank(n.text(0, 1)));
+    assert.ok(rank(alert(n, 0, 'x', severity)) < priority({ version: 1, type: 'mesh-inventory', senderId: n.nodes[0].id, recipientId: n.nodes[1].id, session: 's', page: 0, last: true, ids: [] }));
+    assert.ok(rank(alert(n, 0, 'x', severity)) < priority({ ...n.text(0, 1), type: 'media-chunk', transferId: 't', sequence: 0, total: 1, payload: 'AQID' }));
+  }
+  assert.ok(priority({ version: 1, type: 'mesh-receipt', senderId: n.nodes[0].id, recipientId: n.nodes[1].id, packetId: 'x' }) < rank(alert(n, 0)));
+  assert.equal(isWirePacket(envelope({ ...alert(n, 0), body: 'x'.repeat(281) })), false);
+  assert.equal(isWirePacket({ ...alert(n, 0), body: 'x'.repeat(281) }), false);
+  assert.equal(isWirePacket(envelope({ ...alert(n, 0), body: 'x'.repeat(280) })), true);
+  assert.equal(envelope(alert(n, 0)).hopLimit, 10);
+  assert.equal(envelope({ ...alert(n, 0), ttlHops: 99 }).hopLimit, 10);
+});
+
+test('alert envelope is accepted from a confirmed peer whose hello was lost; text is not', async () => {
+  const n = await network(2);
+  n.drop((_a, _b, p) => p.type === 'mesh-hello');
+  await n.connect(0, 1);
+  const a = envelope(alert(n, 0)); a.hopCount = 1;
+  const t = envelope(n.text(0, 1, 'early-text')); t.hopCount = 1;
+  await n.nodes[1].router.receive(n.nodes[0].id, a);
+  await n.nodes[1].router.receive(n.nodes[0].id, t);
+  await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
+  assert.equal(incoming(n.nodes[1]).length, 0);
+});
+
+test('legacy raw alert addressed to another node is still accepted once', async () => {
+  const n = await network(2); await n.connect(0, 1);
+  const raw = { ...alert(n, 0), recipientId: 'some-badge-id', hops: 1 };
+  await n.nodes[1].router.receive(n.nodes[0].id, raw);
+  await n.nodes[1].router.receive(n.nodes[0].id, raw);
+  await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
+});
+
 test('malformed protocol and mismatched control identities are ignored', async () => {
   const n = await network(2); await n.connect(0, 1);
   const v = envelope(n.text(0, 1));
@@ -148,13 +230,22 @@ test('malformed protocol and mismatched control identities are ignored', async (
   assert.deepEqual(n.nodes[0].store.data.packets, {});
 });
 
-test('inventories are paginated, bounded, and reconnect skips accepted payloads', async () => {
+test('inventories list carried packets only, are paginated and bounded, and reconnect skips accepted payloads', async () => {
   const n = await network(2);
-  await n.nodes[0].store.transaction((d) => { for (let i=0;i<130;i++) d.seen[`seen-${i}`] = 1_000_000 + DAY; });
+  await n.nodes[0].store.transaction((d) => {
+    for (let i=0;i<130;i++) {
+      const p = envelope(n.text(0, 1, `carried-${i}`));
+      d.packets[p.packet.id] = { envelope: p, state: 'queued', receipts: [] }; d.seen[p.packet.id] = p.expiresAt + DAY;
+    }
+    for (let i=0;i<40;i++) d.seen[`expired-${i}`] = 1_000_000 + DAY; // remembered for dedup, not advertised
+  });
   await n.connect(0, 1);
-  const inventories = n.frames.filter((f) => f.packet.type === 'mesh-inventory');
-  assert.ok(inventories.length >= 4);
+  const inventories = n.frames.filter((f) => f.packet.type === 'mesh-inventory' && f.from === n.nodes[0].id);
+  assert.ok(inventories.length >= 3);
   assert.ok(inventories.every((f) => f.packet.ids.length <= 50 && wireBytes(f.packet) <= 3000));
+  const advertised = inventories.flatMap((f) => f.packet.ids);
+  assert.equal(advertised.length, 130);
+  assert.ok(advertised.every((id) => id.startsWith('carried-')));
   await n.nodes[0].router.enqueue(n.text(0, 1)); await n.settle();
   const before = n.frames.filter((f) => f.packet.type === 'mesh-data' && f.packet.packet.id === 'message').length;
   n.disconnect(0, 1); await n.connect(0, 1);

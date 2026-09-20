@@ -24,7 +24,7 @@ import { AlertsIcon, ImageIcon, MicIcon, SendIcon } from '@/components/signal/ic
 import { Avatar, AvatarStack, Chip, IconButton } from '@/components/signal/ui';
 import { useVoiceRecorder } from '@/hooks/use-voice-recorder';
 import { useAlerts } from '@/mesh/AlertContext';
-import { severityTone } from '@/mesh/alertStore';
+import { ALERT_MAX_BODY, severityTone } from '@/mesh/alertStore';
 import { useChat } from '@/mesh/ChatContext';
 import { useMeshUi } from '@/mesh/MeshUiContext';
 import { ALERT_THREAD_PREFIX, isAlertThreadId, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
@@ -522,7 +522,7 @@ export default function ChatScreen() {
                 <TextInput
                   accessibilityLabel="Message"
                   editable={!busy}
-                  maxLength={emergency && !isAlertThread ? 280 : 2000}
+                  maxLength={emergency && !isAlertThread ? ALERT_MAX_BODY : 2000}
                   multiline
                   onChangeText={setDraft}
                   placeholder={

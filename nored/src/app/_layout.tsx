@@ -4,6 +4,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
+import { AlertBanner } from '@/components/alert-banner';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { GameProvider } from '@/games/GameContext';
 import { GameInvitePrompt } from '@/games/GameInvitePrompt';
@@ -66,6 +67,7 @@ export default function RootLayout() {
               <Stack.Screen name="game/[id]" options={{ title: 'Game' }} />
               <Stack.Screen name="invite" options={{ title: 'Invite to group', presentation: 'modal' }} />
               </Stack>
+              <AlertBanner />
             </ChatProvider>
           </GameProvider>
         </AlertProvider>

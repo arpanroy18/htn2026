@@ -26,12 +26,23 @@ static const char *TAG = "nored_badge";
 #define MAX_NAME 40
 #define MAX_ID 40
 #define MAX_PACKET 2048
-#define SEEN_CAP 24
+/*
+ * Dedup rings. Phones dedup by packet id for the packet's lifetime; the badge keeps two
+ * RAM rings instead:
+ *   SEEN_CAP        every relayed packet id (texts, acks, games...) - stops relay loops
+ *   ALERT_SEEN_CAP  alert ids that were shown - high-volume chat/game traffic can no
+ *                   longer evict an alert and let a relayed copy repaint the screen
+ * Both rings are reported in the mesh-inventory reply so phones stop re-sending them.
+ * The phone caps an inventory page at 50 ids (protocol.ts), so SEEN_CAP + ALERT_SEEN_CAP <= 50.
+ */
+#define SEEN_CAP 32
+#define ALERT_SEEN_CAP 16
 #define PACKET_MAGIC 0x4E
 #define LED_GPIO 3
 #define LED_COUNT 6
 #define LED_RESOLUTION_HZ 10000000
-#define MAX_ALERT_BODY 160
+#define MAX_ALERT_BODY NORED_ALERT_MAX_BODY
+#define ALERT_QUEUE_DEPTH 8
 
 /*
  * Canonical Nored UUIDs (same strings as the phone app):
@@ -70,12 +81,14 @@ typedef struct {
     uint16_t conn;
     bool used;
     bool tx_notify;
+    bool hello_pending; /* Phone said hello before it subscribed to TX; answer on subscribe. */
     uint16_t mtu;
     char id[MAX_ID];
     char name[MAX_NAME + 1];
     uint8_t total;
     uint8_t got;
     uint16_t len;
+    uint16_t chunk; /* Payload bytes per frame, learned from frame 0 of the current packet. */
     uint8_t parts_mask[32];
     uint8_t packet[MAX_PACKET];
 } link_t;
@@ -83,6 +96,10 @@ typedef struct {
 static link_t links[MAX_CONNS];
 static char seen_ids[SEEN_CAP][MAX_ID];
 static uint8_t seen_head;
+static char alert_seen_ids[ALERT_SEEN_CAP][MAX_ID];
+static uint8_t alert_seen_head;
+/* Inventory reply: header + up to 48 quoted ids (~2.2 KB); static so the host task stack stays small. */
+static char inventory_json[2560];
 
 static const rmt_symbol_word_t ws2812_zero = {
     .level0 = 1,
@@ -198,9 +215,9 @@ static void init_alert_leds(void)
     ESP_ERROR_CHECK(rmt_enable(led_channel));
     led_show_ready();
 
-    alert_queue = xQueueCreate(4, sizeof(alert_event_t));
+    alert_queue = xQueueCreate(ALERT_QUEUE_DEPTH, sizeof(alert_event_t));
     ESP_ERROR_CHECK(alert_queue ? ESP_OK : ESP_ERR_NO_MEM);
-    BaseType_t created = xTaskCreate(alert_task, "alert", 3072, NULL, 4, NULL);
+    BaseType_t created = xTaskCreate(alert_task, "alert", 4096, NULL, 4, NULL);
     ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
@@ -241,31 +258,83 @@ static void refresh_identity_json(void)
              local_id, local_name);
 }
 
+/* Copies the JSON string value for `key`, decoding escapes, so a quote or newline inside an
+ * alert body no longer truncates it. Stops at the first unescaped quote. */
 static bool json_string_field(const char *json, const char *key, char *out, size_t out_len)
 {
     char pattern[24];
     snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    const char *start = strstr(json, pattern);
-    if (!start) return false;
-    start += strlen(pattern);
+    const char *p = strstr(json, pattern);
+    if (!p || out_len == 0) return false;
+    p += strlen(pattern);
     size_t n = 0;
-    while (start[n] && start[n] != '"' && n + 1 < out_len) {
-        out[n] = start[n];
-        n++;
+    while (*p && *p != '"' && n + 1 < out_len) {
+        char c = *p++;
+        if (c == '\\' && *p) {
+            char e = *p++;
+            switch (e) {
+            case 'n': case 'r': case 't': c = ' '; break;
+            case 'u':
+                /* \uXXXX: skip the hex digits, emit a placeholder the 8x8 font can draw. */
+                for (int i = 0; i < 4 && *p; i++) p++;
+                c = '?';
+                break;
+            default: c = e; break; /* \" \\ \/ */
+            }
+        }
+        out[n++] = c;
     }
     out[n] = 0;
     return n > 0;
 }
 
-static bool seen_packet(const char *id)
+/* Returns true when `id` was already in the ring; otherwise records it. */
+static bool ring_seen(char ring[][MAX_ID], int cap, uint8_t *head, const char *id)
 {
     if (!id[0]) return false;
-    for (int i = 0; i < SEEN_CAP; i++) {
-        if (strcmp(seen_ids[i], id) == 0) return true;
+    for (int i = 0; i < cap; i++) {
+        if (strcmp(ring[i], id) == 0) return true;
     }
-    strncpy(seen_ids[seen_head], id, MAX_ID - 1);
-    seen_head = (seen_head + 1) % SEEN_CAP;
+    strncpy(ring[*head], id, MAX_ID - 1);
+    ring[*head][MAX_ID - 1] = 0;
+    *head = (uint8_t)((*head + 1) % cap);
     return false;
+}
+
+static bool seen_packet(const char *id)
+{
+    return ring_seen(seen_ids, SEEN_CAP, &seen_head, id);
+}
+
+static bool seen_alert(const char *id)
+{
+    return ring_seen(alert_seen_ids, ALERT_SEEN_CAP, &alert_seen_head, id);
+}
+
+static bool inventory_safe_id(const char *id)
+{
+    /* Phone validator accepts [A-Za-z0-9:_-]; one odd id would void the whole page. */
+    for (const char *p = id; *p; p++) {
+        char c = *p;
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                  c == ':' || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return id[0] != 0;
+}
+
+/* Appends every id we hold, so a reconnecting phone marks us as a carrier instead of
+ * replaying its whole store (which is how an old alert used to repaint the screen). */
+static size_t append_ring_ids(char *out, size_t cap, size_t pos, char ring[][MAX_ID], int n, bool *first)
+{
+    for (int i = 0; i < n; i++) {
+        if (!inventory_safe_id(ring[i])) continue;
+        int wrote = snprintf(out + pos, cap > pos ? cap - pos : 0, "%s\"%s\"", *first ? "" : ",", ring[i]);
+        if (wrote < 0 || pos + (size_t)wrote >= cap) break;
+        pos += (size_t)wrote;
+        *first = false;
+    }
+    return pos;
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg);
@@ -354,6 +423,39 @@ static void send_wire_json(link_t *dest, const char *json)
     }
 }
 
+static uint32_t inventory_session;
+
+/* Completes the phone handshake: hello reply, then one inventory page listing what we hold.
+ * The phone will not relay anything to us until it has seen both. */
+static void send_hello_reply(link_t *link)
+{
+    if (!link->id[0]) return;
+    if (!link->tx_notify) {
+        link->hello_pending = true; /* Sent from the SUBSCRIBE event instead of dropped. */
+        return;
+    }
+    link->hello_pending = false;
+
+    char hello[192];
+    snprintf(hello, sizeof(hello),
+             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
+             "\"type\":\"mesh-hello\",\"reply\":true}",
+             local_id, link->id);
+    send_wire_json(link, hello);
+
+    size_t pos = (size_t)snprintf(inventory_json, sizeof(inventory_json),
+             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
+             "\"type\":\"mesh-inventory\",\"session\":\"badge-%" PRIu32 "\",\"page\":0,"
+             "\"last\":true,\"ids\":[",
+             local_id, link->id, ++inventory_session);
+    bool first = true;
+    pos = append_ring_ids(inventory_json, sizeof(inventory_json) - 3, pos, seen_ids, SEEN_CAP, &first);
+    pos = append_ring_ids(inventory_json, sizeof(inventory_json) - 3, pos, alert_seen_ids, ALERT_SEEN_CAP, &first);
+    snprintf(inventory_json + pos, sizeof(inventory_json) - pos, "]}");
+    send_wire_json(link, inventory_json);
+    ESP_LOGI(TAG, "mesh session ready with %s", link->id);
+}
+
 static void reply_to_hello(link_t *link, const char *payload)
 {
     if (!strstr(payload, "\"type\":\"mesh-hello\"")) return;
@@ -361,22 +463,7 @@ static void reply_to_hello(link_t *link, const char *payload)
     char sender_id[MAX_ID] = {0};
     if (!json_string_field(payload, "senderId", sender_id, sizeof(sender_id))) return;
     if (!link->id[0]) strncpy(link->id, sender_id, MAX_ID - 1);
-
-    char hello[192];
-    snprintf(hello, sizeof(hello),
-             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
-             "\"type\":\"mesh-hello\",\"reply\":true}",
-             local_id, sender_id);
-    send_wire_json(link, hello);
-
-    char inventory[224];
-    snprintf(inventory, sizeof(inventory),
-             "{\"version\":1,\"senderId\":\"%s\",\"recipientId\":\"%s\","
-             "\"type\":\"mesh-inventory\",\"session\":\"badge\",\"page\":0,"
-             "\"last\":true,\"ids\":[]}",
-             local_id, sender_id);
-    send_wire_json(link, inventory);
-    ESP_LOGI(TAG, "mesh session ready with %s", sender_id);
+    send_hello_reply(link);
 }
 
 static const char *alert_json_root(const char *payload)
@@ -409,6 +496,14 @@ static void receive_alert(const char *payload)
     const char *json = alert_json_root(payload);
     if (!strstr(json, "\"type\":\"alert\"")) return;
 
+    /* Same alert id, whether it arrives as a raw legacy packet, a mesh-data envelope, or a
+     * replay after reconnect: paint the screen once. */
+    char alert_id[MAX_ID] = {0};
+    if (json_string_field(json, "id", alert_id, sizeof(alert_id)) && seen_alert(alert_id)) {
+        ESP_LOGI(TAG, "alert %s already shown", alert_id);
+        return;
+    }
+
     alert_event_t alert = {0};
     alert.severity = NORED_ALERT_INFO;
     if (strstr(json, "\"severity\":\"DANGER\"")) {
@@ -430,6 +525,8 @@ static void receive_alert(const char *payload)
 
     if (alert_queue && xQueueSend(alert_queue, &alert, 0) == pdTRUE) {
         ESP_LOGI(TAG, "alert from %s: %s", alert.sender, alert.body);
+    } else {
+        ESP_LOGW(TAG, "alert queue full; dropped %s", alert_id);
     }
 }
 
@@ -494,19 +591,23 @@ static void ingest_frame(link_t *link, const uint8_t *data, uint16_t len)
     uint8_t seq = data[1];
     uint8_t total = data[2];
     if (total == 0 || seq >= total) return;
+    uint16_t part = (uint16_t)(len - 3);
 
-    if (link->total != total) {
+    /* Frame 0 always starts a new packet; every frame but the last carries the same number
+     * of payload bytes, so frame 0 tells us the sender's chunk size. Using our own MTU guess
+     * here used to scatter frames at the wrong offsets whenever the phone had a larger MTU. */
+    if (seq == 0 || link->total != total) {
+        if (seq != 0) return; /* Mid-packet without its start: wait for the next packet. */
         memset(link->parts_mask, 0, sizeof(link->parts_mask));
         link->total = total;
         link->got = 0;
         link->len = 0;
+        link->chunk = part > 0 ? part : payload_mtu(link);
     }
+    if (link->chunk == 0) return;
 
-    uint16_t offset = 0;
-    uint16_t chunk = payload_mtu(link);
-    offset = (uint16_t)seq * chunk;
-    uint16_t part = (uint16_t)(len - 3);
-    if (offset + part > MAX_PACKET) return;
+    uint16_t offset = (uint16_t)(seq * link->chunk);
+    if (offset + part >= MAX_PACKET) return;
     memcpy(link->packet + offset, data + 3, part);
     if (offset + part > link->len) link->len = (uint16_t)(offset + part);
     if ((link->parts_mask[seq / 8] & (1u << (seq % 8))) == 0) {
@@ -520,6 +621,7 @@ static void ingest_frame(link_t *link, const uint8_t *data, uint16_t len)
         link->total = 0;
         link->got = 0;
         link->len = 0;
+        link->chunk = 0;
     }
 }
 
@@ -626,6 +728,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             if (link) link->tx_notify = event->subscribe.cur_notify;
             ESP_LOGI(TAG, "tx notify conn %u = %d", event->subscribe.conn_handle,
                      event->subscribe.cur_notify);
+            /* The phone's hello often lands before this subscribe. Answering now (instead of
+             * losing the reply) keeps the phone from waiting 2s+ in legacy mode. */
+            if (link && link->tx_notify && link->hello_pending) send_hello_reply(link);
         }
         if (event->subscribe.attr_handle == h_identity && event->subscribe.cur_notify) {
             notify_bytes(event->subscribe.conn_handle, h_identity,

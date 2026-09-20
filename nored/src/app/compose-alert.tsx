@@ -1,12 +1,12 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertsIcon } from '@/components/signal/icons';
 import { Chip, OutlinedButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
-import { type Severity, severityTone } from '@/mesh/alertStore';
+import { ALERT_MAX_BODY, ALERT_RATE_LIMIT_MS, type Severity, severityTone } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
 
 const severities: Severity[] = ['INFO', 'HELP', 'DANGER'];
@@ -17,6 +17,7 @@ export default function ComposeAlertScreen() {
   const [severity, setSeverity] = useState<Severity>('HELP');
   const [location, setLocation] = useState(true);
   const [sending, setSending] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const broadcast = async () => {
     const text = body.trim();
@@ -37,7 +38,14 @@ export default function ComposeAlertScreen() {
 
   return (
     <SafeAreaView edges={['bottom']} style={styles.safe}>
-      <ScrollView contentContainerStyle={styles.body}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={insets.top + 56}
+        style={styles.safe}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
             <AlertsIcon color={signal.ink} size={22} />
@@ -45,7 +53,7 @@ export default function ComposeAlertScreen() {
           <View style={styles.heroCopy}>
             <Text style={styles.heroTitle}>Emergency broadcast</Text>
             <Text style={styles.heroBody}>
-              Reaches every reachable node, including relays. Rate-limited to one send every 5 seconds.
+              Reaches every reachable node, including relays. Rate-limited to one send every {ALERT_RATE_LIMIT_MS / 1000} seconds.
             </Text>
           </View>
         </View>
@@ -70,14 +78,15 @@ export default function ComposeAlertScreen() {
 
         <View style={styles.labelRow}>
           <Text style={styles.label}>MESSAGE</Text>
-          <Text style={styles.label}>{body.length} / 280</Text>
+          <Text style={styles.label}>{body.length} / {ALERT_MAX_BODY}</Text>
         </View>
         <TextInput
-          maxLength={280}
+          maxLength={ALERT_MAX_BODY}
           multiline
           onChangeText={setBody}
           placeholder="What should everyone nearby know?"
           placeholderTextColor={signal.slate}
+          scrollEnabled
           style={styles.input}
           value={body}
         />
@@ -112,6 +121,7 @@ export default function ComposeAlertScreen() {
           onPress={() => void broadcast()}
         />
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -159,6 +169,8 @@ const styles = StyleSheet.create({
     color: signal.ink,
     fontSize: 16,
     lineHeight: 24,
+    // Bounded: a 280-char body scrolls inside the box instead of pushing the button off-screen.
+    maxHeight: 168,
     minHeight: 120,
     padding: 16,
     textAlignVertical: 'top',

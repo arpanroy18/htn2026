@@ -91,18 +91,20 @@ export default function AlertsScreen() {
           </>
         ) : null}
 
-        <Text style={[styles.section, styles.spaced]}>Inbox</Text>
+        {alerts.length === 0 || inbox.length > 0 ? (
+          <Text style={[styles.section, styles.spaced]}>Inbox</Text>
+        ) : null}
         {alerts.length === 0 ? (
           <Text style={styles.empty}>
             No alerts yet. Tap + to broadcast to every reachable phone on the mesh.
           </Text>
-        ) : (
+        ) : inbox.length > 0 ? (
           <GroupedList>
             {inbox.map((item) => (
               <AlertRow item={item} key={item.id} />
             ))}
           </GroupedList>
-        )}
+        ) : null}
       </ScrollView>
     </Screen>
   );

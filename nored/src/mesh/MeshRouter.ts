@@ -146,7 +146,9 @@ export class MeshRouter {
     this.inventoryBusy.add(peer);
     try {
       session.inventoryAt = this.now();
-      const ids = Object.keys(this.store.data.seen).filter((id) => this.store.data.seen[id] > this.now());
+      // Advertise only what we still carry. `seen` also remembers expired ids for local dedup,
+      // but a peer never forwards an expired packet, so listing them only bloats the pages.
+      const ids = Object.entries(this.store.data.packets).filter(([, r]) => r.envelope.expiresAt > this.now()).map(([id]) => id);
       const snapshot = `${this.now()}-${++this.inventoryCounter}`;
       const pages: string[][] = [[]];
       for (const id of ids) {
@@ -206,7 +208,8 @@ export class MeshRouter {
     this.changed();
   }
   private changed() {
-    for (const session of this.sessions.values()) session.inventoryAt = 0;
+    // Receipts already tell each peer what we hold; re-sending full inventories here put
+    // kilobytes of control frames ahead of every relayed alert.
     void this.flush().catch((e) => this.report(e));
   }
   private status(d: RouterData, id: string, state: import('./chatStore').ChatDelivery) {
@@ -273,8 +276,9 @@ export class MeshRouter {
       return;
     }
     if (wire.type !== 'mesh-data') {
-      // Legacy application packets are direct-only, except the existing alert broadcast.
-      if (wire.recipientId !== this.identity.id) return;
+      // Legacy application packets are direct-only, except the alert broadcast, which any
+      // hop may hand us (a badge relays raw frames, so its copy is addressed to the badge).
+      if (wire.type !== 'alert' && wire.recipientId !== this.identity.id) return;
       if (wire.type !== 'alert' && !wire.groupId && wire.senderId !== peer) return;
       if (wire.type === 'text' && wire.groupId) {
         for (const listener of this.mediaListeners) listener(wire, peer);
@@ -284,7 +288,9 @@ export class MeshRouter {
       } else for (const listener of this.mediaListeners) listener(wire, peer);
       return;
     }
-    if (!session.ready || wire.hopCount < 1 || (wire.directOnly && wire.packet.recipientId !== this.identity.id)) return;
+    // Alerts are accepted from any confirmed peer even before its hello lands: they are
+    // validated and deduped, and a lost handshake must not stall an emergency.
+    if ((!session.ready && wire.packet.type !== 'alert') || wire.hopCount < 1 || (wire.directOnly && wire.packet.recipientId !== this.identity.id)) return;
     await this.accept(peer, wire, true, generation);
   }
   private async accept(peer: string, value: Envelope, receipt: boolean, generation: number) {
@@ -296,6 +302,12 @@ export class MeshRouter {
       accepted = true;
       if (d.seen[p.id]) {
         this.log(`[DEDUP] ${p.id}`);
+        // The peer evidently holds this packet: remember that so we never echo it back.
+        const held = d.packets[p.id];
+        if (held && !held.receipts.includes(peer)) {
+          held.receipts.push(peer);
+          if (held.state !== 'sent') this.status(d, p.id, 'carrying');
+        }
         if (receipt && p.type === 'text' && p.recipientId === this.identity.id &&
             d.chat.messages[p.senderId]?.some((m) => m.id === p.id && !m.mine)) this.ensureAck(d, p);
         return;
@@ -317,8 +329,10 @@ export class MeshRouter {
       }
     });
     if (!accepted || generation !== this.generation) return;
-    if (receipt) await this.send(peer, this.control(peer, { type: 'mesh-receipt', packetId: p.id }));
+    // Start the onward flood before the receipt round-trip; the scheduler still sends the
+    // (rank 0) receipt first, so this only removes latency, never reorders the wire.
     this.changed();
+    if (receipt) await this.send(peer, this.control(peer, { type: 'mesh-receipt', packetId: p.id }));
   }
   private ensureAck(d: RouterData, packet: TextPacket) {
     const ack = envelope({ version: 1, type: 'delivery-ack', id: `${packet.id}:delivered`,
@@ -328,7 +342,7 @@ export class MeshRouter {
   async tick() {
     if (this.now() - this.cleanupAt >= 60_000) await this.cleanup();
     for (const [peer, session] of this.sessions) {
-      if (!session.ready && this.now() - session.helloAt >= 5000) void this.hello(peer, false);
+      if (!session.ready && this.now() - session.helloAt >= 2000) void this.hello(peer, false);
       if (session.ready && (!session.inventoryAt || this.now() - session.inventoryAt >= 30_000)) {
         void this.inventory(peer).catch((e) => this.report(e));
       }
@@ -356,10 +370,15 @@ export class MeshRouter {
       for (const [peer, session] of peers) {
         if (record.receipts.includes(peer) || peer === p.senderId || (value.directOnly && peer !== p.recipientId)) continue;
         const legacy = !session.ready && this.now() - session.started >= 2000;
-        if (!legacy && (!session.ready || !session.inventoryComplete)) continue;
+        if (!legacy && !session.ready) continue;
+        // Alerts flood as soon as the handshake completes: a duplicate costs the peer three
+        // frames, while waiting for its inventory can cost a 30s re-sync if a page was lost.
+        // Other traffic waits for the inventory, but not forever.
+        const synced = session.inventoryComplete || this.now() - session.started >= 5000;
+        if (!legacy && p.type !== 'alert' && !synced) continue;
         if (legacy && (p.type === 'delivery-ack' || (p.type !== 'alert' && peer !== p.recipientId))) continue;
         const key = `${peer}|${p.id}`, attempt = this.pending.get(key);
-        if (this.busy.has(key) || (attempt && this.now() - attempt.at < Math.min(30_000, 3000 * 2 ** Math.min(attempt.attempts, 4)))) continue;
+        if (this.busy.has(key) || (attempt && this.now() - attempt.at < Math.min(30_000, 3000 * 2 ** Math.min(attempt.attempts - 1, 4)))) continue;
         this.busy.add(key);
         this.pending.set(key, { at: this.now(), attempts: (attempt?.attempts ?? 0) + 1 });
         // Do not wait for a peer receipt here: that would deadlock simultaneous sends.

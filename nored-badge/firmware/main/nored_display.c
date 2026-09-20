@@ -231,12 +231,15 @@ static int chars_per_line(int x, int scale)
 static void draw_wrapped_body(int x, int y, int max_h, const char *body, int scale,
                               uint16_t fg, uint16_t bg)
 {
-    char line[40];
-    char copy[161];
+    char line[64];
+    char copy[NORED_ALERT_MAX_BODY + 1];
     int line_len = 0;
     int line_h = 8 * scale + 4;
     int bottom = y + max_h;
     int max_chars = chars_per_line(x, scale);
+    if (max_chars > (int)sizeof(line) - 2) {
+        max_chars = (int)sizeof(line) - 2;
+    }
 
     strncpy(copy, body, sizeof(copy) - 1);
     copy[sizeof(copy) - 1] = 0;
@@ -369,7 +372,7 @@ void nored_display_alert(nored_alert_severity_t severity, const char *sender, co
 
     char banner[16];
     char from_line[48];
-    char safe_body[161];
+    char safe_body[NORED_ALERT_MAX_BODY + 1];
     uint16_t banner_bg = 0;
     uint16_t banner_fg = 0;
 
@@ -381,9 +384,12 @@ void nored_display_alert(nored_alert_severity_t severity, const char *sender, co
     safe_body[sizeof(safe_body) - 1] = 0;
     sanitize_ascii(from_line);
 
+    /* 2x text fits ~120 chars in the body area; longer alerts drop to 1x so nothing is cut. */
+    int body_scale = strlen(safe_body) > 120 ? 1 : BODY_SCALE;
+
     fill_rect(0, 0, LCD_W, LCD_H, COLOR_BODY_BG);
     fill_rect(0, 0, LCD_W, 40, banner_bg);
     draw_text_centered(10, banner, LABEL_SCALE, banner_fg, banner_bg);
     draw_text(12, 48, from_line, BODY_SCALE, COLOR_INK, COLOR_BODY_BG);
-    draw_wrapped_body(12, 80, LCD_H - 88, safe_body, BODY_SCALE, COLOR_INK, COLOR_BODY_BG);
+    draw_wrapped_body(12, 80, LCD_H - 88, safe_body, body_scale, COLOR_INK, COLOR_BODY_BG);
 }
