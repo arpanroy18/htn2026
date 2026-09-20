@@ -1,5 +1,6 @@
 import { SymbolView } from 'expo-symbols';
 import { View, type ViewStyle } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 
 type IconProps = {
   size?: number;
@@ -129,35 +130,18 @@ export function GamesIcon({ size = 24, color, strokeWidth = 1.6 }: IconProps) {
   );
 }
 
-export function MicIcon({ size = 20, color, strokeWidth = 1.6 }: IconProps) {
+export function MicIcon({ size = 20, color }: IconProps) {
   return (
-    <View style={{ alignItems: 'center', height: size, width: size }}>
-      <View
-        style={{
-          borderColor: color,
-          borderRadius: size * 0.22,
-          borderWidth: strokeWidth,
-          height: size * 0.52,
-          width: size * 0.32,
-        }}
+    <Svg height={size} viewBox="0 0 16 16" width={size}>
+      <Path
+        d="M5 3C5 1.34315 6.34315 0 8 0C9.65685 0 11 1.34315 11 3V7C11 8.65685 9.65685 10 8 10C6.34315 10 5 8.65685 5 7V3Z"
+        fill={color}
       />
-      <View
-        style={{
-          borderBottomLeftRadius: size * 0.3,
-          borderBottomRightRadius: size * 0.3,
-          borderColor: color,
-          borderLeftWidth: strokeWidth,
-          borderRightWidth: strokeWidth,
-          borderBottomWidth: strokeWidth,
-          borderTopWidth: 0,
-          height: size * 0.34,
-          marginTop: -strokeWidth,
-          width: size * 0.56,
-        }}
+      <Path
+        d="M9 13.9291V16H7V13.9291C3.60771 13.4439 1 10.5265 1 7V6H3V7C3 9.76142 5.23858 12 8 12C10.7614 12 13 9.76142 13 7V6H15V7C15 10.5265 12.3923 13.4439 9 13.9291Z"
+        fill={color}
       />
-      <View style={{ backgroundColor: color, height: size * 0.16, marginTop: 2, width: strokeWidth }} />
-      <View style={{ backgroundColor: color, borderRadius: 1, height: strokeWidth, marginTop: 1, width: size * 0.3 }} />
-    </View>
+    </Svg>
   );
 }
 
