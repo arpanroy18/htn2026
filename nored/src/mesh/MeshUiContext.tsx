@@ -38,16 +38,49 @@ function peersEqual(a: Peer, b: Peer) {
     a.name === b.name &&
     a.nored === b.nored &&
     a.identityConfirmed === b.identityConfirmed &&
+    a.pendingLoss === b.pendingLoss &&
     rssiBucket(a.rssi) === rssiBucket(b.rssi) &&
     a.avatarIcon === b.avatarIcon &&
     a.avatarColor === b.avatarColor
   );
 }
 
-function comparePeers(a: Peer, b: Peer) {
-  const bucket = rssiBucket(b.rssi) - rssiBucket(a.rssi);
-  if (bucket !== 0) return bucket;
+function comparePeers(a: Peer, b: Peer, order: string[]) {
+  const left = order.indexOf(a.id);
+  const right = order.indexOf(b.id);
+  const rankA = left === -1 ? Number.MAX_SAFE_INTEGER : left;
+  const rankB = right === -1 ? Number.MAX_SAFE_INTEGER : right;
+  if (rankA !== rankB) return rankA - rankB;
   return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+}
+
+function rememberPeerOrder(order: string[], id: string, replacesId?: string) {
+  if (replacesId && replacesId !== id) {
+    const previous = order.indexOf(replacesId);
+    const existing = order.indexOf(id);
+    if (previous >= 0 && existing >= 0) {
+      order.splice(previous, 1);
+      return;
+    }
+    if (previous >= 0) {
+      order[previous] = id;
+      return;
+    }
+  }
+  if (!order.includes(id)) order.push(id);
+}
+
+function nextPeerOrder(order: string[], id: string, replacesId?: string) {
+  const next = order.slice();
+  rememberPeerOrder(next, id, replacesId);
+  if (next.length === order.length && next.every((value, index) => value === order[index])) return order;
+  return next;
+}
+
+function orderFromPeers(peers: Peer[]) {
+  const order: string[] = [];
+  for (const peer of peers) rememberPeerOrder(order, peer.id, peer.replacesId);
+  return order;
 }
 
 export function isValidRssi(rssi?: number | null): rssi is number {
@@ -94,6 +127,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string>();
   const [logs, setLogs] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [peerOrder, setPeerOrder] = useState<string[]>([]);
   const lastLogAt = useRef(0);
   const removalTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -116,6 +150,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
   const upsertPeer = useCallback((peer: Peer) => {
     cancelScheduledRemoval(peer.id);
     if (!peer.nored && !hasDisplayName(peer)) return;
+    setPeerOrder((order) => nextPeerOrder(order, peer.id, peer.replacesId));
     setPeers((current) => {
       const replaced = peer.replacesId
         ? current.find((item) => item.id === peer.replacesId)
@@ -129,7 +164,10 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       if (index === -1) return [...withoutReplaced, { ...peer, rssi, pendingLoss: false }];
       const merged = {
         ...withoutReplaced[index],
-        name: peer.name,
+        name:
+          withoutReplaced[index].identityConfirmed && !peer.identityConfirmed
+            ? withoutReplaced[index].name
+            : peer.name,
         rssi,
         lastSeen: peer.lastSeen,
         nored: withoutReplaced[index].nored || peer.nored,
@@ -173,6 +211,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
         if (next === 'poweredOff' || next === 'stopped' || next === 'unauthorized') {
           removalTimers.current.forEach((timer) => clearTimeout(timer));
           removalTimers.current.clear();
+          setPeerOrder([]);
           setPeers([]);
         }
       }),
@@ -187,7 +226,11 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
     meshTransport
       .start()
       .then(() => meshTransport.getPeers())
-      .then((items) => setPeers(items.filter((peer) => peer.nored || hasDisplayName(peer))))
+      .then((items) => {
+        const visible = items.filter((peer) => peer.nored || hasDisplayName(peer));
+        setPeerOrder(orderFromPeers(visible));
+        setPeers(visible);
+      })
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : 'Bluetooth failed to start.');
       });
@@ -222,7 +265,9 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       await meshTransport.stop();
       await meshTransport.start();
       const items = await meshTransport.getPeers();
-      setPeers(items.filter((peer) => peer.nored || hasDisplayName(peer)));
+      const visible = items.filter((peer) => peer.nored || hasDisplayName(peer));
+      setPeerOrder(orderFromPeers(visible));
+      setPeers(visible);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Rescan failed.');
     }
@@ -236,8 +281,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
           peer.identityConfirmed &&
           peer.id !== identity.id,
       )
-      .sort(comparePeers);
-  }, [identity.id, peers]);
+      .sort((a, b) => comparePeers(a, b, peerOrder));
+  }, [identity.id, peerOrder, peers]);
 
   const noredPeers = useMemo(() => {
     return visibleNoredPeers.filter((peer) => !peer.pendingLoss);
@@ -253,8 +298,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
           !noredIds.has(peer.id) &&
           !noredNames.has(peer.name.trim().toLowerCase()),
       )
-      .sort(comparePeers);
-  }, [peers, visibleNoredPeers]);
+      .sort((a, b) => comparePeers(a, b, peerOrder));
+  }, [peerOrder, peers, visibleNoredPeers]);
 
   const liveOtherPeers = useMemo(() => {
     return otherPeers.filter((peer) => !peer.pendingLoss);

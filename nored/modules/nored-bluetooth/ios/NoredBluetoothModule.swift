@@ -197,6 +197,8 @@ public final class NoredBluetoothModule: Module {
   private var sendTimeout: DispatchWorkItem?
   private var pendingIdentityWrites: Set<UUID> = []
   private var identityPushPending = false
+  private var reconnectAttempts: [UUID: Int] = [:]
+  private var reconnectWork: [UUID: DispatchWorkItem] = [:]
 
   public func definition() -> ModuleDefinition {
     Name("NoredBluetooth")
@@ -377,6 +379,9 @@ public final class NoredBluetoothModule: Module {
       beginScanningIfReady()
     }
     keepAliveTicks = 0
+    reconnectAttempts.removeAll()
+    reconnectWork.values.forEach { $0.cancel() }
+    reconnectWork.removeAll()
     staleTimer?.invalidate()
     staleTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       self?.keepDiscoveryAlive()
@@ -400,6 +405,9 @@ public final class NoredBluetoothModule: Module {
     clientLinks.removeAll()
     connectingHardware.removeAll()
     connectionManagerByHardware.removeAll()
+    reconnectAttempts.removeAll()
+    reconnectWork.values.forEach { $0.cancel() }
+    reconnectWork.removeAll()
     peripheralManager?.stopAdvertising()
     peripheralManager?.removeAllServices()
     identityCharacteristic = nil
@@ -512,16 +520,16 @@ public final class NoredBluetoothModule: Module {
     if peripheralManager?.state == .poweredOn, identityCharacteristic != nil, peripheralManager?.isAdvertising != true {
       startAdvertising()
     }
-    if keepAliveTicks.isMultiple(of: 12) {
+    let restartScanEvery = clientLinks.isEmpty ? 12 : 24
+    if keepAliveTicks.isMultiple(of: restartScanEvery) {
       beginScanningIfReady(restart: true)
     } else {
       beginScanningIfReady()
     }
-    if keepAliveTicks.isMultiple(of: 6), !sending {
-      publishIdentityUpdate()
-      writeIdentityToConnectedPeers()
+    if keepAliveTicks.isMultiple(of: 4) {
+      pollRemoteRssi()
     }
-    pollRemoteRssi()
+    touchConnectedPeers()
     adoptConnectedPeripherals()
   }
 
@@ -533,6 +541,36 @@ public final class NoredBluetoothModule: Module {
     }
   }
 
+  private func hardwareIds(matching peerId: String) -> Bool {
+    if clientLinks.contains(where: { $0.key.uuidString.lowercased() == peerId || $0.value.peerId == peerId }) {
+      return true
+    }
+    if connectingHardware.contains(where: { $0.uuidString.lowercased() == peerId }) {
+      return true
+    }
+    if let hardware = hardwareIdToPeerId.first(where: { $0.value == peerId })?.key,
+       clientLinks.keys.contains(where: { $0.uuidString.lowercased() == hardware }) {
+      return true
+    }
+    return centralByPeerId[peerId] != nil
+  }
+
+  private func touchConnectedPeers() {
+    let now = Date().timeIntervalSince1970 * 1000
+    for link in clientLinks.values {
+      let hardwareId = link.peripheral.identifier.uuidString.lowercased()
+      let id = link.peerId ?? hardwareIdToPeerId[hardwareId] ?? hardwareId
+      guard var peer = peers[id] else { continue }
+      peer.lastSeen = now
+      peers[id] = peer
+    }
+    for peerId in centralByPeerId.keys {
+      guard var peer = peers[peerId] else { continue }
+      peer.lastSeen = now
+      peers[peerId] = peer
+    }
+  }
+
   private func dropStalePeers() {
     guard started else { return }
     let cutoffNored = Date().timeIntervalSince1970 * 1000 - stalePeerMs
@@ -541,8 +579,7 @@ public final class NoredBluetoothModule: Module {
       peer.lastSeen < (peer.nored ? cutoffNored : cutoffBluetooth)
     }.map(\.key)
     for id in stale {
-      if clientLinks.values.contains(where: { $0.peerId == id }) { continue }
-      if centralByPeerId[id] != nil { continue }
+      if hardwareIds(matching: id) { continue }
       peers.removeValue(forKey: id)
       lastEmitAt.removeValue(forKey: id)
       hardwareIdToPeerId = hardwareIdToPeerId.filter { $0.value != id }
@@ -612,6 +649,9 @@ public final class NoredBluetoothModule: Module {
     let alreadyNored = existing?.nored == true
     let isNored = alreadyNored || advertisementContainsNoredService(advertisementData, central: central)
     let resolvedName: String = {
+      if let existing, existing.confirmedIdentity, !existing.name.isEmpty {
+        return existing.name
+      }
       if let advertisedName, !advertisedName.isEmpty {
         return advertisedName
       }
@@ -625,22 +665,16 @@ public final class NoredBluetoothModule: Module {
     }()
     let now = Date().timeIntervalSince1970 * 1000
     let rssi = sanitizedRssi(RSSI.intValue) ?? existing?.rssi
-    let displayName: String = {
-      if let advertisedName, !advertisedName.isEmpty {
-        return String(advertisedName.prefix(40))
-      }
-      if let existing, existing.confirmedIdentity {
-        return existing.name
-      }
-      return String(resolvedName.prefix(40))
-    }()
+    let displayName = String(resolvedName.prefix(40))
     let record = PeerRecord(
       id: peerId,
       name: displayName,
       rssi: rssi,
       lastSeen: now,
       nored: isNored,
-      confirmedIdentity: existing?.confirmedIdentity == true
+      confirmedIdentity: existing?.confirmedIdentity == true,
+      avatarIcon: existing?.avatarIcon,
+      avatarColor: existing?.avatarColor
     )
     var replacesId: String?
     if peerId != hardwareId, peers[hardwareId] != nil {
@@ -666,12 +700,14 @@ public final class NoredBluetoothModule: Module {
   public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
     connectingHardware.remove(peripheral.identifier)
     connectionManagerByHardware[peripheral.identifier] = central
+    reconnectAttempts[peripheral.identifier] = 0
+    reconnectWork.removeValue(forKey: peripheral.identifier)?.cancel()
     peripheral.delegate = peripheralClientDelegate
     var link = clientLinks[peripheral.identifier] ?? ClientLink(peripheral: peripheral)
     link.peripheral = peripheral
     clientLinks[peripheral.identifier] = link
     log("info", "[CONNECTION] connected \(peripheral.identifier.uuidString.prefix(8))")
-    restartAdvertising()
+    beginAdvertisingIfReady()
     peripheral.readRSSI()
     peripheral.discoverServices([serviceUUID])
   }
@@ -681,7 +717,7 @@ public final class NoredBluetoothModule: Module {
     connectionManagerByHardware.removeValue(forKey: peripheral.identifier)
     clientLinks.removeValue(forKey: peripheral.identifier)
     log("error", "[ERROR] connect failed \(error?.localizedDescription ?? "unknown")")
-    restartAdvertising()
+    beginAdvertisingIfReady()
     scheduleReconnect(peripheral, using: central)
   }
 
@@ -690,7 +726,7 @@ public final class NoredBluetoothModule: Module {
     connectionManagerByHardware.removeValue(forKey: peripheral.identifier)
     clientLinks.removeValue(forKey: peripheral.identifier)
     log("info", "[CONNECTION] disconnected \(peripheral.identifier.uuidString.prefix(8))")
-    restartAdvertising()
+    beginAdvertisingIfReady()
     if started {
       scheduleReconnect(peripheral, using: central)
     }
@@ -899,7 +935,7 @@ public final class NoredBluetoothModule: Module {
     if characteristic.uuid == identityUUID, let identityCharacteristic {
       _ = peripheral.updateValue(identityData(), for: identityCharacteristic, onSubscribedCentrals: [central])
     }
-    restartAdvertising()
+    beginAdvertisingIfReady()
   }
 
   public func peripheralManager(
@@ -935,6 +971,7 @@ public final class NoredBluetoothModule: Module {
     connectionManagerByHardware[hardware] = manager
     peripheral.delegate = peripheralClientDelegate
     if peripheral.state == .connected {
+      connectingHardware.remove(hardware)
       clientLinks[hardware] = ClientLink(peripheral: peripheral)
       log("info", "[CONNECTION] already connected \(hardware.uuidString.prefix(8))")
       peripheral.discoverServices([serviceUUID])
@@ -949,15 +986,27 @@ public final class NoredBluetoothModule: Module {
       }
       self.clientLinks[hardware] = ClientLink(peripheral: peripheral)
       self.connectionManagerByHardware[hardware] = manager
-      manager.connect(peripheral, options: nil)
+      if #available(iOS 17.0, *) {
+        manager.connect(peripheral, options: [CBConnectPeripheralOptionEnableAutoReconnect: true])
+      } else {
+        manager.connect(peripheral, options: nil)
+      }
     }
   }
 
   private func scheduleReconnect(_ peripheral: CBPeripheral, using manager: CBCentralManager) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+    reconnectWork.removeValue(forKey: peripheral.identifier)?.cancel()
+    let attempt = reconnectAttempts[peripheral.identifier] ?? 0
+    if attempt >= 10 { return }
+    reconnectAttempts[peripheral.identifier] = attempt + 1
+    let delay = min(8.0, 1.2 * pow(1.6, Double(min(attempt, 5))))
+    let work = DispatchWorkItem { [weak self] in
       guard let self, self.started else { return }
+      self.reconnectWork.removeValue(forKey: peripheral.identifier)
       self.connectIfNeeded(peripheral, using: manager)
     }
+    reconnectWork[peripheral.identifier] = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
   }
 
   private func cancelConnection(_ peripheral: CBPeripheral) {
@@ -1086,12 +1135,6 @@ public final class NoredBluetoothModule: Module {
             self.sending,
             self.sendQueue.first?.peerId == peerId,
             self.sendQueue.first?.index == frameIndex else { return }
-      if let peripheral = self.sendQueue.first?.writePeripheral {
-        self.cancelConnection(peripheral)
-        self.clientLinks.removeValue(forKey: peripheral.identifier)
-        self.connectingHardware.remove(peripheral.identifier)
-        self.connectionManagerByHardware.removeValue(forKey: peripheral.identifier)
-      }
       self.fallbackOrFail("Bluetooth write timed out")
     }
     sendTimeout = timeout

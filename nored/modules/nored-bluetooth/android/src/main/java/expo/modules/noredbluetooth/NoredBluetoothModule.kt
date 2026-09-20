@@ -125,8 +125,11 @@ class NoredBluetoothModule : Module() {
   private var identityPushPending = false
   private var started = false
   private var scannerRunning = false
+  private var advertiserRunning = false
   private var receiverRegistered = false
   private var keepAliveTicks = 0
+  private val reconnectAttempts = ConcurrentHashMap<String, Int>()
+  private val reconnectRunnables = ConcurrentHashMap<String, Runnable>()
 
   private val context: Context
     get() = appContext.reactContext ?: throw CodedException("ERR_NO_CONTEXT", "React context is unavailable", null)
@@ -169,6 +172,7 @@ class NoredBluetoothModule : Module() {
     OnActivityEntersForeground {
       if (started) {
         startScannerOnly()
+        advertiserRunning = false
         startAdvertiser()
         startGattServer()
       }
@@ -291,6 +295,9 @@ class NoredBluetoothModule : Module() {
     startScannerOnly()
     startAdvertiser()
     keepAliveTicks = 0
+    reconnectAttempts.clear()
+    reconnectRunnables.values.forEach(mainHandler::removeCallbacks)
+    reconnectRunnables.clear()
     mainHandler.removeCallbacks(cleanupPeers)
     mainHandler.postDelayed(cleanupPeers, 5_000L)
   }
@@ -383,6 +390,7 @@ class NoredBluetoothModule : Module() {
   @SuppressLint("MissingPermission")
   private fun startAdvertiser() {
     if (!started || !hasPermissions() || adapter?.isEnabled != true) return
+    if (advertiserRunning) return
     if (adapter?.isMultipleAdvertisementSupported != true) {
       log("warn", "[BLE] this phone cannot advertise to other devices")
       return
@@ -391,7 +399,6 @@ class NoredBluetoothModule : Module() {
       log("warn", "[BLE] advertiser unavailable")
       return
     }
-    stopAdvertiser()
     val settings = AdvertiseSettings.Builder()
       .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
       .setConnectable(true)
@@ -414,6 +421,7 @@ class NoredBluetoothModule : Module() {
 
   @SuppressLint("MissingPermission")
   private fun stopAdvertiser() {
+    advertiserRunning = false
     try {
       adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
     } catch (_: Exception) {}
@@ -421,10 +429,12 @@ class NoredBluetoothModule : Module() {
 
   private val advertiseCallback = object : AdvertiseCallback() {
     override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+      advertiserRunning = true
       log("info", "[BLE] advertiser started")
     }
 
     override fun onStartFailure(errorCode: Int) {
+      advertiserRunning = false
       log("error", "[ERROR] advertiser failed code=$errorCode")
     }
   }
@@ -510,6 +520,9 @@ class NoredBluetoothModule : Module() {
     connecting.clear()
     connectionTimeouts.values.forEach(mainHandler::removeCallbacks)
     connectionTimeouts.clear()
+    reconnectAttempts.clear()
+    reconnectRunnables.values.forEach(mainHandler::removeCallbacks)
+    reconnectRunnables.clear()
     writeQueues.clear()
     writeBusy.clear()
     serverDevices.clear()
@@ -530,10 +543,19 @@ class NoredBluetoothModule : Module() {
     override fun run() {
       if (!started) return
       val now = System.currentTimeMillis()
+      gatts.values.forEach { gatt ->
+        val id = addressToPeerId[gatt.device.address] ?: gatt.device.address
+        peers[id]?.let { it.lastSeen = now }
+      }
+      serverDevices.values.forEach { device ->
+        val id = addressToPeerId[device.address] ?: device.address
+        peers[id]?.let { it.lastSeen = now }
+      }
       peers.values.filter {
         val ttl = if (it.nored) STALE_PEER_MS else STALE_BLUETOOTH_PEER_MS
         it.lastSeen < now - ttl &&
           !gatts.containsKey(it.address) &&
+          !connecting.contains(it.address) &&
           serverDevices.values.none { device -> device.address == it.address }
       }.forEach {
         peers.remove(it.id)
@@ -544,15 +566,16 @@ class NoredBluetoothModule : Module() {
       val assemblerCutoff = System.currentTimeMillis() - 10_000L
       assemblers.entries.removeAll { it.value.startedAt < assemblerCutoff }
       keepAliveTicks += 1
-      if (keepAliveTicks % 12 == 0) {
+      if (!advertiserRunning) startAdvertiser()
+      val restartScanEvery = if (gatts.isEmpty() && serverDevices.isEmpty()) 12 else 24
+      if (keepAliveTicks % restartScanEvery == 0) {
         startScannerOnly(restart = true)
       } else {
         startScannerOnly()
       }
-      if (keepAliveTicks % 6 == 0 && !sending) {
-        publishIdentityUpdate()
+      if (keepAliveTicks % 4 == 0) {
+        pollRemoteRssi()
       }
-      pollRemoteRssi()
       mainHandler.postDelayed(this, 5_000L)
     }
   }
@@ -576,8 +599,12 @@ class NoredBluetoothModule : Module() {
     val fallbackName = existing?.name
       ?: result.device.name?.trim()?.takeIf { it.isNotEmpty() }
       ?: if (isNored) "Nored user" else "Unknown device"
-    val displayName = (advertisedName ?: fallbackName).take(40).let {
-      if (isNored && it.equals("Unknown device", ignoreCase = true)) "Nored user" else it
+    val displayName = if (existing?.confirmedIdentity == true) {
+      existing.name
+    } else {
+      (advertisedName ?: fallbackName).take(40).let {
+        if (isNored && it.equals("Unknown device", ignoreCase = true)) "Nored user" else it
+      }
     }
     val nameChanged = existing != null && displayName != existing.name
     val bucketChanged = signalBucket(sanitizeRssi(result.rssi) ?: existing?.rssi) != signalBucket(existing?.rssi)
@@ -590,6 +617,8 @@ class NoredBluetoothModule : Module() {
       lastSeen = now,
       nored = isNored,
       confirmedIdentity = existing?.confirmedIdentity == true,
+      avatarIcon = existing?.avatarIcon,
+      avatarColor = existing?.avatarColor,
     )
     if (peerId != address) {
       peers.remove(address)
@@ -652,11 +681,12 @@ class NoredBluetoothModule : Module() {
   }
 
   @SuppressLint("MissingPermission")
-  private fun connect(device: BluetoothDevice) {
+  private fun connect(device: BluetoothDevice, autoConnect: Boolean = false) {
     try {
       log("info", "[CONNECTION] connecting ${device.address}")
-      val gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+      val gatt = device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
       gatts[device.address] = gatt
+      if (autoConnect) return
       val timeout = Runnable {
         if (!connecting.remove(device.address)) return@Runnable
         connectionTimeouts.remove(device.address)
@@ -666,13 +696,35 @@ class NoredBluetoothModule : Module() {
           gatt.close()
         } catch (_: Exception) {}
         log("warn", "[CONNECTION] connect timed out ${device.address}")
+        scheduleReconnect(device)
       }
       connectionTimeouts.put(device.address, timeout)?.let(mainHandler::removeCallbacks)
       mainHandler.postDelayed(timeout, 12_000L)
     } catch (error: Exception) {
       connecting.remove(device.address)
       log("error", "[ERROR] connect failed: ${error.javaClass.simpleName}")
+      scheduleReconnect(device)
     }
+  }
+
+  private fun scheduleReconnect(device: BluetoothDevice) {
+    val address = device.address
+    reconnectRunnables.remove(address)?.let(mainHandler::removeCallbacks)
+    val attempt = reconnectAttempts[address] ?: 0
+    if (attempt >= 10) return
+    reconnectAttempts[address] = attempt + 1
+    val delay = min(8_000L, 800L * (1L shl min(attempt, 4)))
+    val retry = Runnable {
+      reconnectRunnables.remove(address)
+      if (!started) return@Runnable
+      if (gatts.containsKey(address) || connecting.contains(address)) return@Runnable
+      if (serverDevices.containsKey(address)) return@Runnable
+      if (gatts.size >= MAX_CONNECTIONS) return@Runnable
+      if (!connecting.add(address)) return@Runnable
+      connect(device, autoConnect = attempt >= 1)
+    }
+    reconnectRunnables[address] = retry
+    mainHandler.postDelayed(retry, delay)
   }
 
   private val gattCallback = object : BluetoothGattCallback() {
@@ -683,6 +735,8 @@ class NoredBluetoothModule : Module() {
       if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
         connecting.remove(address)
         gatts[address] = gatt
+        reconnectAttempts.remove(address)
+        reconnectRunnables.remove(address)?.let(mainHandler::removeCallbacks)
         log("info", "[CONNECTION] connected $address")
         startAdvertiser()
         if (!gatt.requestMtu(185)) gatt.discoverServices()
@@ -692,9 +746,11 @@ class NoredBluetoothModule : Module() {
         clientMtuByAddress.remove(address)
         writeQueues.remove(address)
         writeBusy.remove(address)
+        val device = gatt.device
         try { gatt.close() } catch (_: Exception) {}
         log("info", "[CONNECTION] disconnected $address status=$status")
         startAdvertiser()
+        if (started) scheduleReconnect(device)
       }
     }
 
@@ -851,9 +907,10 @@ class NoredBluetoothModule : Module() {
     override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
       if (newState == BluetoothProfile.STATE_CONNECTED) {
         serverDevices[device.address] = device
+        reconnectAttempts.remove(device.address)
+        reconnectRunnables.remove(device.address)?.let(mainHandler::removeCallbacks)
         log("info", "[CONNECTION] central connected ${device.address}")
         startAdvertiser()
-        mainHandler.post { connectForRssiIfNeeded(device) }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         serverDevices.remove(device.address)
         subscribedAddresses.remove(device.address)
@@ -862,6 +919,7 @@ class NoredBluetoothModule : Module() {
         serverMtuByAddress.remove(device.address)
         log("info", "[CONNECTION] central disconnected ${device.address}")
         startAdvertiser()
+        if (started) scheduleReconnect(device)
       }
     }
 
@@ -1238,28 +1296,12 @@ class NoredBluetoothModule : Module() {
     val timeout = Runnable {
       if (!sending) return@Runnable
       val job = sendQueue.peek()
-      if (job?.serverDevice != null && job.address != null) {
-        ignoredServerNotificationCallbacks += 1
-        job.serverDevice = null
+      if (job?.address != null && job.serverDevice != null) {
+        job.address = null
         sending = false
-        log("warn", "[MSG] notify timed out, retrying over write")
+        log("warn", "[MSG] write timed out, retrying over notify")
         pumpSend()
         return@Runnable
-      }
-      if (job?.address != null) {
-        val address = job.address
-        val gatt = gatts.remove(address)
-        writeQueues.remove(address)
-        writeBusy.remove(address)
-        try {
-          gatt?.disconnect()
-          gatt?.close()
-        } catch (_: Exception) {}
-      } else if (job?.serverDevice != null) {
-        ignoredServerNotificationCallbacks += 1
-        try {
-          gattServer?.cancelConnection(job.serverDevice)
-        } catch (_: Exception) {}
       }
       failCurrentSend("Bluetooth send timed out")
     }
@@ -1441,15 +1483,6 @@ class NoredBluetoothModule : Module() {
     gatts.values.forEach { gatt ->
       requestRssi(gatt)
     }
-  }
-
-  private fun connectForRssiIfNeeded(device: BluetoothDevice) {
-    val address = device.address
-    if (!started) return
-    if (gatts.containsKey(address) || connecting.contains(address)) return
-    if (gatts.size >= MAX_CONNECTIONS) return
-    if (!connecting.add(address)) return
-    connect(device)
   }
 
   private fun applyRssi(address: String, raw: Int) {
