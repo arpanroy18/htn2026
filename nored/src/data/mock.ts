@@ -10,19 +10,19 @@ export type GameCard = {
 export const mockGames: GameCard[] = [
   {
     id: 'pong',
-    name: 'Bluetooth Pong',
+    name: 'Pong',
     blurb: 'Two paddles, one ball, and nearby head-to-head play without internet.',
     players: '2 players',
   },
   {
     id: 'telephone',
-    name: 'Drawing Telephone',
+    name: 'Telephone',
     blurb: 'Start a secret phrase, then rotate every chain through drawings and guesses.',
     players: '3–8',
   },
   {
     id: 'chess',
-    name: 'Bluetooth Chess',
+    name: 'Chess',
     blurb: 'Standard chess with legal moves, checkmate, and direct turn synchronization.',
     players: '2 players',
   },

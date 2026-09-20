@@ -6,7 +6,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AlertsIcon } from '@/components/signal/icons';
 import { Chip, OutlinedButton, RowPress } from '@/components/signal/ui';
 import { useAlerts } from '@/mesh/AlertContext';
-import { ALERT_MAX_BODY, ALERT_RATE_LIMIT_MS, type Severity, severityTone } from '@/mesh/alertStore';
+import { ALERT_MAX_BODY, type Severity, severityTone } from '@/mesh/alertStore';
 import { signal } from '@/theme/signal';
 
 const severities: Severity[] = ['INFO', 'HELP', 'DANGER'];
@@ -52,9 +52,6 @@ export default function ComposeAlertScreen() {
           </View>
           <View style={styles.heroCopy}>
             <Text style={styles.heroTitle}>Emergency broadcast</Text>
-            <Text style={styles.heroBody}>
-              Reaches every reachable node, including relays. Rate-limited to one send every {ALERT_RATE_LIMIT_MS / 1000} seconds.
-            </Text>
           </View>
         </View>
 
@@ -130,6 +127,7 @@ const styles = StyleSheet.create({
   safe: { backgroundColor: signal.paper, flex: 1 },
   body: { gap: 12, padding: 24 },
   hero: {
+    alignItems: 'center',
     backgroundColor: signal.sky,
     borderRadius: 16,
     flexDirection: 'row',
@@ -144,9 +142,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 44,
   },
-  heroCopy: { flex: 1 },
+  heroCopy: {},
   heroTitle: { color: signal.ink, fontSize: 20, fontWeight: '800', lineHeight: 24 },
-  heroBody: { color: signal.slate, fontSize: 14, lineHeight: 20, marginTop: 8 },
   label: { color: signal.slate, fontSize: 11, fontWeight: '600', letterSpacing: 1.4 },
   labelRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
   row: { flexDirection: 'row', gap: 8 },
@@ -188,8 +185,10 @@ const styles = StyleSheet.create({
   toggleTitle: { color: signal.ink, fontSize: 15, fontWeight: '600' },
   toggleBody: { color: signal.slate, fontSize: 13, lineHeight: 18, marginTop: 4 },
   preview: {
-    backgroundColor: signal.mist,
+    backgroundColor: signal.white,
+    borderColor: signal.fog,
     borderRadius: 16,
+    borderWidth: 1,
     gap: 10,
     padding: 20,
   },
