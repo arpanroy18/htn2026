@@ -81,6 +81,7 @@ export type AlertSeverity = 'INFO' | 'HELP' | 'DANGER';
 
 export type AlertPacket = PacketBase & {
   type: 'alert';
+  senderName?: string;
   body: string;
   severity: AlertSeverity;
   hasLocation?: boolean;

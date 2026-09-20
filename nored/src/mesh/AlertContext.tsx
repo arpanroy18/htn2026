@@ -57,7 +57,12 @@ export function AlertProvider({ children }: { children: ReactNode }) {
     const wait = ALERT_RATE_LIMIT_MS - (Date.now() - lastBroadcastAt.current);
     if (wait > 0) return { ok: false, error: `Wait ${Math.ceil(wait / 1000)}s before broadcasting again.` };
     try {
-      await router.enqueue(makeAlertPacket({ ...input, body, senderId: router.identity.id }));
+      await router.enqueue(makeAlertPacket({
+        ...input,
+        body,
+        senderId: router.identity.id,
+        senderName: router.identity.name,
+      }));
       lastBroadcastAt.current = Date.now();
       return { ok: true };
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not save alert.' }; }
