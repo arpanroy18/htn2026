@@ -418,11 +418,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const applyGroupSync = useCallback(
-    (packet: Packet, unread: boolean) => {
+    async (packet: Packet, unread: boolean) => {
       if (!isGroupSyncPacket(packet)) return false;
       const selfId = identity.id;
       if (!packet.members.some((member) => member.id === selfId)) return false;
-      setState((current) => {
+      await setState((current) => {
         const existed = current.threads.some((thread) => thread.id === packet.groupId);
         const next = ensureGroupThread(current, {
           id: packet.groupId,
@@ -439,9 +439,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
         return next;
       });
+      // A membership update and its messages can take different mesh paths. Recover any
+      // group text that this node already carried before it knew it was a member.
+      const pending = Object.values(meshRouter.store.data.packets)
+        .map((record) => record.envelope)
+        .filter(
+          (value) =>
+            value.packet.type === 'text' &&
+            value.packet.groupId === packet.groupId &&
+            value.packet.senderId !== identity.id,
+        );
+      for (const value of pending) {
+        if ((stateRef.current.messages[packet.groupId] ?? []).some((message) => message.id === value.packet.id)) {
+          continue;
+        }
+        if (value.packet.type === 'text') {
+          await ingest(
+            { ...value.packet, path: value.path, hops: value.hopCount },
+            packet.name,
+            false,
+            undefined,
+            activeThread.current !== packet.groupId,
+          );
+        }
+      }
       return true;
     },
-    [identity.id, setState],
+    [identity.id, ingest, meshRouter, setState],
   );
 
   const flushPeer = useCallback(
@@ -490,11 +514,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     lastFlushAt.current.set(key, Date.now());
     try {
       for (const message of texts) {
+        if (meshRouter.store.data.packets[message.id]) continue;
         const packet: Packet = {
           version: 1,
           id: message.id,
           senderId: identity.id,
-          recipientId: identity.id,
+          recipientId: message.threadId,
           groupId: message.threadId,
           hops: 0,
           ttlHops: GROUP_TTL_HOPS,
@@ -502,10 +527,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           timestamp: message.timestamp,
           payload: message.body,
         };
-        const sent = await floodPacket(packet);
-        if (sent > 0) {
-          setState((current) => patchMessage(current, message.threadId, message.id, { status: 'sent' }));
-        }
+        await meshRouter.enqueue(packet);
       }
       for (const message of media) {
         try {
@@ -520,18 +542,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } finally {
       flushing.current.delete(key);
     }
-  }, [floodPacket, floodTargets, identity.id, sendStoredMedia, setState]);
+  }, [floodTargets, identity.id, meshRouter, sendStoredMedia, setState]);
 
   const handlePacket = useCallback(
     async (packet: Packet, fromPeerId: string) => {
-      if (packet.senderId === identity.id || packet.recipientId !== identity.id) return;
+      if (packet.senderId === identity.id || (!packet.groupId && packet.recipientId !== identity.id)) return;
       const path = packet.path?.length ? packet.path : [packet.senderId];
       if (path.at(-1) !== identity.id) packet = { ...packet, path: [...path, identity.id] };
       if (isGroupSyncPacket(packet)) {
         if (seenIds.current.has(packet.id)) return;
         remember(packet.id);
-        applyGroupSync(packet, activeThread.current !== packet.groupId);
-        void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
+        await applyGroupSync(packet, activeThread.current !== packet.groupId);
         return;
       }
 
@@ -548,7 +569,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ) {
           if (seenIds.current.has(packet.id)) return;
           remember(packet.id);
-          void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
+          if (packet.type !== 'text') {
+            void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
+          }
         }
         return;
       }
@@ -565,7 +588,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           } else {
             remember(packet.id);
           }
-          void floodPacket({ ...packet, hops: (packet.hops ?? 0) + 1 }, fromPeerId);
           return;
         }
         await ingest(packet, threadName, false, undefined, activeThread.current !== threadId);
@@ -812,7 +834,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [meshRouter]);
 
   const publishGroup = useCallback(
-    (groupId: string) => {
+    async (groupId: string) => {
       const thread = stateRef.current.threads.find((item) => item.id === groupId && item.kind === 'group');
       if (!thread) return;
       const packet = makeGroupSyncPacket({
@@ -824,10 +846,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           name: id === identity.id ? identity.name : (thread.memberNames[id] ?? peerName(noredPeersRef.current, id, 'Nearby peer')),
         })),
       });
-      remember(packet.id);
-      void floodPacket(packet);
+      await meshRouter.enqueue(packet);
     },
-    [floodPacket, identity.id, identity.name, remember],
+    [identity.id, identity.name, meshRouter],
   );
 
   const createGroup = useCallback(
@@ -849,12 +870,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: `Groups can have ${MAX_GROUP_MEMBERS} members.` };
       }
       const id = createId();
-      setState((current) => {
+      const saved = setState((current) => {
         const next = ensureGroupThread(current, { id, name: title, members });
         stateRef.current = next;
         return next;
       });
-      publishGroup(id);
+      void saved.then(() => publishGroup(id)).catch(() => undefined);
       return { ok: true, id };
     },
     [identity.id, identity.name, publishGroup, resolvePeerId, setState],
@@ -877,12 +898,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         resolvedPeer,
         peerName(peersRef.current, resolvedPeer, 'Nearby peer'),
       );
-      setState((current) => {
+      const saved = setState((current) => {
         const next = addGroupMember(current, thread.id, { id: resolvedPeer, name });
         stateRef.current = next;
         return next;
       });
-      publishGroup(thread.id);
+      void saved.then(() => publishGroup(thread.id)).catch(() => undefined);
       return { ok: true, id: thread.id };
     },
     [publishGroup, resolvePeerId, resolveThreadId, setState],
@@ -898,22 +919,18 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (floodAsGroup) {
         const packet = makeTextPacket({
           senderId: identity.id,
-          recipientId: identity.id,
+          recipientId: threadId,
           groupId: threadId,
           hops: 0,
           ttlHops: isAlertThreadId(threadId) ? ALERT_TTL_HOPS : GROUP_TTL_HOPS,
           body: text,
         });
-        ingest(packet, thread?.name ?? 'Alert', true, 'queued', false);
-        const sent = await floodPacket(packet);
-        if (sent > 0) {
-          setState((current) => patchMessage(current, threadId, packet.id, { status: 'sent' }));
-        }
+        await meshRouter.enqueue(packet);
         return;
       }
       await meshRouter.enqueue(makeTextPacket({ senderId: identity.id, recipientId: threadId, body: text }));
     },
-    [floodPacket, identity.id, ingest, meshRouter, resolveThreadId, setState],
+    [identity.id, meshRouter, resolveThreadId],
   );
 
   const sendPreparedMedia = useCallback(
@@ -1154,7 +1171,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        if (strategy === 'whisper-audio') {
+        if (strategy === 'whisper-audio' && options?.fileUri) {
           const whisperEnglish = await whisperTranslateAudioToEnglish(
             options.fileUri,
             sourceLocale,

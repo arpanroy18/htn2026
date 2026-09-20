@@ -32,7 +32,7 @@ const WHISPER_MODEL = require('../../assets/models/ggml-base-q5_1.bin') as numbe
 
 let context: WhisperContext | null = null;
 let initPromise: Promise<WhisperContext | null> | null = null;
-let queue = Promise.resolve<TranscriptionOutcome>({ result: null });
+let queue: Promise<unknown> = Promise.resolve();
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let lastTranscriptionError: string | undefined;
 

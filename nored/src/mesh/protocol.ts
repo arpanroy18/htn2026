@@ -1,4 +1,4 @@
-import type { Packet, TextPacket, AlertPacket } from '../transport/MeshTransport';
+import type { Packet, TextPacket, AlertPacket, GroupSyncPacket } from '../transport/MeshTransport';
 import { isPacket } from './mediaTransfer.ts';
 
 export const DAY = 86_400_000;
@@ -21,7 +21,7 @@ export type DeliveryAck = {
   version: 1; type: 'delivery-ack'; id: string; senderId: string;
   recipientId: string; timestamp: number; messageId: string; messagePath?: string[];
 };
-export type RoutedPayload = TextPacket | AlertPacket | DeliveryAck;
+export type RoutedPayload = TextPacket | AlertPacket | GroupSyncPacket | DeliveryAck;
 export type Envelope = {
   version: 1; type: 'mesh-data'; packet: RoutedPayload;
   expiresAt: number; hopCount: number; hopLimit: number; directOnly: boolean; path?: string[];
@@ -52,7 +52,8 @@ export function isWirePacket(value: unknown): value is WirePacket {
     return !!p && id(p.id) && id(p.senderId) && id(p.recipientId) && time(p.timestamp) &&
       (p.type === 'delivery-ack' ? p.version === 1 && id(p.messageId) &&
         (p.messagePath === undefined || path(p.messagePath)) :
-        (p.type === 'text' || p.type === 'alert') && p.id.length <= 128 && isPacket(p) &&
+        (p.type === 'text' || p.type === 'alert' || p.type === 'group-sync') &&
+        p.id.length <= 128 && isPacket(p) &&
         (p.type !== 'alert' || p.body.length <= ALERT_MAX_BODY)) &&
       time(v.expiresAt) && v.expiresAt > p.timestamp &&
       v.expiresAt - p.timestamp <= DAY &&
@@ -76,11 +77,15 @@ export function isWirePacket(value: unknown): value is WirePacket {
 }
 
 export function envelope(packet: RoutedPayload, directOnly = false): Envelope {
+  const groupId = 'groupId' in packet ? packet.groupId : undefined;
+  const hops = 'hops' in packet ? packet.hops : undefined;
+  const ttlHops = 'ttlHops' in packet ? packet.ttlHops : undefined;
   return { version: 1, type: 'mesh-data', packet, directOnly,
-    path: [packet.senderId],
+    path: 'path' in packet && packet.path?.length ? [...packet.path] : [packet.senderId],
     expiresAt: packet.timestamp + (packet.type === 'alert' ? ALERT_TTL_MS : DAY),
-    hopCount: packet.type === 'alert' ? Math.max(0, packet.hops ?? 0) : 0,
-    hopLimit: packet.type === 'text' ? TEXT_TTL_HOPS
+    hopCount: packet.type === 'alert' || groupId ? Math.max(0, hops ?? 0) : 0,
+    hopLimit: groupId ? Math.min(MAX_HOP_LIMIT, Math.max(1, ttlHops ?? TEXT_TTL_HOPS))
+      : packet.type === 'text' ? TEXT_TTL_HOPS
       : packet.type === 'alert' ? Math.min(ALERT_TTL_HOPS, Math.max(1, packet.ttlHops ?? ALERT_TTL_HOPS))
       : MAX_HOP_LIMIT };
 }
@@ -91,7 +96,7 @@ export function priority(packet: WirePacket): number {
   if (packet.type.startsWith('mesh-') && packet.type !== 'mesh-data') return 0;
   const p = packet.type === 'mesh-data' ? packet.packet : packet;
   if (p.type === 'alert') return 1;
-  if (p.type === 'text' || p.type === 'delivery-ack') return 2;
+  if (p.type === 'text' || p.type === 'group-sync' || p.type === 'delivery-ack') return 2;
   if (p.type === 'media-ack' || p.type === 'media-retry') return 0;
   return p.type === 'media-manifest' && p.mediaKind === 'audio' ? 4 : 5;
 }

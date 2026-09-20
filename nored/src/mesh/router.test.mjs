@@ -446,6 +446,57 @@ test('group packets can pass through an immediate relay without changing the ori
   assert.equal(received.length, 1);
   assert.equal(received[0].packet.senderId, n.nodes[0].id);
   assert.equal(received[0].peerId, n.nodes[1].id);
+  assert.deepEqual(n.nodes[2].store.data.chat.messages, {}, 'group text never creates a phantom direct-message thread');
+});
+
+test('group membership and text use durable store-and-forward across a restarted relay', async () => {
+  const n = await network(3);
+  const groupId = 'group-1';
+  const received = [];
+  n.nodes[2].router.onApplicationPacket((packet, peerId) => received.push({ packet, peerId }));
+
+  await n.connect(0, 1);
+  await n.nodes[0].router.enqueue({
+    version: 1,
+    id: 'group-sync-1',
+    senderId: n.nodes[0].id,
+    recipientId: groupId,
+    groupId,
+    hops: 0,
+    ttlHops: 5,
+    type: 'group-sync',
+    timestamp: 1_000_000,
+    name: 'Field team',
+    members: [
+      { id: n.nodes[0].id, name: 'Phone 0' },
+      { id: n.nodes[2].id, name: 'Phone 2' },
+    ],
+  });
+  await n.nodes[0].router.enqueue({
+    ...n.text(0, 0, 'group-text-1'),
+    recipientId: groupId,
+    groupId,
+    hops: 0,
+    ttlHops: 5,
+    timestamp: 1_000_001,
+  });
+  await n.settle();
+  assert.ok(n.nodes[1].store.data.packets['group-sync-1']);
+  assert.ok(n.nodes[1].store.data.packets['group-text-1']);
+
+  n.disconnect(0, 1);
+  await n.restart(1);
+  await n.connect(1, 2);
+
+  assert.deepEqual(received.map(({ packet }) => packet.type), ['group-sync', 'text']);
+  assert.equal(received[1].packet.senderId, n.nodes[0].id);
+  assert.deepEqual(received[1].packet.path, [n.nodes[0].id, n.nodes[1].id, n.nodes[2].id]);
+  assert.equal(received[1].peerId, n.nodes[1].id);
+  assert.deepEqual(n.nodes[2].store.data.chat.messages, {}, 'group UI is populated only after membership checks');
+
+  await n.connect(0, 2);
+  assert.deepEqual(received.map(({ packet }) => packet.type), ['group-sync', 'text'], 'alternate paths are deduplicated');
+  assert.deepEqual(n.errors, []);
 });
 
 

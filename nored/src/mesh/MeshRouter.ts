@@ -1,4 +1,4 @@
-import type { MeshTransport, Packet, Peer, Subscription, TextPacket, AlertPacket } from '../transport/MeshTransport';
+import type { MeshTransport, Packet, Peer, Subscription, TextPacket, AlertPacket, GroupSyncPacket } from '../transport/MeshTransport';
 import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
@@ -250,7 +250,7 @@ export class MeshRouter {
       d.alerts = appendAlert(d.alerts, alertFromPacket({ ...p, hops: value.hopCount }, this.name(p.senderId), mine));
     }
   }
-  async enqueue(packet: TextPacket | AlertPacket) {
+  async enqueue(packet: TextPacket | AlertPacket | GroupSyncPacket) {
     if (packet.senderId !== this.identity.id) throw new Error('Invalid origin.');
     const value = envelope(packet);
     if (!isWirePacket(value)) throw new Error('Message is too large or invalid.');
@@ -271,7 +271,9 @@ export class MeshRouter {
     if (!record || record.state === 'delivered') return;
     record.state = state;
     const p = record.envelope.packet;
-    if (p.senderId === this.identity.id && p.type === 'text') d.chat = patchMessage(d.chat, p.recipientId, id, { status: state });
+    if (p.senderId === this.identity.id && p.type === 'text') {
+      d.chat = patchMessage(d.chat, p.groupId ?? p.recipientId, id, { status: state });
+    }
   }
   async receive(peer: string, wire: unknown) {
     if (!isWirePacket(wire)) { this.log('[ROUTER] rejected malformed packet'); return; }
@@ -334,8 +336,9 @@ export class MeshRouter {
       // hop may hand us (a badge relays raw frames, so its copy is addressed to the badge).
       if (wire.type !== 'alert' && wire.recipientId !== this.identity.id) return;
       if (wire.type !== 'alert' && !wire.groupId && wire.senderId !== peer) return;
-      if (wire.type === 'text' && wire.groupId) {
-        for (const listener of this.mediaListeners) listener(wire, peer);
+      if ((wire.type === 'text' || wire.type === 'group-sync') && wire.groupId) {
+        const value = envelope(wire);
+        if (isWirePacket(value)) await this.accept(peer, value, false, generation);
       } else if (wire.type === 'text' || wire.type === 'alert') {
         const value = envelope(wire, wire.type === 'text');
         if (isWirePacket(value)) await this.accept(peer, value, false, generation);
@@ -354,6 +357,7 @@ export class MeshRouter {
     const p = value.packet;
     if (value.expiresAt <= this.now() || p.timestamp > this.now() + 300_000) { this.log(`[EXPIRY] rejected ${p.id}`); return; }
     let accepted = false;
+    let applicationPacket: Packet | undefined;
     await this.store.transaction((d) => {
       if (generation !== this.generation) return;
       accepted = true;
@@ -371,7 +375,11 @@ export class MeshRouter {
       }
       this.record(d, value, peer);
       if (p.senderId === this.identity.id) return;
-      if (p.type === 'alert' || p.recipientId === this.identity.id) {
+      if ((p.type === 'text' || p.type === 'group-sync') && p.groupId) {
+        applicationPacket = { ...p, path: value.path, hops: value.hopCount };
+      }
+      const groupId = (p.type === 'text' || p.type === 'group-sync') ? p.groupId : undefined;
+      if (p.type === 'alert' || (!groupId && p.recipientId === this.identity.id)) {
         this.display(d, value, false);
         if (p.type === 'text' && receipt) {
           this.ensureAck(d, p, value.path);
@@ -387,6 +395,9 @@ export class MeshRouter {
       }
     });
     if (!accepted || generation !== this.generation) return;
+    if (applicationPacket) {
+      for (const listener of this.mediaListeners) listener(applicationPacket, peer);
+    }
     // Start the onward flood before the receipt round-trip; the scheduler still sends the
     // (rank 0) receipt first, so this only removes latency, never reorders the wire.
     this.changed();
@@ -423,8 +434,9 @@ export class MeshRouter {
     const candidates = Object.values(this.store.data.packets).sort((a, b) => priority(a.envelope) - priority(b.envelope) || a.envelope.packet.timestamp - b.envelope.packet.timestamp);
     for (const record of candidates) {
       const value = record.envelope, p = value.packet;
+      const groupId = 'groupId' in p ? p.groupId : undefined;
       if (value.expiresAt <= this.now() || value.hopCount >= value.hopLimit || record.state === 'delivered') continue;
-      if (p.type !== 'alert' && p.recipientId === this.identity.id) continue;
+      if (p.type !== 'alert' && !groupId && p.recipientId === this.identity.id) continue;
       const peers = [...this.sessions.entries()].sort(([a], [b]) => Number(b === p.recipientId) - Number(a === p.recipientId));
       for (const [peer, session] of peers) {
         if (record.receipts.includes(peer) || peer === p.senderId) continue;
@@ -439,7 +451,7 @@ export class MeshRouter {
         // lost. Historical alerts and other traffic wait for the inventory, but not forever.
         const synced = session.inventoryComplete || this.now() - session.started >= 5000;
         if (!legacy && !live && !synced) continue;
-        if (legacy && (p.type === 'delivery-ack' || (p.type !== 'alert' && peer !== p.recipientId))) continue;
+        if (legacy && (p.type === 'delivery-ack' || (p.type !== 'alert' && !groupId && peer !== p.recipientId))) continue;
         const key = `${peer}|${p.id}`, attempt = this.pending.get(key);
         if (this.busy.has(key) || (attempt && this.now() - attempt.at < Math.min(30_000, 3000 * 2 ** Math.min(attempt.attempts - 1, 4)))) continue;
         this.busy.add(key);
@@ -451,12 +463,16 @@ export class MeshRouter {
   }
   private async forward(peer: string, value: Envelope, legacy: boolean, key: string) {
     const generation = this.generation, p = value.packet;
+    const groupId = 'groupId' in p ? p.groupId : undefined;
     try {
       await this.store.transaction((d) => { if (generation === this.generation) this.status(d, p.id, 'sending'); });
       if (generation !== this.generation) return;
       const copy: Envelope = { ...value, hopCount: value.hopCount + 1 };
       const wire: WirePacket = legacy && p.type !== 'delivery-ack'
-        ? p.type === 'alert' ? { ...p, recipientId: peer, hops: copy.hopCount } : p : copy;
+        ? p.type === 'alert' || groupId
+          ? { ...p, recipientId: peer, hops: copy.hopCount, path: copy.path }
+          : p
+        : copy;
       await this.send(peer, wire);
       await this.store.transaction((d) => {
         if (generation !== this.generation) return;

@@ -4,7 +4,7 @@
 
 Open a confirmed nearby person's chat and choose **Add contact for remote messaging**. Saved contacts appear above threads in Chats. After that person leaves, text can be handed to other Nored phones and delivered later. Receiving a text does not require saving its author.
 
-Unregistered nearby people can still exchange direct messages. Their pending messages never travel through intermediaries. Photos and voice notes remain direct-only and wait for the destination to return. Groups remain placeholders.
+Unregistered nearby people can still exchange direct messages. Group membership and text use the durable flood mesh, including relay persistence and duplicate suppression. Photos and voice notes remain direct-only and wait for a live connection.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ Unregistered nearby people can still exchange direct messages. Their pending mes
 
 The native Swift/Kotlin transport is unchanged. The TypeScript transport accepts application packets, routing envelopes, and bounded control messages. The router owns encounter synchronization, receipt retries, duplicate suppression, expiry, forwarding, and destination acknowledgements. All application sends, including existing media packets, share one priority scheduler.
 
-Application payloads, original IDs, authors and timestamps remain unchanged in routing envelopes. Each outgoing copy increments its hop count. Text uses five hops / 24 hours; alerts ten hops / six hours; destination ACKs ten hops / 24 hours. ACKs are themselves carried packets and do not create ACK loops. Native write completion is distinct from durable peer receipt and final delivery.
+Application payloads, original IDs, authors and timestamps remain unchanged in routing envelopes. Each outgoing copy increments its hop count. Direct and group text use five hops / 24 hours; group membership updates use five hops / 24 hours; alerts use ten hops / six hours; destination ACKs use ten hops / 24 hours. ACKs are themselves carried packets and do not create ACK loops. Native write completion is distinct from durable peer receipt and final delivery.
 
 `Queued → Sending → Carrying → Delivered`; expired pending text becomes `Expired`. A transient failure returns to Queued/Carrying. A legacy direct peer produces `Sent`, never `Delivered`.
 
