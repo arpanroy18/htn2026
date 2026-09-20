@@ -16,6 +16,7 @@ import { GearIcon, RefreshIcon, SignalBars } from '@/components/signal/icons';
 import { Avatar, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
 import { hopLabel, isValidRssi, signalLabel, useMeshUi } from '@/mesh/MeshUiContext';
+import { isBadgePeer } from '@/mesh/badgePeer';
 import { signal } from '@/theme/signal';
 import type { Peer } from '@/transport';
 
@@ -81,19 +82,19 @@ export default function NearbyScreen() {
   const shortId = identity.id.slice(0, 8);
   const dirty = draftName.trim().length > 0 && draftName.trim() !== identity.name;
   const badgePeers = useMemo(
-    () => visibleNoredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
+    () => visibleNoredPeers.filter((peer) => isBadgePeer(peer.name)),
     [visibleNoredPeers],
   );
   const userPeers = useMemo(
-    () => visibleNoredPeers.filter((peer) => !peer.name.trim().toLowerCase().startsWith('nored badge')),
+    () => visibleNoredPeers.filter((peer) => !isBadgePeer(peer.name)),
     [visibleNoredPeers],
   );
   const liveUserPeers = useMemo(
-    () => noredPeers.filter((peer) => !peer.name.trim().toLowerCase().startsWith('nored badge')),
+    () => noredPeers.filter((peer) => !isBadgePeer(peer.name)),
     [noredPeers],
   );
   const liveBadgePeers = useMemo(
-    () => noredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
+    () => noredPeers.filter((peer) => isBadgePeer(peer.name)),
     [noredPeers],
   );
 

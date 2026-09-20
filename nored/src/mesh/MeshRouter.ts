@@ -3,6 +3,7 @@ import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
 import { alertFromPacket, appendAlert } from './alertStore.ts';
+import { isBadgePeer } from './badgePeer.ts';
 import { SESSION_GRACE_MS } from './peerGrace.ts';
 import { ALERT_LIVE_MS, canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
 import type { Control, ControlFields, Envelope, WirePacket } from './protocol';
@@ -182,8 +183,7 @@ export class MeshRouter {
     return { version: 1, senderId: this.identity.id, recipientId: peer, ...fields } as Control;
   }
   private badgePeer(session: Session) {
-    const name = session.peer.name.trim().toLowerCase();
-    return name.startsWith('nored badge') || name.startsWith('nored-badge');
+    return isBadgePeer(session.peer.name);
   }
   private liveAlert(packet: { type: string; timestamp: number }) {
     return packet.type === 'alert' && this.now() - packet.timestamp < ALERT_LIVE_MS;

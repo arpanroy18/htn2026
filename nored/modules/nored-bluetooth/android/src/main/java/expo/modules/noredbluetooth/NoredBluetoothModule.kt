@@ -654,6 +654,11 @@ class NoredBluetoothModule : Module() {
     return 200L + (hex % 10) * 120L
   }
 
+  private fun isBadgeAdvertisedName(name: String?): Boolean {
+    val normalized = name?.trim()?.lowercase() ?: return false
+    return normalized.startsWith("nored badge") || normalized.startsWith("nored-badge")
+  }
+
   private fun handleScanResult(result: ScanResult, forceNored: Boolean) {
     if (!started) return
     val address = result.device.address
@@ -663,7 +668,7 @@ class NoredBluetoothModule : Module() {
     val existing = peers[peerId] ?: peers[address]
     val alreadyNored = existing?.nored == true
     val advertisedService = result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
-    val isNored = alreadyNored || forceNored || advertisedService
+    val isNored = alreadyNored || forceNored || advertisedService || isBadgeAdvertisedName(advertisedName)
     val fallbackName = existing?.name
       ?: result.device.name?.trim()?.takeIf { it.isNotEmpty() }
       ?: if (isNored) "Nored user" else "Unknown device"
@@ -1351,17 +1356,17 @@ class NoredBluetoothModule : Module() {
   }
 
   // A BLE link can come up while the initial identity exchange is dropped, leaving a peer
-  // connected but never `confirmedIdentity` — the UI hides those. Re-push our identity only
-  // to connected-but-unconfirmed peers on a slow cadence so the exchange eventually lands
-  // without re-flooding already confirmed links.
+  // connected but never `confirmedIdentity` — the UI hides those. Re-read their identity
+  // and re-push ours on a slow cadence so the exchange eventually lands.
   @SuppressLint("MissingPermission")
   private fun refreshUnconfirmedIdentities() {
     // Rebuilding identityNotifyQueue under an in-flight notify would desync the head that
     // serverNotificationSent polls off.
     if (!started || sending || identityNotifyInFlight) return
-    gatts.keys.forEach { address ->
+    gatts.forEach { (address, gatt) ->
       val id = addressToPeerId[address] ?: address
       if (peers[id]?.confirmedIdentity == true) return@forEach
+      gatt.getService(SERVICE_UUID)?.getCharacteristic(IDENTITY_UUID)?.let { readIdentity(gatt, it) }
       enqueueWrite(address, identityJson(), packet = false)
     }
     val unconfirmedSubscribers = identitySubscribedAddresses.filter { address ->

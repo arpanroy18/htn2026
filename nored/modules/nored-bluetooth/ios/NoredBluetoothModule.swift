@@ -627,15 +627,24 @@ public final class NoredBluetoothModule: Module {
     }
   }
 
+  private func isBadgeAdvertisedName(_ rawName: String?) -> Bool {
+    guard let rawName else { return false }
+    let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return name.hasPrefix("nored badge") || name.hasPrefix("nored-badge")
+  }
+
   // A BLE link can come up while the initial identity exchange is dropped, leaving a peer
-  // connected but never `confirmedIdentity` — the UI hides those. Re-push our identity to
-  // any connected-but-unconfirmed peer on a slow cadence so the exchange eventually lands.
+  // connected but never `confirmedIdentity` — the UI hides those. Re-read their identity
+  // and re-push ours on a slow cadence so the exchange eventually lands.
   private func refreshUnconfirmedIdentities() {
     guard started, !sending else { return }
     for link in clientLinks.values {
       let hardwareId = link.peripheral.identifier.uuidString.lowercased()
       let id = link.peerId ?? hardwareIdToPeerId[hardwareId] ?? hardwareId
       if peers[id]?.confirmedIdentity == true { continue }
+      if link.peripheral.state == .connected, let identity = link.identity {
+        link.peripheral.readValue(for: identity)
+      }
       writeLocalIdentity(to: link.peripheral)
     }
     let centralNeedsIdentity = centralByPeerId.contains { peers[$0.key]?.confirmedIdentity != true }
@@ -720,7 +729,9 @@ public final class NoredBluetoothModule: Module {
     let peerId = hardwareIdToPeerId[hardwareId] ?? hardwareId
     let existing = peers[peerId] ?? peers[hardwareId]
     let alreadyNored = existing?.nored == true
-    let isNored = alreadyNored || advertisementContainsNoredService(advertisementData, central: central)
+    let isNored = alreadyNored
+      || advertisementContainsNoredService(advertisementData, central: central)
+      || isBadgeAdvertisedName(advertisedName)
     let resolvedName: String = {
       if let existing, existing.confirmedIdentity, !existing.name.isEmpty {
         return existing.name

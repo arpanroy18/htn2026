@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { PEER_GRACE_MS } from '@/mesh/peerGrace';
+import { isBadgePeer } from '@/mesh/badgePeer';
 import { meshTransport, type DeviceIdentity, type Peer, type TransportState } from '@/transport';
 
 function hasDisplayName(peer: Peer) {
@@ -149,7 +150,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
 
   const upsertPeer = useCallback((peer: Peer) => {
     cancelScheduledRemoval(peer.id);
-    if (!peer.nored && !hasDisplayName(peer)) return;
+    const peerNored = peer.nored || isBadgePeer(peer.name);
+    if (!peerNored && !hasDisplayName(peer)) return;
     setPeerOrder((order) => nextPeerOrder(order, peer.id, peer.replacesId));
     setPeers((current) => {
       const replaced = peer.replacesId
@@ -161,7 +163,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       const index = withoutReplaced.findIndex((item) => item.id === peer.id);
       const previousRssi = index === -1 ? replaced?.rssi : withoutReplaced[index].rssi;
       const rssi = stabilizeRssi(peer.rssi, previousRssi);
-      if (index === -1) return [...withoutReplaced, { ...peer, rssi, pendingLoss: false }];
+      if (index === -1) return [...withoutReplaced, { ...peer, nored: peerNored, rssi, pendingLoss: false }];
       const merged = {
         ...withoutReplaced[index],
         name:
@@ -170,7 +172,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
             : peer.name,
         rssi,
         lastSeen: peer.lastSeen,
-        nored: withoutReplaced[index].nored || peer.nored,
+        nored: withoutReplaced[index].nored || peer.nored || isBadgePeer(peer.name),
         identityConfirmed:
           withoutReplaced[index].identityConfirmed || peer.identityConfirmed,
         avatarIcon: peer.avatarIcon ?? withoutReplaced[index].avatarIcon,
@@ -194,7 +196,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
           if (index === -1) return current;
           const peer = current[index];
           const canGrace =
-            (peer.nored && peer.identityConfirmed) || (!peer.nored && hasDisplayName(peer));
+            (peer.nored && (peer.identityConfirmed || isBadgePeer(peer.name))) ||
+            (!peer.nored && hasDisplayName(peer));
           if (!canGrace) {
             cancelScheduledRemoval(peerId);
             return current.filter((item) => item.id !== peerId);
@@ -227,7 +230,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       .start()
       .then(() => meshTransport.getPeers())
       .then((items) => {
-        const visible = items.filter((peer) => peer.nored || hasDisplayName(peer));
+        const visible = items.filter((peer) => peer.nored || isBadgePeer(peer.name) || hasDisplayName(peer));
         setPeerOrder(orderFromPeers(visible));
         setPeers(visible);
       })
@@ -277,8 +280,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
     return peers
       .filter(
         (peer) =>
-          peer.nored &&
-          peer.identityConfirmed &&
+          (peer.nored || isBadgePeer(peer.name)) &&
+          (peer.identityConfirmed || isBadgePeer(peer.name)) &&
           peer.id !== identity.id,
       )
       .sort((a, b) => comparePeers(a, b, peerOrder));
@@ -295,6 +298,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       .filter(
         (peer) =>
           !peer.nored &&
+          !isBadgePeer(peer.name) &&
           !noredIds.has(peer.id) &&
           !noredNames.has(peer.name.trim().toLowerCase()),
       )
