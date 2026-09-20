@@ -286,6 +286,31 @@ static void show_home(void)
     nored_display_idle();
 }
 
+static void page_history_with_a(void)
+{
+    if (!history_mutex ||
+        xSemaphoreTake(history_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return;
+    }
+
+    if (!history_view_active) {
+        xSemaphoreGive(history_mutex);
+        show_history_page(0, true);
+        return;
+    }
+
+    size_t page_count = history_page_count();
+    int delta = 0;
+    if (history_page + 1 < page_count) {
+        delta = 1;
+    } else if (history_page > 0) {
+        delta = -1;
+    }
+    xSemaphoreGive(history_mutex);
+
+    if (delta != 0) show_history_page(delta, false);
+}
+
 static void button_task(void *param)
 {
     (void)param;
@@ -301,7 +326,7 @@ static void button_task(void *param)
             } else if (press.left || press.up) {
                 show_history_page(-1, false);
             } else if (press.a) {
-                show_history_page(1, false);
+                page_history_with_a();
             }
         }
         vTaskDelay(pdMS_TO_TICKS(25));
@@ -584,6 +609,14 @@ static void send_to_all_links(const char *json)
     }
 }
 
+static bool has_relay_phone(void)
+{
+    for (int i = 0; i < MAX_CONNS; i++) {
+        if (links[i].used && links[i].tx_notify && links[i].id[0]) return true;
+    }
+    return false;
+}
+
 static bool json_int64_field(const char *json, const char *key, int64_t *out)
 {
     char pattern[24];
@@ -695,7 +728,7 @@ static void flush_pending_alert(void)
     }
 }
 
-static bool portal_broadcast(const char *severity, const char *body,
+static bool portal_broadcast(const char *severity, const char *body, int64_t client_ms,
                              char *err, size_t err_len)
 {
     char trimmed[MAX_ALERT_BODY + 1];
@@ -710,6 +743,8 @@ static bool portal_broadcast(const char *severity, const char *body,
         return false;
     }
 
+    if (client_ms >= 1700000000000LL) note_unix_ms(client_ms);
+
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     if (last_origin_ms && now - last_origin_ms < ALERT_RATE_LIMIT_MS) {
         snprintf(err, err_len, "Wait a few seconds and try again.");
@@ -722,7 +757,11 @@ static bool portal_broadcast(const char *severity, const char *body,
     pending_alert = true;
 
     if (now_unix_ms() == 0) {
-        snprintf(err, err_len, "Queued until a Nored phone is in range.");
+        if (!has_relay_phone()) {
+            snprintf(err, err_len, "Queued until a Nored phone is in range.");
+            return true;
+        }
+        snprintf(err, err_len, "Queued — sending shortly.");
         return true;
     }
     if (!origin_alert_now(severity, trimmed)) {
