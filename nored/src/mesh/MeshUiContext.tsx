@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
+import { PEER_GRACE_MS } from '@/mesh/peerGrace';
 import { meshTransport, type DeviceIdentity, type Peer, type TransportState } from '@/transport';
 
 function hasDisplayName(peer: Peer) {
@@ -71,8 +72,12 @@ type MeshUi = {
   saveName: () => Promise<void>;
   saving: boolean;
   peers: Peer[];
+  /** Confirmed Nored peers in range — use for counts, messaging, and in-range checks. */
   noredPeers: Peer[];
+  /** Confirmed Nored peers for Nearby list, including briefly reconnecting ones. */
+  visibleNoredPeers: Peer[];
   otherPeers: Peer[];
+  livePeerCount: number;
   state: TransportState;
   error?: string;
   logs: string[];
@@ -90,8 +95,26 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
   const [logs, setLogs] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const lastLogAt = useRef(0);
+  const removalTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const cancelScheduledRemoval = useCallback((peerId: string) => {
+    const timer = removalTimers.current.get(peerId);
+    if (!timer) return;
+    clearTimeout(timer);
+    removalTimers.current.delete(peerId);
+  }, []);
+
+  const scheduleRemoval = useCallback((peerId: string) => {
+    if (removalTimers.current.has(peerId)) return;
+    const timer = setTimeout(() => {
+      removalTimers.current.delete(peerId);
+      setPeers((current) => current.filter((peer) => peer.id !== peerId));
+    }, PEER_GRACE_MS);
+    removalTimers.current.set(peerId, timer);
+  }, []);
 
   const upsertPeer = useCallback((peer: Peer) => {
+    cancelScheduledRemoval(peer.id);
     if (!peer.nored && !hasDisplayName(peer)) return;
     setPeers((current) => {
       const replaced = peer.replacesId
@@ -103,7 +126,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       const index = withoutReplaced.findIndex((item) => item.id === peer.id);
       const previousRssi = index === -1 ? replaced?.rssi : withoutReplaced[index].rssi;
       const rssi = stabilizeRssi(peer.rssi, previousRssi);
-      if (index === -1) return [...withoutReplaced, { ...peer, rssi }];
+      if (index === -1) return [...withoutReplaced, { ...peer, rssi, pendingLoss: false }];
       const merged = {
         ...withoutReplaced[index],
         name: peer.name,
@@ -115,23 +138,43 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
         avatarIcon: peer.avatarIcon ?? withoutReplaced[index].avatarIcon,
         avatarColor: peer.avatarColor ?? withoutReplaced[index].avatarColor,
         replacesId: peer.replacesId ?? withoutReplaced[index].replacesId,
+        pendingLoss: false,
       };
       if (withoutReplaced === current && peersEqual(withoutReplaced[index], merged)) return current;
       const next = withoutReplaced.slice();
       next[index] = merged;
       return next;
     });
-  }, []);
+  }, [cancelScheduledRemoval]);
 
   useEffect(() => {
     const subscriptions = [
       meshTransport.onPeerDiscovered(upsertPeer),
-      meshTransport.onPeerLost((peerId) =>
-        setPeers((current) => current.filter((peer) => peer.id !== peerId)),
-      ),
+      meshTransport.onPeerLost((peerId) => {
+        setPeers((current) => {
+          const index = current.findIndex((peer) => peer.id === peerId);
+          if (index === -1) return current;
+          const peer = current[index];
+          const canGrace =
+            (peer.nored && peer.identityConfirmed) || (!peer.nored && hasDisplayName(peer));
+          if (!canGrace) {
+            cancelScheduledRemoval(peerId);
+            return current.filter((item) => item.id !== peerId);
+          }
+          if (peer.pendingLoss) return current;
+          scheduleRemoval(peerId);
+          const next = current.slice();
+          next[index] = { ...peer, pendingLoss: true };
+          return next;
+        });
+      }),
       meshTransport.onStateChanged((next) => {
         setState(next);
-        if (next === 'poweredOff' || next === 'stopped' || next === 'unauthorized') setPeers([]);
+        if (next === 'poweredOff' || next === 'stopped' || next === 'unauthorized') {
+          removalTimers.current.forEach((timer) => clearTimeout(timer));
+          removalTimers.current.clear();
+          setPeers([]);
+        }
       }),
       meshTransport.onLog((message) => {
         const now = Date.now();
@@ -151,9 +194,11 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
 
     return () => {
       subscriptions.forEach((subscription) => subscription.remove());
+      removalTimers.current.forEach((timer) => clearTimeout(timer));
+      removalTimers.current.clear();
       void meshTransport.stop();
     };
-  }, [upsertPeer]);
+  }, [cancelScheduledRemoval, scheduleRemoval, upsertPeer]);
 
   const saveName = useCallback(async () => {
     setSaving(true);
@@ -171,6 +216,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
 
   const rescan = useCallback(async () => {
     setError(undefined);
+    removalTimers.current.forEach((timer) => clearTimeout(timer));
+    removalTimers.current.clear();
     try {
       await meshTransport.stop();
       await meshTransport.start();
@@ -181,7 +228,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const noredPeers = useMemo(() => {
+  const visibleNoredPeers = useMemo(() => {
     return peers
       .filter(
         (peer) =>
@@ -192,9 +239,13 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       .sort(comparePeers);
   }, [identity.id, peers]);
 
+  const noredPeers = useMemo(() => {
+    return visibleNoredPeers.filter((peer) => !peer.pendingLoss);
+  }, [visibleNoredPeers]);
+
   const otherPeers = useMemo(() => {
-    const noredNames = new Set(noredPeers.map((peer) => peer.name.trim().toLowerCase()));
-    const noredIds = new Set(noredPeers.map((peer) => peer.id));
+    const noredNames = new Set(visibleNoredPeers.map((peer) => peer.name.trim().toLowerCase()));
+    const noredIds = new Set(visibleNoredPeers.map((peer) => peer.id));
     return peers
       .filter(
         (peer) =>
@@ -203,7 +254,11 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
           !noredNames.has(peer.name.trim().toLowerCase()),
       )
       .sort(comparePeers);
-  }, [peers, noredPeers]);
+  }, [peers, visibleNoredPeers]);
+
+  const liveOtherPeers = useMemo(() => {
+    return otherPeers.filter((peer) => !peer.pendingLoss);
+  }, [otherPeers]);
 
   const value = useMemo(
     () => ({
@@ -214,7 +269,9 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       saving,
       peers,
       noredPeers,
+      visibleNoredPeers,
       otherPeers,
+      livePeerCount: noredPeers.length + liveOtherPeers.length,
       state,
       error,
       logs,
@@ -227,7 +284,9 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       saving,
       peers,
       noredPeers,
+      visibleNoredPeers,
       otherPeers,
+      liveOtherPeers.length,
       state,
       error,
       logs,

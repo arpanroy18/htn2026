@@ -3,6 +3,7 @@ import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
 import { alertFromPacket, appendAlert } from './alertStore.ts';
+import { PEER_GRACE_MS } from './peerGrace.ts';
 import { canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
 import type { Control, ControlFields, Envelope, WirePacket } from './protocol';
 import { SendScheduler } from './scheduler.ts';
@@ -24,6 +25,7 @@ export class MeshRouter {
   private inventoryCounter = 0;
   private inventoryBusy = new Set<string>();
   private cleanupAt = 0;
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private running = false;
   listening = true;
   activeThread: string | null = null;
@@ -39,7 +41,18 @@ export class MeshRouter {
   setActiveThread(value: string | null) { this.activeThread = value; }
   get epoch() { return this.generation; }
   get identity() { return this.transport.getIdentity(); }
+  hasSession(peerId: string) { return this.sessions.has(peerId); }
   name(id: string) { return this.store.data.contacts[id]?.name ?? this.sessions.get(id)?.peer.name ?? `Peer ${id.slice(0, 8)}`; }
+  private cancelDisconnect(peerId: string) {
+    const timer = this.disconnectTimers.get(peerId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.disconnectTimers.delete(peerId);
+  }
+  private clearDisconnectTimers() {
+    for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
+    this.disconnectTimers.clear();
+  }
   private report(error: unknown) {
     this.error = error instanceof Error ? error.message : 'Mesh operation failed';
     this.log(`[ROUTER] ${this.error}`);
@@ -50,10 +63,13 @@ export class MeshRouter {
     const generation = this.generation;
     this.subscriptions = [
       this.transport.onPeerDiscovered((peer) => { void this.encounter(peer).catch((e) => this.report(e)); }),
-      this.transport.onPeerLost((id) => this.disconnect(id)),
+      this.transport.onPeerLost((id) => this.scheduleDisconnect(id)),
       this.transport.onPacketReceived((id, packet) => { void this.receive(id, packet).catch((e) => this.report(e)); }),
       this.transport.onStateChanged((state) => {
-        if (state !== 'running' && state !== 'starting') for (const id of this.sessions.keys()) this.disconnect(id);
+        if (state !== 'running' && state !== 'starting') {
+          this.clearDisconnectTimers();
+          for (const id of this.sessions.keys()) this.disconnect(id);
+        }
         if (state === 'running') void this.transport.getPeers().then((peers) => Promise.all(peers.map((p) => this.encounter(p)))).catch((e) => this.report(e));
       }),
     ];
@@ -74,6 +90,7 @@ export class MeshRouter {
     this.subscriptions = [];
     if (this.timer) clearInterval(this.timer);
     this.scheduler.cancel();
+    this.clearDisconnectTimers();
     this.sessions.clear(); this.pending.clear(); this.busy.clear();
   }
   async clear() {
@@ -106,13 +123,23 @@ export class MeshRouter {
       });
       this.disconnect(previous);
     }
+    this.cancelDisconnect(peer.id);
     const old = this.sessions.get(peer.id);
     if (old) { old.peer = peer; return; }
     this.sessions.set(peer.id, { peer, ready: false, started: this.now(), helloAt: 0, inventoryAt: 0, inventoryComplete: false });
     this.log(`[SYNC] connected ${peer.id}`);
     await this.hello(peer.id, false);
   }
+  scheduleDisconnect(id: string) {
+    if (this.disconnectTimers.has(id)) return;
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(id);
+      this.disconnect(id);
+    }, PEER_GRACE_MS);
+    this.disconnectTimers.set(id, timer);
+  }
   disconnect(id: string) {
+    this.cancelDisconnect(id);
     this.sessions.delete(id); this.scheduler.cancel(id);
     for (const key of this.pending.keys()) if (key.startsWith(`${id}|`)) this.pending.delete(key);
   }

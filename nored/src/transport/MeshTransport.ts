@@ -6,6 +6,8 @@ export type Peer = {
   lastSeen: number;
   nored?: boolean;
   identityConfirmed?: boolean;
+  /** Set in JS when native reports peer lost; kept visible during grace period. */
+  pendingLoss?: boolean;
   replacesId?: string;
   avatarIcon?: string;
   avatarColor?: number;

@@ -317,7 +317,7 @@ export default function GameScreen() {
   const game = useMemo(() => mockGames.find((item) => item.id === id), [id]);
   const supportedGameId: GameId | undefined =
     id === 'pong' || id === 'telephone' || id === 'chess' ? id : undefined;
-  const { noredPeers } = useMeshUi();
+  const { visibleNoredPeers } = useMeshUi();
   const { joinedGames, participants, joinGame, leaveGame, invitePlayer } = useGames();
   const [scrollEnabled, setScrollEnabled] = useState(true);
   const [showPlayers, setShowPlayers] = useState(false);
@@ -379,12 +379,12 @@ export default function GameScreen() {
             {showPlayers ? (
               <View style={styles.invitePanel}>
                 <Text style={styles.inviteHeading}>NEARBY PLAYERS</Text>
-                {noredPeers.length === 0 ? (
+                {visibleNoredPeers.length === 0 ? (
                   <Text style={styles.inviteEmpty}>
                     No Nored players are visible yet. Keep both apps open and nearby.
                   </Text>
                 ) : (
-                  noredPeers.map((peer) => {
+                  visibleNoredPeers.map((peer) => {
                     const alreadyJoined = joinedPlayerIds.has(peer.id);
                     const invited = invitedIds.includes(peer.id);
                     return (
@@ -397,12 +397,18 @@ export default function GameScreen() {
                         <View style={styles.playerCopy}>
                           <Text style={styles.playerName}>{peer.name}</Text>
                           <Text style={styles.playerMeta}>
-                            {alreadyJoined ? 'Already in this game' : 'Nearby on Bluetooth'}
+                            {alreadyJoined
+                              ? 'Already in this game'
+                              : peer.pendingLoss
+                                ? 'Reconnecting…'
+                                : 'Nearby on Bluetooth'}
                           </Text>
                         </View>
                         <PlayerAction
-                          label={alreadyJoined ? 'Joined' : invited ? 'Sent' : 'Invite'}
-                          disabled={alreadyJoined || invited}
+                          label={
+                            alreadyJoined ? 'Joined' : peer.pendingLoss ? 'Wait' : invited ? 'Sent' : 'Invite'
+                          }
+                          disabled={alreadyJoined || invited || peer.pendingLoss}
                           onPress={() => void invite(peer.id)}
                         />
                       </View>

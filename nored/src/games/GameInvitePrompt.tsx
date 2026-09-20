@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { signal } from '@/theme/signal';
 
@@ -25,7 +25,9 @@ export function GameInvitePrompt() {
     setAccepting(false);
     if (result.ok) {
       router.push({ pathname: '/game/[id]', params: { id: gameId } });
+      return;
     }
+    Alert.alert('Could not join game', result.error);
   };
 
   return (

@@ -26,9 +26,24 @@ function levelFor(rssi?: number): 0 | 1 | 2 | 3 {
   return 1;
 }
 
-function PeerRow({ peer, onPress, onLongPress }: { peer: Peer; onPress: () => void; onLongPress: () => void }) {
+function peerStatus(peer: Peer) {
+  if (peer.pendingLoss) return 'Reconnecting…';
+  return `${hopLabel(peer)} · ${peer.id.slice(0, 8)}`;
+}
+
+function PeerRow({
+  peer,
+  dimmed,
+  onPress,
+  onLongPress,
+}: {
+  peer: Peer;
+  dimmed?: boolean;
+  onPress: () => void;
+  onLongPress: () => void;
+}) {
   return (
-    <RowPress onLongPress={onLongPress} onPress={onPress} style={styles.peer}>
+    <RowPress onLongPress={onLongPress} onPress={onPress} style={[styles.peer, dimmed && styles.peerDimmed]}>
       <Avatar
         color={peer.avatarColor}
         icon={peer.avatarIcon}
@@ -37,10 +52,8 @@ function PeerRow({ peer, onPress, onLongPress }: { peer: Peer; onPress: () => vo
         size={44}
       />
       <View style={styles.peerMain}>
-        <Text style={styles.peerName}>{peer.name}</Text>
-        <Text style={styles.peerMeta}>
-          {hopLabel(peer)} · {peer.id.slice(0, 8)}
-        </Text>
+        <Text style={[styles.peerName, dimmed && styles.peerNameDimmed]}>{peer.name}</Text>
+        <Text style={styles.peerMeta}>{peerStatus(peer)}</Text>
       </View>
       <View style={styles.peerRight}>
         <SignalBars color={signal.deep} level={levelFor(peer.rssi)} mutedColor={signal.fog} size={16} />
@@ -58,6 +71,7 @@ export default function NearbyScreen() {
     saveName,
     saving,
     noredPeers,
+    visibleNoredPeers,
     otherPeers,
     state,
     error,
@@ -70,16 +84,30 @@ export default function NearbyScreen() {
   const shortId = identity.id.slice(0, 8);
   const dirty = draftName.trim().length > 0 && draftName.trim() !== identity.name;
   const badgePeers = useMemo(
-    () => noredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
-    [noredPeers],
+    () => visibleNoredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
+    [visibleNoredPeers],
   );
   const userPeers = useMemo(
+    () => visibleNoredPeers.filter((peer) => !peer.name.trim().toLowerCase().startsWith('nored badge')),
+    [visibleNoredPeers],
+  );
+  const liveUserPeers = useMemo(
     () => noredPeers.filter((peer) => !peer.name.trim().toLowerCase().startsWith('nored badge')),
     [noredPeers],
   );
+  const liveBadgePeers = useMemo(
+    () => noredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
+    [noredPeers],
+  );
+  const liveOtherPeers = useMemo(
+    () => otherPeers.filter((peer) => !peer.pendingLoss),
+    [otherPeers],
+  );
+
+  const peerReachable = (peer: Peer) => !peer.pendingLoss;
 
   const openDm = (peer: Peer) => {
-    if (!peer.nored) return;
+    if (!peerReachable(peer)) return;
     rememberDm(peer.id, peer.name);
     router.push({
       pathname: '/chat/[id]',
@@ -163,7 +191,7 @@ export default function NearbyScreen() {
           <Text style={styles.groupLabel}>
             NORED NETWORK · {noredPeers.length + 1} TOTAL
           </Text>
-          <Text style={[styles.groupLabel, styles.spaced]}>NORED USERS · {userPeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.spaced]}>NORED USERS · {liveUserPeers.length}</Text>
           {userPeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>
@@ -173,12 +201,18 @@ export default function NearbyScreen() {
           ) : (
             <GroupedList>
               {userPeers.map((peer) => (
-                <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => openDm(peer)} peer={peer} />
+                <PeerRow
+                  key={peer.id}
+                  dimmed={!peerReachable(peer)}
+                  onLongPress={() => invite(peer)}
+                  onPress={() => openDm(peer)}
+                  peer={peer}
+                />
               ))}
             </GroupedList>
           )}
 
-          <Text style={[styles.groupLabel, styles.spaced]}>NORED BADGES · {badgePeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.spaced]}>NORED BADGES · {liveBadgePeers.length}</Text>
           {badgePeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>No Nored badges in range.</Text>
@@ -186,12 +220,18 @@ export default function NearbyScreen() {
           ) : (
             <GroupedList>
               {badgePeers.map((peer) => (
-                <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => openDm(peer)} peer={peer} />
+                <PeerRow
+                  key={peer.id}
+                  dimmed={!peerReachable(peer)}
+                  onLongPress={() => invite(peer)}
+                  onPress={() => openDm(peer)}
+                  peer={peer}
+                />
               ))}
             </GroupedList>
           )}
 
-          <Text style={[styles.groupLabel, styles.spaced]}>BLUETOOTH · {otherPeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.spaced]}>BLUETOOTH · {liveOtherPeers.length}</Text>
           {otherPeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>No named Bluetooth devices right now.</Text>
@@ -199,7 +239,13 @@ export default function NearbyScreen() {
           ) : (
             <GroupedList>
               {otherPeers.map((peer) => (
-                <PeerRow key={peer.id} onLongPress={() => invite(peer)} onPress={() => invite(peer)} peer={peer} />
+                <PeerRow
+                  key={peer.id}
+                  dimmed={peer.pendingLoss}
+                  onLongPress={() => invite(peer)}
+                  onPress={() => invite(peer)}
+                  peer={peer}
+                />
               ))}
             </GroupedList>
           )}
@@ -282,8 +328,10 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
   },
+  peerDimmed: { opacity: 0.55 },
   peerMain: { flex: 1 },
   peerName: { color: signal.ink, fontSize: 16, fontWeight: '600' },
+  peerNameDimmed: { color: signal.slate },
   peerMeta: { color: signal.slate, fontSize: 13, marginTop: 2 },
   peerRight: { alignItems: 'flex-end', gap: 4 },
   signalLabel: { color: signal.slate, fontSize: 11, fontWeight: '600' },

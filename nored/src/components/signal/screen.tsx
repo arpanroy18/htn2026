@@ -14,8 +14,8 @@ export function Screen({ children }: { children: ReactNode }) {
 }
 
 export function MeshPill() {
-  const { noredPeers, otherPeers, state } = useMeshUi();
-  const count = noredPeers.length + otherPeers.length;
+  const { livePeerCount, state } = useMeshUi();
+  const count = livePeerCount;
   const live = state === 'running';
 
   return (

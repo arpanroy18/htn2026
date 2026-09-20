@@ -75,7 +75,7 @@ type GameUi = {
   telephoneChain?: TelephoneChain;
   chessMatch?: ChessMatch;
   pendingInvite?: GameInvitation;
-  joinGame: (gameId: GameId) => Promise<ActionResult>;
+  joinGame: (gameId: GameId, notifyPeerId?: string) => Promise<ActionResult>;
   leaveGame: (gameId: GameId) => Promise<void>;
   invitePlayer: (gameId: GameId, peerId: string) => Promise<ActionResult>;
   acceptInvite: () => Promise<ActionResult>;
@@ -112,7 +112,7 @@ const emptyParticipants: Record<GameId, GameParticipant[]> = {
 };
 
 export function GameProvider({ children }: { children: ReactNode }) {
-  const { identity, noredPeers, peers } = useMeshUi();
+  const { identity, noredPeers, visibleNoredPeers, peers } = useMeshUi();
   const meshRouter = useRouterService();
   const [joinedGames, setJoinedGames] = useState(emptyJoined);
   const [participants, setParticipants] = useState(emptyParticipants);
@@ -126,6 +126,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const joinedRef = useRef(joinedGames);
   const peersRef = useRef(peers);
   const noredPeersRef = useRef(noredPeers);
+  const visibleNoredPeersRef = useRef(visibleNoredPeers);
   const participantsRef = useRef(participants);
   const telephoneRoundRef = useRef(telephoneRound);
   const pongMatchRef = useRef(pongMatch);
@@ -146,6 +147,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     noredPeersRef.current = noredPeers;
   }, [noredPeers]);
+
+  useEffect(() => {
+    visibleNoredPeersRef.current = visibleNoredPeers;
+  }, [visibleNoredPeers]);
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -187,11 +192,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
   const sendToPeers = useCallback(async (packet: GamePacket, peerIds?: string[]) => {
     const allowed = new Set(
-      noredPeersRef.current
+      visibleNoredPeersRef.current
         .filter((peer) => peer.identityConfirmed)
         .map((peer) => peer.id),
     );
-    const targets = (peerIds ?? [...allowed]).filter((id) => allowed.has(id));
+    const requested = peerIds ?? [...allowed];
+    const targets = requested.filter((id) => allowed.has(id) && meshRouter.hasSession(id));
+    if (targets.length === 0) return false;
     const settled = await Promise.allSettled(
       targets.map((peerId) =>
         meshRouter.sendDirect(peerId, { ...packet, recipientId: peerId }),
@@ -523,7 +530,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, [identity.id, identity.name, meshRouter, sendToPeers, upsertParticipant]);
 
   const joinGame = useCallback(
-    async (gameId: GameId): Promise<ActionResult> => {
+    async (gameId: GameId, notifyPeerId?: string): Promise<ActionResult> => {
       setJoinedGames((current) => ({ ...current, [gameId]: true }));
       upsertParticipant(gameId, identity.id, identity.name);
       const packet = makeGamePacket({
@@ -532,9 +539,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
         event: 'join',
         payload: participantPayload(identity.name),
       });
-      if (noredPeersRef.current.length === 0) return { ok: true };
-      const sent = await sendToPeers(packet);
-      return sent
+      const targets = notifyPeerId ? [notifyPeerId] : undefined;
+      const sent = await sendToPeers(packet, targets);
+      return sent || visibleNoredPeersRef.current.length === 0
         ? { ok: true }
         : { ok: false, error: 'Could not reach a nearby player.' };
     },
@@ -567,10 +574,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
   const invitePlayer = useCallback(
     async (gameId: GameId, peerId: string): Promise<ActionResult> => {
-      const peer = noredPeersRef.current.find(
+      const peer = visibleNoredPeersRef.current.find(
         (candidate) => candidate.id === peerId && candidate.identityConfirmed,
       );
       if (!peer) return { ok: false, error: 'That player is no longer nearby.' };
+      if (!meshRouter.hasSession(peerId)) {
+        return { ok: false, error: 'That player is reconnecting. Try again in a moment.' };
+      }
       const packet = makeGamePacket({
         senderId: identity.id,
         recipientId: peerId,
@@ -584,14 +594,14 @@ export function GameProvider({ children }: { children: ReactNode }) {
         ? { ok: true }
         : { ok: false, error: 'The invitation could not be sent.' };
     },
-    [identity.id, identity.name, sendToPeers],
+    [identity.id, identity.name, meshRouter, sendToPeers],
   );
 
   const acceptInvite = useCallback(async (): Promise<ActionResult> => {
     if (!pendingInvite) return { ok: false, error: 'This invitation is no longer available.' };
-    const gameId = pendingInvite.gameId;
+    const { gameId, fromId } = pendingInvite;
     setPendingInvite(undefined);
-    return joinGame(gameId);
+    return joinGame(gameId, fromId);
   }, [joinGame, pendingInvite]);
 
   const dismissInvite = useCallback(() => setPendingInvite(undefined), []);
