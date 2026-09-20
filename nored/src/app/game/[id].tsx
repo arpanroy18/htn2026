@@ -360,7 +360,7 @@ export default function GameScreen() {
           </View>
           <Text style={styles.title}>{game?.name ?? 'Unknown game'}</Text>
           <View style={styles.chips}>
-            <Chip label={game?.players ?? 'Nearby'} tone="mist" />
+            <Chip label={game?.players ?? 'Nearby'} tone="amber" />
             <Chip label="Nearby Bluetooth" />
           </View>
         </View>

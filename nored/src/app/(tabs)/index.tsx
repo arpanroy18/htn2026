@@ -188,9 +188,9 @@ export default function NearbyScreen() {
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
           <Text style={styles.groupLabel}>
-            NORED NETWORK · {noredPeers.length + 1} TOTAL
+            NETWORK · {noredPeers.length + 1} TOTAL
           </Text>
-          <Text style={[styles.groupLabel, styles.tightSpaced]}>NORED USERS · {liveUserPeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.tightSpaced]}>USERS · {liveUserPeers.length}</Text>
           {userPeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>
@@ -211,7 +211,7 @@ export default function NearbyScreen() {
             </GroupedList>
           )}
 
-          <Text style={[styles.groupLabel, styles.spaced]}>NORED BADGES · {liveBadgePeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.spaced]}>BADGES · {liveBadgePeers.length}</Text>
           {badgePeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>No Nored badges in range.</Text>

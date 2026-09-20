@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ChessIcon, ChevronIcon, PongIcon, TelephoneIcon } from '@/components/signal/icons';
+import { ChessIcon, PongIcon, TelephoneIcon } from '@/components/signal/icons';
 import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { Chip, GroupedList, RowPress } from '@/components/signal/ui';
 import { mockGames } from '@/data/mock';
@@ -32,11 +32,9 @@ export default function GamesScreen() {
                 <View style={styles.rowMain}>
                   <Text style={styles.name}>{game.name}</Text>
                   <View style={styles.meta}>
-                    <Chip label={game.players} tone="mist" />
-                    <Chip label="Offline" />
+                    <Chip label={game.players} tone="amber" />
                   </View>
                 </View>
-                <ChevronIcon color={signal.slate} size={12} />
               </RowPress>
             );
           })}
@@ -56,7 +54,7 @@ const styles = StyleSheet.create({
   },
   icon: {
     alignItems: 'center',
-    backgroundColor: signal.blue,
+    backgroundColor: signal.sky,
     borderRadius: 12,
     height: 40,
     justifyContent: 'center',

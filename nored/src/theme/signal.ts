@@ -3,6 +3,7 @@ export const signal = {
   deep: '#2942ff',
   sky: '#9dbbf8',
   mist: '#a5cad5',
+  amber: '#ffe08a',
   ink: '#1b1b1b',
   slate: '#404654',
   twilight: '#3c3744',

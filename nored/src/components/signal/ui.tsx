@@ -112,7 +112,7 @@ export function Chip({
   tone = 'fog',
 }: {
   label: string;
-  tone?: 'fog' | 'sky' | 'mist' | 'blue' | 'yellow' | 'orange' | 'red';
+  tone?: 'fog' | 'sky' | 'mist' | 'amber' | 'blue' | 'yellow' | 'orange' | 'red';
 }) {
   const lightText = tone === 'blue' || tone === 'orange' || tone === 'red';
   return (
@@ -121,6 +121,7 @@ export function Chip({
         styles.chip,
         tone === 'sky' && { backgroundColor: signal.sky },
         tone === 'mist' && { backgroundColor: signal.mist },
+        tone === 'amber' && { backgroundColor: signal.amber },
         tone === 'blue' && { backgroundColor: signal.blue },
         tone === 'yellow' && { backgroundColor: signal.yellow },
         tone === 'orange' && { backgroundColor: signal.orange },
