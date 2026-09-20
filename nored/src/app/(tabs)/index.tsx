@@ -15,7 +15,7 @@ import { Screen, ScreenHeader } from '@/components/signal/screen';
 import { GearIcon, RefreshIcon, SignalBars } from '@/components/signal/icons';
 import { Avatar, GroupedList, IconButton, RowPress } from '@/components/signal/ui';
 import { useChat } from '@/mesh/ChatContext';
-import { hopLabel, isValidRssi, signalLabel, statusCopy, useMeshUi } from '@/mesh/MeshUiContext';
+import { hopLabel, isValidRssi, signalLabel, useMeshUi } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
 import type { Peer } from '@/transport';
 
@@ -36,13 +36,11 @@ function PeerRow({
   dimmed,
   onPress,
   onLongPress,
-  showSignal = true,
 }: {
   peer: Peer;
   dimmed?: boolean;
   onPress: () => void;
   onLongPress: () => void;
-  showSignal?: boolean;
 }) {
   return (
     <RowPress onLongPress={onLongPress} onPress={onPress} style={[styles.peer, dimmed && styles.peerDimmed]}>
@@ -57,12 +55,10 @@ function PeerRow({
         <Text style={[styles.peerName, dimmed && styles.peerNameDimmed]}>{peer.name}</Text>
         <Text style={styles.peerMeta}>{peerStatus(peer)}</Text>
       </View>
-      {showSignal ? (
-        <View style={styles.peerRight}>
-          <SignalBars color={signal.deep} level={levelFor(peer.rssi)} mutedColor={signal.fog} size={16} />
-          <Text style={styles.signalLabel}>{signalLabel(peer.rssi)}</Text>
-        </View>
-      ) : null}
+      <View style={styles.peerRight}>
+        <SignalBars color={signal.deep} level={levelFor(peer.rssi)} mutedColor={signal.fog} size={16} />
+        <Text style={styles.signalLabel}>{signalLabel(peer.rssi)}</Text>
+      </View>
     </RowPress>
   );
 }
@@ -76,8 +72,6 @@ export default function NearbyScreen() {
     saving,
     noredPeers,
     visibleNoredPeers,
-    otherPeers,
-    state,
     error,
     logs,
     rescan,
@@ -102,10 +96,6 @@ export default function NearbyScreen() {
   const liveBadgePeers = useMemo(
     () => noredPeers.filter((peer) => peer.name.trim().toLowerCase().startsWith('nored badge')),
     [noredPeers],
-  );
-  const liveOtherPeers = useMemo(
-    () => otherPeers.filter((peer) => !peer.pendingLoss),
-    [otherPeers],
   );
 
   const peerReachable = (peer: Peer) => !peer.pendingLoss;
@@ -193,7 +183,6 @@ export default function NearbyScreen() {
 
           <View style={styles.sectionHead}>
             <Text style={styles.sectionTitle}>In range</Text>
-            <Text style={styles.scanText}>{statusCopy(state)}</Text>
           </View>
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -201,7 +190,7 @@ export default function NearbyScreen() {
           <Text style={styles.groupLabel}>
             NORED NETWORK · {noredPeers.length + 1} TOTAL
           </Text>
-          <Text style={[styles.groupLabel, styles.spaced]}>NORED USERS · {liveUserPeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.tightSpaced]}>NORED USERS · {liveUserPeers.length}</Text>
           {userPeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>
@@ -236,26 +225,6 @@ export default function NearbyScreen() {
                   onLongPress={() => invite(peer)}
                   onPress={() => openDm(peer)}
                   peer={peer}
-                />
-              ))}
-            </GroupedList>
-          )}
-
-          <Text style={[styles.groupLabel, styles.spaced]}>BLUETOOTH · {liveOtherPeers.length}</Text>
-          {otherPeers.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.empty}>No named Bluetooth devices right now.</Text>
-            </View>
-          ) : (
-            <GroupedList>
-              {otherPeers.map((peer) => (
-                <PeerRow
-                  key={peer.id}
-                  dimmed={peer.pendingLoss}
-                  onLongPress={() => invite(peer)}
-                  onPress={() => invite(peer)}
-                  peer={peer}
-                  showSignal={false}
                 />
               ))}
             </GroupedList>
@@ -307,7 +276,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   sectionTitle: { color: signal.ink, fontSize: 22, fontWeight: '800', lineHeight: 27 },
-  scanText: { color: signal.slate, fontSize: 13, paddingBottom: 3 },
   error: { color: signal.ink, fontSize: 14, lineHeight: 21 },
   groupLabel: {
     color: signal.slate,
@@ -317,6 +285,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 2,
   },
+  tightSpaced: { marginTop: 8 },
   spaced: { marginTop: 20 },
   emptyCard: {
     backgroundColor: signal.white,
