@@ -57,6 +57,8 @@ private const val AVATAR_COLOR_COUNT = 9
 private const val STALE_PEER_MS = 45_000L
 private const val STALE_BLUETOOTH_PEER_MS = 90_000L
 private const val PACKET_MAGIC: Byte = 0x4E
+private const val PACKET_HEADER_BYTES = 3
+private const val MAX_ATTRIBUTE_VALUE_BYTES = 512
 private const val MAX_CONNECTIONS = 6
 
 private val SERVICE_UUID: UUID = UUID.fromString("6e4f5245-442d-4d45-5348-000000000001")
@@ -1456,7 +1458,11 @@ class NoredBluetoothModule : Module() {
           return
         }
       }
-      val frames = makeFrames(job.payload, max(1, mtu - 6)) ?: run {
+      // ATT can negotiate an MTU of 517, but a characteristic value is still limited to
+      // 512 bytes. Android 14 also upgrades the first GATT client to MTU 517 regardless of
+      // the requested value, so MTU-3 alone can produce an illegal 514-byte value.
+      val maxFrameBytes = min(MAX_ATTRIBUTE_VALUE_BYTES, max(1, mtu - 3))
+      val frames = makeFrames(job.payload, max(1, maxFrameBytes - PACKET_HEADER_BYTES)) ?: run {
         failCurrentSend("Message is too large for Bluetooth")
         return
       }
@@ -1628,14 +1634,19 @@ class NoredBluetoothModule : Module() {
       return
     }
     writeBusy[address] = true
-    val queued = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      gatt.writeCharacteristic(rx, job.data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothGatt.GATT_SUCCESS
-    } else {
-      @Suppress("DEPRECATION")
-      rx.value = job.data
-      rx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-      @Suppress("DEPRECATION")
-      gatt.writeCharacteristic(rx)
+    val queued = try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        gatt.writeCharacteristic(rx, job.data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothGatt.GATT_SUCCESS
+      } else {
+        @Suppress("DEPRECATION")
+        rx.value = job.data
+        rx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        @Suppress("DEPRECATION")
+        gatt.writeCharacteristic(rx)
+      }
+    } catch (error: IllegalArgumentException) {
+      log("error", "[ERROR] GATT write rejected ${job.data.size}-byte value: ${error.message}")
+      false
     }
     if (queued) return
     writeBusy[address] = false
