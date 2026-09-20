@@ -115,7 +115,7 @@ export function ChessBoard() {
   };
 
   const status = (() => {
-    if (!chessMatch) return `${participants.chess.length} players joined`;
+    if (!chessMatch) return 'Waiting for a nearby opponent';
     if (chessMatch.status === 'checkmate') {
       return chessMatch.winnerId === identity.id ? 'Checkmate — you win' : 'Checkmate — you lose';
     }

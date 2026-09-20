@@ -108,10 +108,9 @@ type MeshUi = {
   peers: Peer[];
   /** Confirmed Nored peers in range — use for counts, messaging, and in-range checks. */
   noredPeers: Peer[];
-  /** Confirmed Nored peers for Nearby list, including briefly reconnecting ones. */
+  /** Confirmed Nored peers seen this session, including peers now out of range. */
   visibleNoredPeers: Peer[];
   otherPeers: Peer[];
-  livePeerCount: number;
   state: TransportState;
   error?: string;
   logs: string[];
@@ -188,6 +187,7 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
   }, [cancelScheduledRemoval]);
 
   useEffect(() => {
+    const timers = removalTimers.current;
     const subscriptions = [
       meshTransport.onPeerDiscovered(upsertPeer),
       meshTransport.onPeerLost((peerId) => {
@@ -203,7 +203,9 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
             return current.filter((item) => item.id !== peerId);
           }
           if (peer.pendingLoss) return current;
-          scheduleRemoval(peerId);
+          // Identified Nored peers remain in the Nearby list for this session.
+          // pendingLoss still removes them from the live/reachable peer set.
+          if (!peer.nored && !isBadgePeer(peer.name)) scheduleRemoval(peerId);
           const next = current.slice();
           next[index] = { ...peer, pendingLoss: true };
           return next;
@@ -214,8 +216,11 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
         if (next === 'poweredOff' || next === 'stopped' || next === 'unauthorized') {
           removalTimers.current.forEach((timer) => clearTimeout(timer));
           removalTimers.current.clear();
-          setPeerOrder([]);
-          setPeers([]);
+          setPeers((current) =>
+            current
+              .filter((peer) => peer.nored || isBadgePeer(peer.name))
+              .map((peer) => (peer.pendingLoss ? peer : { ...peer, pendingLoss: true })),
+          );
         }
       }),
       meshTransport.onLog((message) => {
@@ -240,8 +245,8 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
 
     return () => {
       subscriptions.forEach((subscription) => subscription.remove());
-      removalTimers.current.forEach((timer) => clearTimeout(timer));
-      removalTimers.current.clear();
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
       void meshTransport.stop();
     };
   }, [cancelScheduledRemoval, scheduleRemoval, upsertPeer]);
@@ -269,12 +274,11 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       await meshTransport.start();
       const items = await meshTransport.getPeers();
       const visible = items.filter((peer) => peer.nored || hasDisplayName(peer));
-      setPeerOrder(orderFromPeers(visible));
-      setPeers(visible);
+      visible.forEach(upsertPeer);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Rescan failed.');
     }
-  }, []);
+  }, [upsertPeer]);
 
   const visibleNoredPeers = useMemo(() => {
     return peers
@@ -305,10 +309,6 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       .sort((a, b) => comparePeers(a, b, peerOrder));
   }, [peerOrder, peers, visibleNoredPeers]);
 
-  const liveOtherPeers = useMemo(() => {
-    return otherPeers.filter((peer) => !peer.pendingLoss);
-  }, [otherPeers]);
-
   const value = useMemo(
     () => ({
       identity,
@@ -320,7 +320,6 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       noredPeers,
       visibleNoredPeers,
       otherPeers,
-      livePeerCount: noredPeers.length + liveOtherPeers.length,
       state,
       error,
       logs,
@@ -335,7 +334,6 @@ export function MeshUiProvider({ children }: { children: ReactNode }) {
       noredPeers,
       visibleNoredPeers,
       otherPeers,
-      liveOtherPeers.length,
       state,
       error,
       logs,

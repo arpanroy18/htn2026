@@ -28,7 +28,7 @@ function levelFor(rssi?: number): 0 | 1 | 2 | 3 {
 }
 
 function peerStatus(peer: Peer) {
-  if (peer.pendingLoss) return 'Reconnecting…';
+  if (peer.pendingLoss) return `Out of range · ${peer.id.slice(0, 8)}`;
   return `${hopLabel(peer)} · ${peer.id.slice(0, 8)}`;
 }
 
@@ -57,8 +57,15 @@ function PeerRow({
         <Text style={styles.peerMeta}>{peerStatus(peer)}</Text>
       </View>
       <View style={styles.peerRight}>
-        <SignalBars color={signal.deep} level={levelFor(peer.rssi)} mutedColor={signal.fog} size={16} />
-        <Text style={styles.signalLabel}>{signalLabel(peer.rssi)}</Text>
+        <SignalBars
+          color={signal.deep}
+          level={peer.pendingLoss ? 0 : levelFor(peer.rssi)}
+          mutedColor={signal.fog}
+          size={16}
+        />
+        <Text style={styles.signalLabel}>
+          {peer.pendingLoss ? 'Out of range' : signalLabel(peer.rssi)}
+        </Text>
       </View>
     </RowPress>
   );
@@ -71,7 +78,6 @@ export default function NearbyScreen() {
     setDraftName,
     saveName,
     saving,
-    noredPeers,
     visibleNoredPeers,
     error,
     rescan,
@@ -89,15 +95,6 @@ export default function NearbyScreen() {
     () => visibleNoredPeers.filter((peer) => !isBadgePeer(peer.name)),
     [visibleNoredPeers],
   );
-  const liveUserPeers = useMemo(
-    () => noredPeers.filter((peer) => !isBadgePeer(peer.name)),
-    [noredPeers],
-  );
-  const liveBadgePeers = useMemo(
-    () => noredPeers.filter((peer) => isBadgePeer(peer.name)),
-    [noredPeers],
-  );
-
   const peerReachable = (peer: Peer) => !peer.pendingLoss;
 
   const openDm = (peer: Peer) => {
@@ -182,15 +179,12 @@ export default function NearbyScreen() {
           </RowPress>
 
           <View style={styles.sectionHead}>
-            <Text style={styles.sectionTitle}>In range</Text>
+            <Text style={styles.sectionTitle}>People</Text>
           </View>
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
-          <Text style={styles.groupLabel}>
-            NETWORK · {noredPeers.length + 1} TOTAL
-          </Text>
-          <Text style={[styles.groupLabel, styles.tightSpaced]}>USERS · {liveUserPeers.length}</Text>
+          <Text style={styles.groupLabel}>USERS</Text>
           {userPeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>
@@ -211,7 +205,7 @@ export default function NearbyScreen() {
             </GroupedList>
           )}
 
-          <Text style={[styles.groupLabel, styles.spaced]}>BADGES · {liveBadgePeers.length}</Text>
+          <Text style={[styles.groupLabel, styles.spaced]}>BADGES</Text>
           {badgePeers.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.empty}>No Nored badges in range.</Text>

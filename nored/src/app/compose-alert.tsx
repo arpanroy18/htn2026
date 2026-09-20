@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertsIcon } from '@/components/signal/icons';
@@ -15,7 +15,6 @@ export default function ComposeAlertScreen() {
   const { broadcastAlert } = useAlerts();
   const [body, setBody] = useState('');
   const [severity, setSeverity] = useState<Severity>('HELP');
-  const [location, setLocation] = useState(true);
   const [sending, setSending] = useState(false);
   const insets = useSafeAreaInsets();
 
@@ -26,7 +25,6 @@ export default function ComposeAlertScreen() {
     const result = await broadcastAlert({
       body: text,
       severity,
-      hasLocation: location,
     });
     setSending(false);
     if (result.ok) {
@@ -88,20 +86,6 @@ export default function ComposeAlertScreen() {
           value={body}
         />
 
-        <View style={styles.toggleRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.toggleTitle}>Attach approximate location</Text>
-            <Text style={styles.toggleBody}>Shown as a tag on the alert card.</Text>
-          </View>
-          <Switch
-            ios_backgroundColor={signal.fog}
-            onValueChange={setLocation}
-            thumbColor={signal.white}
-            trackColor={{ false: signal.fog, true: signal.blue }}
-            value={location}
-          />
-        </View>
-
         <Text style={styles.label}>PREVIEW</Text>
         <View style={styles.preview}>
           <View style={styles.previewTop}>
@@ -109,7 +93,6 @@ export default function ComposeAlertScreen() {
             <Text style={styles.previewMeta}>now · 0 hops</Text>
           </View>
           <Text style={styles.previewBody}>{body || 'Your message will preview here.'}</Text>
-          {location ? <Text style={styles.previewLocation}>Location attached</Text> : null}
         </View>
 
         <OutlinedButton
@@ -172,18 +155,6 @@ const styles = StyleSheet.create({
     padding: 16,
     textAlignVertical: 'top',
   },
-  toggleRow: {
-    alignItems: 'center',
-    backgroundColor: signal.white,
-    borderColor: signal.fog,
-    borderRadius: 16,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-    padding: 16,
-  },
-  toggleTitle: { color: signal.ink, fontSize: 15, fontWeight: '600' },
-  toggleBody: { color: signal.slate, fontSize: 13, lineHeight: 18, marginTop: 4 },
   preview: {
     backgroundColor: signal.white,
     borderColor: signal.fog,
@@ -195,5 +166,4 @@ const styles = StyleSheet.create({
   previewTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   previewMeta: { color: signal.slate, fontSize: 12 },
   previewBody: { color: signal.ink, fontSize: 16, lineHeight: 23 },
-  previewLocation: { color: signal.slate, fontSize: 13 },
 });

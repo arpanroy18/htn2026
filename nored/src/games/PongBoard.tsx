@@ -107,7 +107,9 @@ export function PongBoard() {
               ? isPlayer
                 ? 'Drag anywhere on the court to move your paddle.'
                 : 'Watching the nearby match.'
-              : `${participants.pong.length} players joined`}
+              : canStart
+                ? 'Ready to start'
+                : 'Waiting for a nearby player'}
           </Text>
         </View>
         <View style={styles.score}>

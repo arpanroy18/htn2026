@@ -15,7 +15,6 @@ export default function NewGroupScreen() {
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<string[]>([]);
 
-  const remaining = MAX_GROUP_MEMBERS - 1 - picked.length;
   const canCreate = name.trim().length > 0 && picked.length > 0;
   const atGroupCap = threads.filter((thread) => thread.kind === 'group').length >= MAX_GROUPS;
 
@@ -60,7 +59,7 @@ export default function NewGroupScreen() {
           style={styles.input}
           value={name}
         />
-        <Text style={styles.label}>IN RANGE · {Math.max(0, remaining)} seats left</Text>
+        <Text style={styles.label}>IN RANGE</Text>
         {noredPeers.length === 0 ? (
           <Text style={styles.empty}>Nearby Nored users will show up here.</Text>
         ) : (

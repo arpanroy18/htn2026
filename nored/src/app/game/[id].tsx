@@ -96,7 +96,6 @@ export function MeshPingBoard() {
             {holderName ? `${holderName} holds the baton.` : 'The first pass starts the baton.'}
           </Text>
         </View>
-        <Chip label={`${players.length + 1} joined`} tone="sky" />
       </View>
       {players.length === 0 ? (
         <View style={styles.empty}>
@@ -262,7 +261,7 @@ export function DrawingTelephoneBoard({
           <Text style={styles.boardBody}>
             {telephoneRound
               ? `${telephoneRound.strokes.length}/${telephoneRound.playerIds.length} turns drawn`
-              : `${participants.telephone.length} players joined`}
+              : 'Waiting for nearby players'}
           </Text>
         </View>
         {telephoneRound ? (
@@ -407,13 +406,13 @@ export default function GameScreen() {
                             {alreadyJoined
                               ? 'Already in this game'
                               : peer.pendingLoss
-                                ? 'Reconnecting…'
+                                ? 'Out of range'
                                 : 'Nearby on Bluetooth'}
                           </Text>
                         </View>
                         <PlayerAction
                           label={
-                            alreadyJoined ? 'Joined' : peer.pendingLoss ? 'Wait' : invited ? 'Sent' : 'Invite'
+                            alreadyJoined ? 'Joined' : peer.pendingLoss ? 'Away' : invited ? 'Sent' : 'Invite'
                           }
                           disabled={alreadyJoined || invited || peer.pendingLoss}
                           onPress={() => void invite(peer.id)}

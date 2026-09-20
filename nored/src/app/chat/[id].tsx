@@ -432,13 +432,12 @@ export default function ChatScreen() {
       return 'Comments stay on this alert';
     }
     if (isGroup) {
-      const total = Math.max(memberIds.length, 1);
-      if (!inRange) return `${total} members · out of range · will queue`;
-      return `${total} members · ${inRangeCount} in range · Bluetooth`;
+      if (!inRange) return 'Group out of range · messages will queue';
+      return 'Group linked · Bluetooth';
     }
     if (!inRange) return 'Text relays through nearby phones · media waits for a direct connection';
     return '1:1 · Bluetooth';
-  }, [inRange, inRangeCount, isAlertThread, isGroup, memberIds.length]);
+  }, [inRange, isAlertThread, isGroup]);
 
   const groupMembers = useMemo(() => {
     const members = thread?.memberIds ?? [];

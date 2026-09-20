@@ -541,7 +541,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       });
       const targets = notifyPeerId ? [notifyPeerId] : undefined;
       const sent = await sendToPeers(packet, targets);
-      return sent || visibleNoredPeersRef.current.length === 0
+      return sent || noredPeersRef.current.length === 0
         ? { ok: true }
         : { ok: false, error: 'Could not reach a nearby player.' };
     },
@@ -578,6 +578,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         (candidate) => candidate.id === peerId && candidate.identityConfirmed,
       );
       if (!peer) return { ok: false, error: 'That player is no longer nearby.' };
+      if (peer.pendingLoss) return { ok: false, error: 'That player is out of range.' };
       if (!meshRouter.hasSession(peerId)) {
         return { ok: false, error: 'That player is reconnecting. Try again in a moment.' };
       }

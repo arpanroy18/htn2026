@@ -18,7 +18,6 @@ import {
   assignedTelephoneChain,
   MAX_DRAWING_STROKES,
   MAX_STROKE_POINTS,
-  telephoneRoundSubmissions,
   type DrawingPoint,
   type TelephoneChain,
 } from './gameStore';
@@ -98,8 +97,6 @@ export function DrawingTelephoneBoard({
     game &&
       assignedEntries.some((entry) => entry.round === game.roundIndex),
   );
-  const readyCount = game ? telephoneRoundSubmissions(game) : 0;
-
   const nameFor = (playerId: string) =>
     playerId === identity.id
       ? 'You'
@@ -305,9 +302,7 @@ export function DrawingTelephoneBoard({
             <Text style={styles.sentCheckText}>✓</Text>
           </View>
           <Text style={styles.waitingTitle}>Your response is in</Text>
-          <Text style={styles.waitingBody}>
-            {readyCount} of {game.playerIds.length} players are ready.
-          </Text>
+          <Text style={styles.waitingBody}>Waiting for the other players.</Text>
           <View style={styles.readyList}>
             {game.playerIds.map((playerId) => {
               const playerChain = assignedTelephoneChain(game, playerId);
