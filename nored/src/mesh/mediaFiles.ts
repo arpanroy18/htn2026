@@ -7,6 +7,8 @@ import * as Crypto from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat, type ImageRef } from 'expo-image-manipulator';
 
+import { ensureWavSidecar } from '@/transcription/audioSidecar';
+
 import { MEDIA_CHUNK_BYTES } from './mediaTransfer';
 
 export const MAX_IMAGE_BYTES = 120 * 1024;
@@ -121,6 +123,9 @@ export async function writeMediaBytes(
   const file = mediaFile(id, extension);
   file.create({ intermediates: true, overwrite: true });
   file.write(bytes);
+  if (extension.replace(/^\./, '') === 'm4a') {
+    void ensureWavSidecar(file.uri);
+  }
   return file.uri;
 }
 
@@ -149,7 +154,9 @@ export async function persistVoiceNote(
   if (bytes.byteLength > MAX_MEDIA_BYTES) {
     throw new Error('That voice note is too long to send over Bluetooth.');
   }
-  return persistBytes(id, 'm4a', 'audio/mp4', bytes);
+  const prepared = await persistBytes(id, 'm4a', 'audio/mp4', bytes);
+  void ensureWavSidecar(prepared.uri);
+  return prepared;
 }
 
 function scaledSize(width: number, height: number, maxSide: number) {

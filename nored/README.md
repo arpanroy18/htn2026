@@ -1,6 +1,6 @@
-# Welcome to your Expo app 👋
+# Nored
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Offline Bluetooth mesh chat built with Expo.
 
 ## Get started
 
@@ -10,47 +10,94 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
-2. Start the app
+2. Fetch the on-device Whisper model (~57 MB, required for voice transcription)
+
+   ```bash
+   npm run models:fetch
+   ```
+
+   This downloads to your Mac (`assets/models/`). It is bundled into the app at build time.
+
+3. Build a development client on your **physical iPhone** (required for `whisper.rn` and audio conversion; Expo Go and simulators are not supported for transcription)
+
+   ```bash
+   npm run ios:device
+   ```
+
+   Re-run this after adding native dependencies. Voice notes are stored as `.m4a` for mesh transfer; transcription converts them to 16 kHz mono WAV on-device before running Whisper.
+
+   This targets the wired device **aadyaphone**. Do not use the iPhone 18 Pro simulator for transcription — Whisper needs a real device.
+
+   To list connected devices:
+
+   ```bash
+   xcrun xctrace list devices
+   ```
+
+   Generic Android/iOS commands still work:
+
+   ```bash
+   npx expo run:ios
+   npx expo run:android
+   ```
+
+4. Start the dev server
 
    ```bash
    npx expo start
    ```
 
-In the output, you'll find options to open the app in a
+Voice notes show a **See transcription** control below the player. Tapping it transcribes on-device, then translates to your phone's language (English, French, or Hindi) when needed.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## New developer setup (transcription)
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+If someone else clones the repo on a new laptop, transcription is **not** ready after `npm install` alone. They need a one-time dev setup on the laptop; the phone does not download anything at tap-time.
 
-## Get a fresh project
+| Step | Command | When |
+|------|---------|------|
+| Install JS deps | `npm install` | Once per clone |
+| Download Whisper weights | `npm run models:fetch` | Once per clone (file is gitignored) |
+| Build dev client on a physical phone | `npm run ios:device` or `npx expo run:ios --device` | Once per clone, and again after native dependency changes |
+| Start Metro | `npx expo start` | Every dev session |
 
-When you're ready, run:
+**What is not in git**
+
+- `assets/models/ggml-base-q5_1.bin` (~57 MB) — run `npm run models:fetch` before building.
+
+**Native npm packages** (installed by `npm install`, but require a native rebuild):
+
+- `whisper.rn` — on-device Whisper
+- `react-native-audio-converter` — converts voice-note `.m4a` to WAV before inference
+- `expo-translate-text` — EN/FR/HI translation via Apple Translation (iOS 18+) or Google ML Kit (Android)
+- `expo-localization` — reads device locale for translation target
+- `buffer` — polyfill used by whisper.rn
+
+**Expo Go will not work** for transcription (custom native modules + bundled model). Use a dev client built with `expo run:ios`.
+
+**Simulator will not work** for transcription — use a physical iPhone.
+
+**Translation language packs**
+
+Before an airplane-mode demo, download translation languages while online: **Settings → Apps → Translate → Languages** — get **English**, **French**, and **Hindi**. Packs download on first translate (~30 MB each). Android downloads ML Kit packs on first translation.
+
+iOS programmatic translation requires **iOS 18+**.
+
+**Verify the model before building**
 
 ```bash
-npm run reset-project
+ls -lh assets/models/ggml-base-q5_1.bin
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+**Pick a different device name**
 
-### Other setup steps
+```bash
+xcrun xctrace list devices
+npx expo run:ios --device "Your iPhone Name"
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+## Scripts
 
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- `npm run models:fetch` — download `ggml-base-q5_1.bin` into `assets/models/` (on your Mac, before building)
+- `npm run ios:device` — build and install on wired **aadyaphone**
+- `npm test` — run mesh and transcription unit tests
+- `npm run lint` — ESLint

@@ -9,6 +9,7 @@ import {
   ensureGroupThread,
   messagePreview,
   migrateDmPeer,
+  clearStaleTranscriptPending,
   patchMessage,
   queuedPackets,
   remapPeerInGroups,
@@ -128,6 +129,39 @@ describe('chatStore delivery and unread state', () => {
     assert.equal(state.threads[0].preview, 'Photo');
     assert.equal(state.threads[0].unread, 1);
     assert.deepEqual(queuedPackets(state, previousId, 'local-device'), []);
+  });
+
+  it('clears orphaned pending transcript status on relaunch', () => {
+    const audio = message({
+      id: 'voice',
+      kind: 'audio',
+      body: 'Voice message',
+      transcriptStatus: 'pending',
+    });
+    const state = {
+      threads: [],
+      messages: { peer: [audio] },
+    };
+    const cleared = clearStaleTranscriptPending(state);
+    assert.equal(cleared.messages.peer[0].transcriptStatus, undefined);
+  });
+
+  it('clears orphaned pending translation status on relaunch', () => {
+    const audio = message({
+      id: 'voice',
+      kind: 'audio',
+      body: 'Voice message',
+      transcript: 'Bonjour',
+      transcriptStatus: 'ready',
+      translationStatus: 'pending',
+    });
+    const state = {
+      threads: [],
+      messages: { peer: [audio] },
+    };
+    const cleared = clearStaleTranscriptPending(state);
+    assert.equal(cleared.messages.peer[0].translationStatus, undefined);
+    assert.equal(cleared.messages.peer[0].transcriptStatus, 'ready');
   });
 });
 

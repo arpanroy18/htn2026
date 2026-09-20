@@ -65,6 +65,7 @@
         }
       ],
       "expo-asset",
+      "expo-localization",
       "expo-sqlite"
     ],
     "experiments": {

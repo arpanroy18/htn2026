@@ -1,3 +1,5 @@
+import { Buffer } from 'buffer';
+
 import { setAudioModeAsync } from 'expo-audio';
 import { DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -13,6 +15,10 @@ import { RouterProvider } from '@/mesh/RouterContext';
 import { ChatProvider } from '@/mesh/ChatContext';
 import { MeshUiProvider } from '@/mesh/MeshUiContext';
 import { signal } from '@/theme/signal';
+
+// whisper.rn pulls in safe-buffer, which expects Node's Buffer global.
+const globalScope = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
+globalScope.Buffer = globalScope.Buffer ?? Buffer;
 
 SplashScreen.preventAutoHideAsync();
 

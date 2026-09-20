@@ -30,6 +30,7 @@ import { useMeshUi } from '@/mesh/MeshUiContext';
 import { ALERT_THREAD_PREFIX, isAlertThreadId, type ChatDelivery, type ChatMessage } from '@/mesh/chatStore';
 import { MAX_VOICE_SECONDS } from '@/mesh/mediaFiles';
 import { pickPhotoAsync } from '@/mesh/photoPicker';
+import { languageCodeAbbrev } from '@/transcription/viewerLocale';
 import { signal } from '@/theme/signal';
 
 // Gesture nav bar on Android sits right on top of the composer, so add a little
@@ -44,16 +45,26 @@ function statusLabel(status?: ChatDelivery) {
 function Bubble({
   message,
   showTail,
+  threadId,
+  onRequestTranscript,
 }: {
   message: ChatMessage;
   showTail: boolean;
+  threadId: string;
+  onRequestTranscript: (threadId: string, messageId: string) => void;
 }) {
   const mine = message.mine;
   if (message.kind === 'image') {
     return <ImageBubble message={message} />;
   }
   if (message.kind === 'audio') {
-    return <AudioBubble message={message} />;
+    return (
+      <AudioBubble
+        message={message}
+        onRequestTranscript={onRequestTranscript}
+        threadId={threadId}
+      />
+    );
   }
   return (
     <View
@@ -121,14 +132,144 @@ function ImageBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function AudioBubble({ message }: { message: ChatMessage }) {
+function AudioBubble({
+  message,
+  threadId,
+  onRequestTranscript,
+}: {
+  message: ChatMessage;
+  threadId: string;
+  onRequestTranscript: (threadId: string, messageId: string) => void;
+}) {
   if (!message.localUri) {
     return <MediaPlaceholder label="voice note" message={message} />;
   }
-  return <AudioBubblePlayer message={message} />;
+  return (
+    <AudioBubblePlayer
+      message={message}
+      onRequestTranscript={onRequestTranscript}
+      threadId={threadId}
+    />
+  );
 }
 
-function AudioBubblePlayer({ message }: { message: ChatMessage }) {
+function TranscriptRow({
+  message,
+  mine,
+  onPress,
+}: {
+  message: ChatMessage;
+  mine: boolean;
+  onPress: () => void;
+}) {
+  const status = message.transcriptStatus;
+  const translationStatus = message.translationStatus;
+
+  const transcriptAlign = mine ? styles.transcriptBelowMine : styles.transcriptBelowTheirs;
+  const transcriptTextAlign = mine ? styles.transcriptTextMine : undefined;
+
+  if (status === 'ready' && message.transcript) {
+    const showTranslation =
+      translationStatus === 'ready' &&
+      message.translation &&
+      message.translation !== message.transcript;
+    const canRetryTranslation =
+      translationStatus === 'unavailable' || translationStatus === 'skipped';
+
+    return (
+      <View style={[styles.transcriptBlock, transcriptAlign]}>
+        <Text style={[styles.transcriptText, transcriptTextAlign]}>{message.transcript}</Text>
+        {translationStatus === 'pending' ? (
+          <Text style={[styles.transcriptMeta, transcriptTextAlign]}>Translating…</Text>
+        ) : null}
+        {showTranslation ? (
+          <>
+            <Text style={[styles.translationLabel, transcriptTextAlign]}>Translated</Text>
+            <Text style={[styles.translationText, transcriptTextAlign]}>
+              {message.translation}
+            </Text>
+          </>
+        ) : null}
+        {canRetryTranslation ? (
+          <Pressable
+            accessibilityLabel="Retry translation"
+            accessibilityRole="button"
+            onPress={onPress}
+            style={styles.transcriptAction}>
+            <Text style={[styles.transcriptMeta, transcriptTextAlign]}>
+              {translationStatus === 'skipped'
+                ? 'See translation'
+                : 'Translation unavailable · Tap to retry'}
+            </Text>
+            {__DEV__ && message.translationError ? (
+              <Text style={[styles.transcriptDebug, transcriptTextAlign]}>
+                {message.translationError}
+              </Text>
+            ) : null}
+          </Pressable>
+        ) : null}
+        {__DEV__ ? (
+          <Text style={[styles.transcriptDebug, transcriptTextAlign]}>
+            {message.transcriptLanguage
+              ? `Detected: ${languageCodeAbbrev(message.transcriptLanguage)}`
+              : 'Detected: ???'}
+            {message.translatedTo ? ` · Target: ${languageCodeAbbrev(message.translatedTo)}` : ''}
+            {message.translationStatus ? ` · ${message.translationStatus}` : ''}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
+
+  if (status === 'pending') {
+    return (
+      <Text style={[styles.transcriptMeta, transcriptAlign, transcriptTextAlign]}>
+        Transcribing…
+      </Text>
+    );
+  }
+
+  if (status === 'unavailable') {
+    return (
+      <Pressable
+        accessibilityLabel="Retry transcription"
+        accessibilityRole="button"
+        onPress={onPress}
+        style={[styles.transcriptAction, transcriptAlign]}>
+        <Text style={[styles.transcriptMeta, transcriptTextAlign]}>
+          Transcript unavailable · Tap to retry
+        </Text>
+        {__DEV__ && message.transcriptError ? (
+          <Text style={[styles.transcriptDebug, transcriptTextAlign]}>
+            {message.transcriptError}
+          </Text>
+        ) : null}
+      </Pressable>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityLabel="See transcription"
+      accessibilityRole="button"
+      onPress={onPress}
+      style={[styles.transcriptAction, transcriptAlign]}>
+      <Text style={[styles.transcriptActionText, transcriptTextAlign]}>
+        See transcription
+      </Text>
+    </Pressable>
+  );
+}
+
+function AudioBubblePlayer({
+  message,
+  threadId,
+  onRequestTranscript,
+}: {
+  message: ChatMessage;
+  threadId: string;
+  onRequestTranscript: (threadId: string, messageId: string) => void;
+}) {
   const player = useAudioPlayer({ uri: message.localUri! }, { updateInterval: 100 });
   const status = useAudioPlayerStatus(player);
   const progress =
@@ -145,37 +286,44 @@ function AudioBubblePlayer({ message }: { message: ChatMessage }) {
     }
   };
 
+  const requestTranscript = useCallback(() => {
+    onRequestTranscript(threadId, message.id);
+  }, [message.id, onRequestTranscript, threadId]);
+
   return (
-    <Pressable
-      accessibilityLabel={status.playing ? 'Pause voice note' : 'Play voice note'}
-      accessibilityRole="button"
-      onPress={toggle}
-      style={[styles.audioBubble, message.mine && styles.audioBubbleMine]}>
-      <Text style={[styles.audioPlay, message.mine && styles.bodyMine]}>
-        {status.playing ? 'Ⅱ' : '▶'}
-      </Text>
-      <View style={styles.audioMain}>
-        <View style={styles.waveform}>
-          {Array.from({ length: 18 }, (_, index) => (
-            <View
-              key={index}
-              style={[
-                styles.waveBar,
-                message.mine && styles.waveBarMine,
-                index / 18 <= progress && styles.waveBarActive,
-              ]}
-            />
-          ))}
-        </View>
-        <Text style={[styles.audioDuration, message.mine && styles.bodyMine]}>
-          {formatDuration(
-            status.duration > 0
-              ? status.currentTime * 1000
-              : (message.durationMs ?? 0),
-          )}
+    <View style={styles.audioColumn}>
+      <Pressable
+        accessibilityLabel={status.playing ? 'Pause voice note' : 'Play voice note'}
+        accessibilityRole="button"
+        onPress={toggle}
+        style={[styles.audioBubble, message.mine && styles.audioBubbleMine]}>
+        <Text style={[styles.audioPlay, message.mine && styles.bodyMine]}>
+          {status.playing ? 'Ⅱ' : '▶'}
         </Text>
-      </View>
-    </Pressable>
+        <View style={styles.audioMain}>
+          <View style={styles.waveform}>
+            {Array.from({ length: 18 }, (_, index) => (
+              <View
+                key={index}
+                style={[
+                  styles.waveBar,
+                  message.mine && styles.waveBarMine,
+                  index / 18 <= progress && styles.waveBarActive,
+                ]}
+              />
+            ))}
+          </View>
+          <Text style={[styles.audioDuration, message.mine && styles.bodyMine]}>
+            {formatDuration(
+              status.duration > 0
+                ? status.currentTime * 1000
+                : (message.durationMs ?? 0),
+            )}
+          </Text>
+        </View>
+      </Pressable>
+      <TranscriptRow message={message} mine={message.mine} onPress={requestTranscript} />
+    </View>
   );
 }
 
@@ -208,6 +356,7 @@ export default function ChatScreen() {
     sendVoiceNote,
     markRead,
     clearActive,
+    requestTranscript,
   } = useChat();
   const insets = useSafeAreaInsets();
   const headerHeight = insets.top + 44;
@@ -442,7 +591,12 @@ export default function ChatScreen() {
                 ) : null}
                 <View style={[styles.column, message.mine && styles.columnMine]}>
                   {!message.mine && first ? <Text style={styles.sender}>{message.sender}</Text> : null}
-                  <Bubble message={message} showTail={last} />
+                  <Bubble
+                    message={message}
+                    onRequestTranscript={requestTranscript}
+                    showTail={last}
+                    threadId={threadId}
+                  />
                   {last ? (
                     <View style={[styles.metaRow, message.mine && styles.metaRowMine]}>
                       <Text style={styles.time}>{message.time}</Text>
@@ -688,6 +842,7 @@ const styles = StyleSheet.create({
   },
   viewerImage: { height: '88%', width: '100%' },
   viewerHint: { bottom: 28, color: signal.white, fontSize: 13, position: 'absolute' },
+  audioColumn: { gap: 6, maxWidth: 260 },
   audioBubble: {
     alignItems: 'center',
     backgroundColor: signal.white,
@@ -708,6 +863,24 @@ const styles = StyleSheet.create({
   waveBarMine: { backgroundColor: 'rgba(255,255,255,0.45)' },
   waveBarActive: { backgroundColor: signal.deep, height: 18 },
   audioDuration: { color: signal.slate, fontSize: 11 },
+  transcriptBelowTheirs: { alignSelf: 'flex-start', marginLeft: 2 },
+  transcriptBelowMine: { alignSelf: 'flex-end', marginRight: 2 },
+  transcriptBlock: { gap: 2, marginTop: 2, maxWidth: 260 },
+  transcriptTextMine: { textAlign: 'right' },
+  transcriptAction: { marginTop: 2 },
+  transcriptActionText: { color: signal.blue, fontSize: 12, fontWeight: '600' },
+  transcriptMeta: { color: signal.slate, fontSize: 12, marginTop: 2 },
+  transcriptText: { color: signal.slate, fontSize: 13, lineHeight: 18 },
+  translationLabel: {
+    color: signal.slate,
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+    opacity: 0.75,
+    textTransform: 'uppercase',
+  },
+  translationText: { color: signal.ink, fontSize: 13, fontStyle: 'italic', lineHeight: 18 },
+  transcriptDebug: { color: signal.slate, fontSize: 11, lineHeight: 15, marginTop: 2 },
   metaRow: { alignItems: 'center', flexDirection: 'row', gap: 5, marginLeft: 4, marginTop: 4 },
   metaRowMine: { marginLeft: 0, marginRight: 4 },
   metaDot: { color: signal.slate, fontSize: 12 },
