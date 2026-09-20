@@ -43,6 +43,8 @@ static const char *TAG = "nored_badge";
 #define LED_RESOLUTION_HZ 10000000
 #define MAX_ALERT_BODY NORED_ALERT_MAX_BODY
 #define ALERT_QUEUE_DEPTH 8
+/* Mirrors ALERT_BURST_COPIES in nored/src/mesh/protocol.ts. */
+#define ALERT_BURST_COPIES 3
 
 /*
  * Canonical Nored UUIDs (same strings as the phone app):
@@ -570,17 +572,20 @@ static void forward_packet(link_t *from, const uint8_t *payload, uint16_t len)
             ESP_LOGW(TAG, "packet too large for hop");
             continue;
         }
-        for (uint16_t seq = 0; seq < total; seq++) {
-            uint16_t start = seq * chunk;
-            uint16_t part = (start + chunk > len) ? (len - start) : chunk;
-            uint8_t frame[256];
-            if (part > sizeof(frame) - 3) part = sizeof(frame) - 3;
-            frame[0] = PACKET_MAGIC;
-            frame[1] = (uint8_t)seq;
-            frame[2] = (uint8_t)total;
-            memcpy(frame + 3, payload + start, part);
-            notify_bytes(dest->conn, h_tx, frame, (uint16_t)(3 + part));
-            vTaskDelay(pdMS_TO_TICKS(8));
+        int copies = strstr((const char *)payload, "\"type\":\"alert\"") ? ALERT_BURST_COPIES : 1;
+        for (int copy = 0; copy < copies; copy++) {
+            for (uint16_t seq = 0; seq < total; seq++) {
+                uint16_t start = seq * chunk;
+                uint16_t part = (start + chunk > len) ? (len - start) : chunk;
+                uint8_t frame[256];
+                if (part > sizeof(frame) - 3) part = sizeof(frame) - 3;
+                frame[0] = PACKET_MAGIC;
+                frame[1] = (uint8_t)seq;
+                frame[2] = (uint8_t)total;
+                memcpy(frame + 3, payload + start, part);
+                notify_bytes(dest->conn, h_tx, frame, (uint16_t)(3 + part));
+                vTaskDelay(pdMS_TO_TICKS(8));
+            }
         }
         ESP_LOGI(TAG, "forwarded %u bytes to conn %u", len, dest->conn);
     }

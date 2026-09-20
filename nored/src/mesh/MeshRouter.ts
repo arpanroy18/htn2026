@@ -3,7 +3,7 @@ import type { RouterData, RouterStore } from './routerStore';
 import { emptyData } from './routerStore.ts';
 import { appendMessage, ensureDmThread, formatMessageClock, migrateDmPeer, patchMessage } from './chatStore.ts';
 import { alertFromPacket, appendAlert } from './alertStore.ts';
-import { canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
+import { ALERT_BURST_COPIES, canonicalId, DAY, envelope, isWirePacket, MAX_CONTROL_BYTES, priority, wireBytes } from './protocol.ts';
 import type { Control, ControlFields, Envelope, WirePacket } from './protocol';
 import { SendScheduler } from './scheduler.ts';
 
@@ -394,7 +394,18 @@ export class MeshRouter {
       const copy: Envelope = { ...value, hopCount: value.hopCount + 1 };
       const wire: WirePacket = legacy && p.type !== 'delivery-ack'
         ? p.type === 'alert' ? { ...p, recipientId: peer, hops: copy.hopCount } : p : copy;
-      await this.send(peer, wire);
+      const copies = p.type === 'alert' ? ALERT_BURST_COPIES : 1;
+      let sent = 0;
+      let lastError: unknown;
+      for (let index = 0; index < copies; index += 1) {
+        try {
+          await this.send(peer, wire);
+          sent += 1;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!sent) throw lastError ?? new Error('Transmission failed.');
       await this.store.transaction((d) => {
         if (generation !== this.generation) return;
         const r = d.packets[p.id];

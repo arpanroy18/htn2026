@@ -12,6 +12,8 @@ export const ALERT_MAX_BODY = 280;
 export const ALERT_TTL_HOPS = MAX_HOP_LIMIT;
 export const ALERT_TTL_MS = 6 * 3_600_000;
 export const ALERT_RATE_LIMIT_MS = 5000;
+/** Immediate same-id copies on each alert hop, before the slower receipt backoff. */
+export const ALERT_BURST_COPIES = 3;
 export const TEXT_TTL_HOPS = 5;
 export type DeliveryAck = {
   version: 1; type: 'delivery-ack'; id: string; senderId: string;

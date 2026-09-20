@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { MeshRouter } from './MeshRouter.ts';
 import { RouterStore, SqlPersistence } from './routerStore.ts';
-import { envelope, DAY, isWirePacket, priority, wireBytes } from './protocol.ts';
+import { ALERT_BURST_COPIES, envelope, DAY, isWirePacket, priority, wireBytes } from './protocol.ts';
 import { importHistory, validateLegacyHistory } from './migration.ts';
 import { SendScheduler } from './scheduler.ts';
 
@@ -140,7 +140,7 @@ test('broadcast relays once, preserves timestamp, carries while display disabled
 const alert = (n, a, id = 'alert-1', severity = 'DANGER') => ({ ...n.text(a, a, id), type: 'alert', recipientId: 'emergency-broadcast', body: 'Help', severity });
 const alertFrames = (n, id = 'alert-1') => n.frames.filter((f) => (f.packet.type === 'mesh-data' && f.packet.packet.id === id) || (f.packet.type === 'alert' && f.packet.id === id));
 
-test('alert floods A→B→C through live links with no inventory churn and exactly one copy per hop', async () => {
+test('alert floods A→B→C through live links with no inventory churn and a same-id burst per hop', async () => {
   const n = await network(3); await n.connect(0, 1); await n.connect(1, 2);
   const controlBefore = n.frames.filter((f) => f.packet.type === 'mesh-inventory').length;
   await n.nodes[0].router.enqueue(alert(n, 0)); await n.settle();
@@ -149,10 +149,12 @@ test('alert floods A→B→C through live links with no inventory churn and exac
   assert.equal(n.nodes[1].store.data.alerts.length, 1);
   assert.equal(n.nodes[0].store.data.alerts[0].mine, true);
   const hops = alertFrames(n);
-  assert.deepEqual(hops.map((f) => [f.from, f.to]), [[n.nodes[0].id, n.nodes[1].id], [n.nodes[1].id, n.nodes[2].id]], 'never echoed back to the previous hop');
+  assert.equal(hops.filter((f) => f.from === n.nodes[0].id && f.to === n.nodes[1].id).length, ALERT_BURST_COPIES);
+  assert.equal(hops.filter((f) => f.from === n.nodes[1].id && f.to === n.nodes[2].id).length, ALERT_BURST_COPIES);
+  assert.equal(hops.filter((f) => f.to === n.nodes[0].id).length, 0, 'never echoed back to the previous hop');
   assert.equal(n.frames.filter((f) => f.packet.type === 'mesh-inventory').length, controlBefore, 'a new packet does not trigger inventory re-sends');
   await n.advance(31_000);
-  assert.equal(alertFrames(n).length, 2, 'receipts stop retries; periodic inventory does not resend');
+  assert.equal(alertFrames(n).length, ALERT_BURST_COPIES * 2, 'receipts stop slower retries; periodic inventory does not resend');
   for (const node of n.nodes) assert.equal(node.store.data.alerts.length, 1);
   assert.deepEqual(n.errors, []);
 });
@@ -170,14 +172,14 @@ test('alert forwards to a fresh peer before its inventory arrives; duplicates ne
   await n.connect(2, 1);
   assert.equal(n.nodes[2].store.data.alerts.length, 1);
   const sentToC = () => alertFrames(n).filter((f) => f.from === n.nodes[1].id && f.to === n.nodes[2].id).length;
-  assert.equal(sentToC(), 1);
+  assert.equal(sentToC(), ALERT_BURST_COPIES);
   const copy = envelope(alert(n, 0)); copy.hopCount = 1;
   await n.nodes[1].router.receive(n.nodes[2].id, copy); await n.settle();
   assert.equal(n.nodes[1].store.data.alerts.length, 1);
   assert.equal(n.nodes[2].store.data.alerts.length, 1);
   assert.ok(n.nodes[1].store.data.packets['alert-1'].receipts.includes(n.nodes[2].id), 'duplicate marks the sender as a holder');
   await n.advance(31_000);
-  assert.equal(sentToC(), 1, 'no re-send to a peer that already proved it holds the alert');
+  assert.equal(sentToC(), ALERT_BURST_COPIES, 'no slower re-send to a peer that already proved it holds the alert');
   assert.deepEqual(n.errors, []);
 });
 
@@ -195,6 +197,21 @@ test('alert wire contract: every severity outranks text, inventory and media; bo
   assert.equal(isWirePacket(envelope({ ...alert(n, 0), body: 'x'.repeat(280) })), true);
   assert.equal(envelope(alert(n, 0)).hopLimit, 10);
   assert.equal(envelope({ ...alert(n, 0), ttlHops: 99 }).hopLimit, 10);
+});
+
+test('alert burst delivers on the third immediate copy without waiting for backoff', async () => {
+  const n = await network(2); await n.connect(0, 1);
+  let dropped = 0;
+  n.drop((_a, _b, p) => {
+    const isAlert = (p.type === 'mesh-data' && p.packet?.id === 'alert-1') || (p.type === 'alert' && p.id === 'alert-1');
+    if (!isAlert) return false;
+    dropped += 1;
+    return dropped <= ALERT_BURST_COPIES - 1;
+  });
+  await n.nodes[0].router.enqueue(alert(n, 0)); await n.settle();
+  assert.equal(n.nodes[1].store.data.alerts.length, 1);
+  assert.equal(dropped, ALERT_BURST_COPIES);
+  assert.deepEqual(n.errors, []);
 });
 
 test('alert envelope is accepted from a confirmed peer whose hello was lost; text is not', async () => {
