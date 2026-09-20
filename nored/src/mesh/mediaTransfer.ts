@@ -83,6 +83,7 @@ export function splitMediaBytes(input: {
       groupId: input.manifest.groupId,
       hops: input.manifest.hops,
       ttlHops: input.manifest.ttlHops,
+      path: input.manifest.path,
       type: 'media-chunk',
       timestamp: input.manifest.timestamp,
       transferId: input.manifest.id,
@@ -154,7 +155,12 @@ function packetBaseIsValid(value: Partial<Packet>) {
     value.id.length > 0 &&
     typeof value.senderId === 'string' &&
     typeof value.recipientId === 'string' &&
-    typeof value.timestamp === 'number' && Number.isFinite(value.timestamp)
+    typeof value.timestamp === 'number' && Number.isFinite(value.timestamp) &&
+    (value.path === undefined ||
+      (Array.isArray(value.path) &&
+        value.path.length > 0 &&
+        value.path.length <= 11 &&
+        value.path.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 160)))
   );
 }
 

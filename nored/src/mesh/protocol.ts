@@ -19,12 +19,12 @@ export const ALERT_LIVE_MS = 60_000;
 export const TEXT_TTL_HOPS = 5;
 export type DeliveryAck = {
   version: 1; type: 'delivery-ack'; id: string; senderId: string;
-  recipientId: string; timestamp: number; messageId: string;
+  recipientId: string; timestamp: number; messageId: string; messagePath?: string[];
 };
 export type RoutedPayload = TextPacket | AlertPacket | DeliveryAck;
 export type Envelope = {
   version: 1; type: 'mesh-data'; packet: RoutedPayload;
-  expiresAt: number; hopCount: number; hopLimit: number; directOnly: boolean;
+  expiresAt: number; hopCount: number; hopLimit: number; directOnly: boolean; path?: string[];
 };
 export type Control = {
   version: 1; senderId: string; recipientId: string;
@@ -39,6 +39,8 @@ export type WirePacket = Packet | Envelope | Control;
 export const wireBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9:_-]{1,160}$/.test(v) && !Object.prototype.hasOwnProperty.call(Object.prototype, v);
 const time = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+const path = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.length > 0 && v.length <= MAX_HOP_LIMIT + 1 && v.every(id);
 export const canonicalId = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v);
 
 export function isWirePacket(value: unknown): value is WirePacket {
@@ -48,7 +50,8 @@ export function isWirePacket(value: unknown): value is WirePacket {
   if (v.type === 'mesh-data') {
     const p = v.packet as RoutedPayload | undefined;
     return !!p && id(p.id) && id(p.senderId) && id(p.recipientId) && time(p.timestamp) &&
-      (p.type === 'delivery-ack' ? p.version === 1 && id(p.messageId) :
+      (p.type === 'delivery-ack' ? p.version === 1 && id(p.messageId) &&
+        (p.messagePath === undefined || path(p.messagePath)) :
         (p.type === 'text' || p.type === 'alert') && p.id.length <= 128 && isPacket(p) &&
         (p.type !== 'alert' || p.body.length <= ALERT_MAX_BODY)) &&
       time(v.expiresAt) && v.expiresAt > p.timestamp &&
@@ -56,6 +59,7 @@ export function isWirePacket(value: unknown): value is WirePacket {
       Number.isInteger(v.hopCount) && Number.isInteger(v.hopLimit) &&
       Number(v.hopCount) >= 0 && Number(v.hopLimit) > 0 && Number(v.hopLimit) <= MAX_HOP_LIMIT &&
       Number(v.hopCount) <= Number(v.hopLimit) && typeof v.directOnly === 'boolean' &&
+      (v.path === undefined || (path(v.path) && v.path.length <= Number(v.hopCount) + 1)) &&
       wireBytes(v) <= MAX_WIRE_BYTES;
   }
   if (typeof v.type === 'string' && v.type.startsWith('mesh-')) {
@@ -73,6 +77,7 @@ export function isWirePacket(value: unknown): value is WirePacket {
 
 export function envelope(packet: RoutedPayload, directOnly = false): Envelope {
   return { version: 1, type: 'mesh-data', packet, directOnly,
+    path: [packet.senderId],
     expiresAt: packet.timestamp + (packet.type === 'alert' ? ALERT_TTL_MS : DAY),
     hopCount: packet.type === 'alert' ? Math.max(0, packet.hops ?? 0) : 0,
     hopLimit: packet.type === 'text' ? TEXT_TTL_HOPS

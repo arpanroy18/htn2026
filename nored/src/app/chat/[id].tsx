@@ -438,11 +438,9 @@ export default function ChatScreen() {
       if (!inRange) return `${total} members · out of range · will queue`;
       return `${total} members · ${inRangeCount} in range · Bluetooth`;
     }
-    if (!inRange) return contacts[thread?.peerId ?? threadId]
-      ? 'Text relays through nearby phones · media waits for a direct connection'
-      : 'Add as a contact while nearby to send from afar';
+    if (!inRange) return 'Text relays through nearby phones · media waits for a direct connection';
     return '1:1 · Bluetooth';
-  }, [contacts, inRange, inRangeCount, isAlertThread, isGroup, memberIds.length, thread?.peerId, threadId]);
+  }, [inRange, inRangeCount, isAlertThread, isGroup, memberIds.length]);
 
   const groupMembers = useMemo(() => {
     const members = thread?.memberIds ?? [];
@@ -541,7 +539,7 @@ export default function ChatScreen() {
         )}
 
         {!isGroup && inRange && !savedContact ? (
-          <Pressable onPress={addContact} style={{ padding: 12 }}><Text style={{ color: signal.blue, textAlign: 'center' }}>Add contact for remote messaging</Text></Pressable>
+          <Pressable onPress={addContact} style={{ padding: 12 }}><Text style={{ color: signal.blue, textAlign: 'center' }}>Save contact</Text></Pressable>
         ) : null}
         <ScrollView
           contentContainerStyle={styles.messages}
@@ -574,6 +572,15 @@ export default function ChatScreen() {
           ) : (
             rows.map(({ message, first, last }) => {
               const senderProfile = avatarForPeer(message.senderId, identity, noredPeers);
+              const pathLabel = message.path?.map((id) => {
+                if (id === identity.id) return 'You';
+                const peer = noredPeers.find((item) => item.id === id);
+                if (peer?.name) return peer.name;
+                if (contacts[id]?.name) return contacts[id].name;
+                if (id === message.senderId) return message.sender;
+                if (id === thread?.peerId) return thread.name;
+                return `Peer ${id.slice(0, 8)}`;
+              }).join(' → ');
               return (
               <View key={message.id} style={[styles.rowWrap, message.mine ? styles.rowWrapMine : styles.rowWrapTheirs, first && styles.rowSpaced]}>
                 {!message.mine ? (
@@ -597,6 +604,13 @@ export default function ChatScreen() {
                     showTail={last}
                     threadId={threadId}
                   />
+                  {pathLabel ? (
+                    <Text
+                      numberOfLines={2}
+                      style={[styles.path, message.mine && styles.pathMine]}>
+                      Path: {pathLabel}
+                    </Text>
+                  ) : null}
                   {last ? (
                     <View style={[styles.metaRow, message.mine && styles.metaRowMine]}>
                       <Text style={styles.time}>{message.time}</Text>
@@ -886,6 +900,8 @@ const styles = StyleSheet.create({
   metaDot: { color: signal.slate, fontSize: 12 },
   time: { color: signal.slate, fontSize: 12 },
   status: { color: signal.slate, fontSize: 12 },
+  path: { color: signal.slate, fontSize: 11, lineHeight: 15, marginLeft: 4, marginTop: 4 },
+  pathMine: { marginLeft: 0, marginRight: 4, textAlign: 'right' },
   composer: {
     backgroundColor: signal.white,
     borderTopColor: signal.fog,

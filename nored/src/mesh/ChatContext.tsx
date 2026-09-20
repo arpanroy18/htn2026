@@ -273,6 +273,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         kind: 'text',
         body: packet.payload,
         status: mine ? status : undefined,
+        path: packet.path,
         timestamp: packet.timestamp || Date.now(),
         time: formatMessageClock(packet.timestamp || Date.now()),
       };
@@ -321,6 +322,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         // Media we already hold on disk is complete; only an inbound transfer starts at 0.
         transferProgress: localUri ? 1 : 0,
         status: mine ? status : undefined,
+        path: manifest.path,
         timestamp: manifest.timestamp,
         time: formatMessageClock(manifest.timestamp),
       };
@@ -523,6 +525,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const handlePacket = useCallback(
     async (packet: Packet, fromPeerId: string) => {
       if (packet.senderId === identity.id || packet.recipientId !== identity.id) return;
+      const path = packet.path?.length ? packet.path : [packet.senderId];
+      if (path.at(-1) !== identity.id) packet = { ...packet, path: [...path, identity.id] };
       if (isGroupSyncPacket(packet)) {
         if (seenIds.current.has(packet.id)) return;
         remember(packet.id);

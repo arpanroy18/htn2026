@@ -103,14 +103,20 @@ test('four nodes, duplicate paths, and hop boundary', async () => {
   assert.equal(n.nodes[3].store.data.packets.limited, undefined);
 });
 
-test('contacts are explicitly nearby-only; unsaved nearby packets stay direct-only', async () => {
+test('unsaved DMs relay live through an intermediate phone and report the full path', async () => {
   const n = await network();
   await assert.rejects(n.nodes[0].router.addContact(n.nodes[2].id));
-  await assert.rejects(n.nodes[0].router.enqueue(n.text(0, 2)));
-  await n.connect(0, 2); n.drop(() => true);
-  await n.nodes[0].router.enqueue(n.text(0, 2)); n.disconnect(0, 2); n.drop(() => false);
-  await n.connect(0, 1); assert.equal(n.nodes[1].store.data.packets.message, undefined);
-  assert.equal(n.nodes[0].store.data.packets.message.envelope.directOnly, true);
+  await n.connect(0, 1);
+  await n.connect(1, 2);
+  await n.nodes[0].router.enqueue(n.text(0, 2));
+  await n.settle();
+  assert.equal(incoming(n.nodes[2]).length, 1);
+  assert.deepEqual(incoming(n.nodes[2])[0].path, [n.nodes[0].id, n.nodes[1].id, n.nodes[2].id]);
+  const outgoing = n.nodes[0].store.data.chat.messages[n.nodes[2].id][0];
+  assert.equal(outgoing.status, 'delivered');
+  assert.deepEqual(outgoing.path, [n.nodes[0].id, n.nodes[1].id, n.nodes[2].id]);
+  assert.equal(n.nodes[0].store.data.packets.message.envelope.directOnly, false);
+  assert.deepEqual(n.errors, []);
 });
 
 test('expiry removes routing payloads but keeps chat history', async () => {
@@ -310,7 +316,7 @@ test('real SQLite migration is atomic and idempotent, survives reopening, and cl
   const message = { id: 'old', mine: true, kind: 'text', status: 'queued', timestamp: 1_000_000, senderId: uuid(1), body: 'old' };
   const history = { threads: [], messages: { [uuid(2)]: [message] } };
   await importHistory(store, structuredClone(history), 1_000_001);
-  assert.equal(store.data.packets.old.envelope.directOnly, true);
+  assert.equal(store.data.packets.old.envelope.directOnly, false);
   db.close();
   const reopenedDb = new DatabaseSync(file);
   t.after(() => reopenedDb.close());
@@ -435,7 +441,8 @@ test('group packets can pass through an immediate relay without changing the ori
     hops: 1,
     ttlHops: 5,
   };
-  await n.nodes[2].router.receive(n.nodes[1].id, packet);
+  await n.nodes[1].router.sendDirect(n.nodes[2].id, packet);
+  await n.settle();
   assert.equal(received.length, 1);
   assert.equal(received[0].packet.senderId, n.nodes[0].id);
   assert.equal(received[0].peerId, n.nodes[1].id);

@@ -77,7 +77,12 @@ export class MeshRouter {
     if (generation !== this.generation) return;
     for (const peer of peers) await this.encounter(peer);
     await this.store.transaction((d) => {
-      for (const [id, record] of Object.entries(d.packets)) if (record.state === 'sending') this.status(d, id, record.receipts.length ? 'carrying' : 'queued');
+      for (const [id, record] of Object.entries(d.packets)) {
+        // `directOnly` used to stop unsaved DMs at the first phone. Keep the field on the
+        // wire for compatibility, but upgrade every persisted text so old queues can mesh.
+        if (record.envelope.packet.type === 'text') record.envelope.directOnly = false;
+        if (record.state === 'sending') this.status(d, id, record.receipts.length ? 'carrying' : 'queued');
+      }
     });
     await this.cleanup();
     if (generation !== this.generation) return;
@@ -165,7 +170,11 @@ export class MeshRouter {
     }, rank);
   }
   async sendDirect(peer: string, packet: Packet, rank?: number) {
-    if (packet.recipientId !== peer || packet.senderId !== this.identity.id) throw new Error('Invalid direct packet identity.');
+    // Group floods preserve the original author while each relay rewrites only the
+    // next-hop recipient. Non-group application packets remain origin-only.
+    if (packet.recipientId !== peer || (packet.senderId !== this.identity.id && !packet.groupId)) {
+      throw new Error('Invalid direct packet identity.');
+    }
     if (!isWirePacket(packet)) throw new Error('Message is too large or invalid.');
     await this.send(peer, packet, rank);
   }
@@ -234,7 +243,8 @@ export class MeshRouter {
       const name = this.name(threadId);
       d.chat = appendMessage(d.chat, { id: p.id, threadId, senderId: p.senderId,
         sender: mine ? 'You' : name, mine, kind: 'text', body: p.payload,
-        status: mine ? 'queued' : undefined, timestamp: p.timestamp, time: formatMessageClock(p.timestamp) },
+        path: value.path, status: mine ? 'queued' : undefined,
+        timestamp: p.timestamp, time: formatMessageClock(p.timestamp) },
         name, !mine && this.activeThread !== threadId);
     } else if (p.type === 'alert' && (mine || this.listening)) {
       d.alerts = appendAlert(d.alerts, alertFromPacket({ ...p, hops: value.hopCount }, this.name(p.senderId), mine));
@@ -242,9 +252,7 @@ export class MeshRouter {
   }
   async enqueue(packet: TextPacket | AlertPacket) {
     if (packet.senderId !== this.identity.id) throw new Error('Invalid origin.');
-    const contact = !!this.store.data.contacts[packet.recipientId];
-    if (packet.type === 'text' && !contact && !this.sessions.has(packet.recipientId)) throw new Error('Add this person as a contact while nearby before messaging from afar.');
-    const value = envelope(packet, packet.type === 'text' && !contact);
+    const value = envelope(packet);
     if (!isWirePacket(value)) throw new Error('Message is too large or invalid.');
     await this.store.transaction((d) => {
       if (d.seen[packet.id]) return;
@@ -336,10 +344,13 @@ export class MeshRouter {
     }
     // Alerts are accepted from any confirmed peer even before its hello lands: they are
     // validated and deduped, and a lost handshake must not stall an emergency.
-    if ((!session.ready && wire.packet.type !== 'alert') || wire.hopCount < 1 || (wire.directOnly && wire.packet.recipientId !== this.identity.id)) return;
+    if ((!session.ready && wire.packet.type !== 'alert') || wire.hopCount < 1) return;
     await this.accept(peer, wire, true, generation);
   }
   private async accept(peer: string, value: Envelope, receipt: boolean, generation: number) {
+    const path = value.path?.length ? [...value.path] : [value.packet.senderId];
+    if (path.at(-1) !== this.identity.id) path.push(this.identity.id);
+    value = { ...value, directOnly: false, path };
     const p = value.packet;
     if (value.expiresAt <= this.now() || p.timestamp > this.now() + 300_000) { this.log(`[EXPIRY] rejected ${p.id}`); return; }
     let accepted = false;
@@ -355,7 +366,7 @@ export class MeshRouter {
           if (held.state !== 'sent') this.status(d, p.id, 'carrying');
         }
         if (receipt && p.type === 'text' && p.recipientId === this.identity.id &&
-            d.chat.messages[p.senderId]?.some((m) => m.id === p.id && !m.mine)) this.ensureAck(d, p);
+            d.chat.messages[p.senderId]?.some((m) => m.id === p.id && !m.mine)) this.ensureAck(d, p, value.path);
         return;
       }
       this.record(d, value, peer);
@@ -363,11 +374,12 @@ export class MeshRouter {
       if (p.type === 'alert' || p.recipientId === this.identity.id) {
         this.display(d, value, false);
         if (p.type === 'text' && receipt) {
-          this.ensureAck(d, p);
+          this.ensureAck(d, p, value.path);
         } else if (p.type === 'delivery-ack') {
           const original = d.packets[p.messageId]?.envelope.packet;
           if (original?.type === 'text' && original.senderId === this.identity.id && original.recipientId === p.senderId) {
             this.status(d, p.messageId, 'delivered');
+            if (p.messagePath) d.chat = patchMessage(d.chat, original.recipientId, p.messageId, { path: p.messagePath });
             this.event(d, p.messageId, peer, 'delivered');
             this.log(`[DELIVERY] ${p.messageId}`);
           }
@@ -380,9 +392,10 @@ export class MeshRouter {
     this.changed();
     if (receipt) await this.send(peer, this.control(peer, { type: 'mesh-receipt', packetId: p.id }));
   }
-  private ensureAck(d: RouterData, packet: TextPacket) {
+  private ensureAck(d: RouterData, packet: TextPacket, messagePath?: string[]) {
     const ack = envelope({ version: 1, type: 'delivery-ack', id: `${packet.id}:delivered`,
-      senderId: this.identity.id, recipientId: packet.senderId, timestamp: this.now(), messageId: packet.id });
+      senderId: this.identity.id, recipientId: packet.senderId, timestamp: this.now(),
+      messageId: packet.id, messagePath });
     if (!d.seen[ack.packet.id]) this.record(d, ack, '');
   }
   async tick() {
@@ -414,7 +427,7 @@ export class MeshRouter {
       if (p.type !== 'alert' && p.recipientId === this.identity.id) continue;
       const peers = [...this.sessions.entries()].sort(([a], [b]) => Number(b === p.recipientId) - Number(a === p.recipientId));
       for (const [peer, session] of peers) {
-        if (record.receipts.includes(peer) || peer === p.senderId || (value.directOnly && peer !== p.recipientId)) continue;
+        if (record.receipts.includes(peer) || peer === p.senderId) continue;
         const live = this.liveAlert(p);
         // Badges are a live display. Catching up hours of stored alerts when a new phone
         // joins (or the badge reconnects) would replay every past emergency on the screen.

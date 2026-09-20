@@ -105,7 +105,7 @@ export default function ChatsScreen() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No Bluetooth chats yet</Text>
             <Text style={styles.empty}>
-              Tap a Nored phone on Nearby to start a chat, save contacts for remote text, or create a group. Photos and voice notes wait for a direct connection.
+              Tap a Nored phone on Nearby to start a chat or create a group. Text relays across the mesh; photos and voice notes wait for a direct connection.
             </Text>
           </View>
         ) : (

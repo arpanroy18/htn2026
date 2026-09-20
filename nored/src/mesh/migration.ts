@@ -23,7 +23,7 @@ export async function importHistory(store: RouterStore, history: ChatState, now 
       d.seen[message.id] = Math.max(now + DAY, message.timestamp + 2 * DAY);
       if (message.mine && message.kind === 'text' && message.status === 'queued') {
         const value = envelope({ version: 1, type: 'text', id: message.id, senderId: message.senderId,
-          recipientId: threadId, timestamp: message.timestamp, payload: message.body }, true);
+          recipientId: threadId, timestamp: message.timestamp, payload: message.body });
         if (value.expiresAt > now) d.packets[message.id] = { envelope: value, state: 'queued', receipts: [] };
         else message.status = 'expired';
       }

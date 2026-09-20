@@ -66,6 +66,8 @@ export type ChatMessage = {
   transferProgress?: number;
   transferError?: string;
   status?: ChatDelivery;
+  /** Device IDs in traversal order, including sender and recipient once delivered. */
+  path?: string[];
   time: string;
   timestamp: number;
 };
@@ -140,6 +142,7 @@ export function makeTextPacket(input: {
     groupId: input.groupId,
     hops: input.hops,
     ttlHops: input.ttlHops,
+    path: [input.senderId],
     type: 'text',
     timestamp: Date.now(),
     payload: input.body,
@@ -203,6 +206,7 @@ export function makeMediaManifest(input: {
     groupId: input.groupId,
     hops: input.hops,
     ttlHops: input.ttlHops,
+    path: [input.senderId],
     type: 'media-manifest',
     timestamp: input.timestamp ?? Date.now(),
     mediaKind: input.mediaKind,

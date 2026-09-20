@@ -24,6 +24,7 @@ type PacketBase = {
   groupId?: string;
   hops?: number;
   ttlHops?: number;
+  path?: string[];
 };
 
 export type TextPacket = PacketBase & {
