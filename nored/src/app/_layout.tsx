@@ -69,6 +69,7 @@ export default function RootLayout() {
               <Stack.Screen name="new-group" options={{ title: 'New group', presentation: 'modal' }} />
               <Stack.Screen name="compose-alert" options={{ title: 'Broadcast', presentation: 'modal' }} />
               <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+              <Stack.Screen name="network" options={{ title: 'Network' }} />
               <Stack.Screen name="onboarding" options={{ title: 'Permissions' }} />
               <Stack.Screen name="game/[id]" options={{ title: 'Game' }} />
               <Stack.Screen name="invite" options={{ title: 'Invite to group', presentation: 'modal' }} />

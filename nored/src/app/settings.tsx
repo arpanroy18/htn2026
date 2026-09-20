@@ -33,6 +33,10 @@ export default function SettingsScreen() {
             <Text style={styles.rowLabel}>Permissions</Text>
             <ChevronIcon color={signal.slate} size={12} />
           </RowPress>
+          <RowPress onPress={() => router.push('/network')} style={styles.row}>
+            <Text style={styles.rowLabel}>Network graph</Text>
+            <ChevronIcon color={signal.slate} size={12} />
+          </RowPress>
         </GroupedList>
 
         <OutlinedButton
