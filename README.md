@@ -1,4 +1,4 @@
-# Nored
+# NoRed
 
 **Stay connected when the signal disappears.**
 
@@ -6,9 +6,9 @@ Built for **Hack the North 2026**, Nored is an offline communication app for iOS
 
 ## Why we built it
 
-At a crowded event, on a remote trail, or during a network outage, people can be close enough to help each other and still have no way to communicate. Nored turns the phones around you into a local communication network. Each participating phone can carry messages, extending communication beyond a single Bluetooth connection.
+At a crowded event, on a remote trail, or during a network outage, people can be close enough to help each other and still have no way to communicate. NoRed turns the phones around you into a local communication network. Each participating phone can carry messages, extending communication beyond a single Bluetooth connection.
 
-Connection also means being understood and having something to do together. Nored combines messaging with on-device voice transcription, translation, and nearby multiplayer games.
+Connection also means being understood and having something to do together. NoRed combines messaging with on-device voice transcription, translation, and nearby multiplayer games.
 
 ## What it does
 
@@ -44,7 +44,7 @@ Read the [store-and-forward implementation notes](nored/docs/store-and-forward.m
 
 ## Beyond phones: the HTN badge
 
-The repo also includes an experimental **ESP32-C3 badge relay**. Custom firmware lets a Hack the North badge bridge two Nored phone connections over BLE and display recent alerts. It also includes a local Wi-Fi portal for submitting alerts.
+The repo also includes an experimental **ESP32-C3 badge relay**. Custom firmware lets a Hack the North badge bridge two NoRed phone connections over BLE and display recent alerts. It also includes a local Wi-Fi portal for submitting alerts.
 
 There is a separate Lua app for badge-to-badge canned messages on stock firmware. That radio channel does not connect to the phone mesh. The custom firmware replaces the stock badge environment; see the [badge setup and firmware guide](nored-badge/README.md) before flashing.
 
@@ -101,14 +101,14 @@ npm run ios:offline -- --device
 npm run android:offline -- --device
 ```
 
-Open Nored once, grant the requested permissions, and finish model/language preparation before enabling airplane mode. Then turn Bluetooth back on, keep Wi-Fi off, and keep every participating app in the foreground.
+Open NoRed once, grant the requested permissions, and finish model/language preparation before enabling airplane mode. Then turn Bluetooth back on, keep Wi-Fi off, and keep every participating app in the foreground.
 
 
 This is a demo procedure, not a record of completed hardware tests.
 
 ## Prototype status and next steps
 
-Nored is a hackathon prototype. The repository includes automated tests for routing, persistence, media transfer, game state, and transcription/translation logic.
+NoRed is a hackathon prototype. The repository includes automated tests for routing, persistence, media transfer, game state, and transcription/translation logic.
 
 Current boundaries:
 
