@@ -2,6 +2,8 @@
 
 **Stay connected when the signal disappears.**
 
+![NoRed demo — nearby discovery, mesh chat, and alerts](docs/demo.gif)
+
 Built for **Hack the North 2026**, Nored is an offline communication app for iOS and Android. Nearby phones connect over Bluetooth to exchange messages, carry text to people they encounter later, and spread emergency alerts—all without cellular service, an internet connection, or a messaging server.
 
 ## Why we built it
